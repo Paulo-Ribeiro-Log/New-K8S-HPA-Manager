@@ -915,6 +915,14 @@ func (s *Server) setupRoutes() {
 
 	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
 	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.finopsRightsizingStore, s.finopsReportCacheStore, s.aiHandler, s.aiTokensStore)
+	// ociosidade observada dos volumes (desde quando cada um foi visto ocioso)
+	if home, err := os.UserHomeDir(); err == nil {
+		if store, err := storage.NewVolumeIdleStore(filepath.Join(home, ".k8s-hpa-manager", "volume_idle.db")); err != nil {
+			fmt.Printf("⚠️  Volume Idle Store: falha ao criar store: %v\n", err)
+		} else {
+			nodePoolHandler.SetVolumeIdleTracker(store)
+		}
+	}
 	nodePoolHandler.SetVolumeCostSource(finOpsHandler) // custo dos volumes (visão Volumes da aba Node Pools)
 	finOpsHandler.SetExemptionsStore(s.finopsExemptionsStore, s.historyTracker)
 	finOpsHandler.SetActionsStore(s.finopsActionsStore)

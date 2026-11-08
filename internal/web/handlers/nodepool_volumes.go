@@ -41,6 +41,11 @@ type VolumeItem struct {
 	Pods          []string     `json:"pods"`
 	Nodes         []string     `json:"nodes"`
 	NodePools     []string     `json:"node_pools"`
+	ManagedBy     string       `json:"managed_by,omitempty"`     // Flux/Argo CD/Helm que gerencia o volume ou o workload dono
+	TemplateSize  string       `json:"template_size,omitempty"`  // StatefulSet: tamanho declarado no volumeClaimTemplate
+	TemplateOwner string       `json:"template_owner,omitempty"` // StatefulSet dono do template
+	IdleSince     string       `json:"idle_since,omitempty"`     // desde quando a ferramenta viu o volume ocioso
+	IdleDays      *int         `json:"idle_days,omitempty"`
 	Storage       *StorageInfo `json:"storage,omitempty"`    // SKU, redundância, tier, protocolo, conta (só do Kubernetes)
 	CanExpand     *bool        `json:"can_expand,omitempty"` // StorageClass com allowVolumeExpansion (nil = não sei)
 	Snapshots     int          `json:"snapshots,omitempty"`
@@ -77,6 +82,7 @@ type VolumesSummary struct {
 	ResizePending  int     `json:"resize_pending"`         // expansões em andamento ou aguardando reinício do pod
 	ExpandBlocked  int     `json:"expand_blocked"`         // volume cheio/enchendo em StorageClass sem expansão (com uso)
 	SnapshotsKnown bool    `json:"snapshots_known"`        // a API de VolumeSnapshot respondeu
+	IdleTracking   bool    `json:"idle_tracking"`          // o registro de ociosidade está ligado neste servidor
 	SnapshotAPI    string  `json:"snapshot_api,omitempty"` // versão servida de snapshot.storage.k8s.io (v1, v1beta1); vazio = ausente
 	WithSnapshot   int     `json:"with_snapshot"`
 	IdleOld        int     `json:"idle_old"`         // volumes ociosos criados há mais de 30 dias: candidatos a limpeza
@@ -169,26 +175,31 @@ func pvSource(pv corev1.PersistentVolume) (source, detail string, isNFS bool) {
 type workloadSpec struct {
 	Namespace, Kind, Name string
 	Volumes               []corev1.Volume
-	ClaimTemplates        []string // StatefulSet: nomes dos volumeClaimTemplates
+	ClaimTemplates        []string          // StatefulSet: nomes dos volumeClaimTemplates
+	ClaimSizes            map[string]string // StatefulSet: tamanho declarado em cada volumeClaimTemplate
+	Labels, Annotations   map[string]string // do objeto workload (detecção de Flux/Argo/Helm)
 }
 
 func specsFromCluster(deps []appsv1.Deployment, stss []appsv1.StatefulSet, dss []appsv1.DaemonSet, cjs []batchv1.CronJob) []workloadSpec {
 	var out []workloadSpec
 	for _, d := range deps {
-		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "Deployment", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes})
+		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "Deployment", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes, Labels: d.Labels, Annotations: d.Annotations})
 	}
 	for _, st := range stss {
-		w := workloadSpec{Namespace: st.Namespace, Kind: "StatefulSet", Name: st.Name, Volumes: st.Spec.Template.Spec.Volumes}
+		w := workloadSpec{Namespace: st.Namespace, Kind: "StatefulSet", Name: st.Name, Volumes: st.Spec.Template.Spec.Volumes, Labels: st.Labels, Annotations: st.Annotations, ClaimSizes: map[string]string{}}
 		for _, t := range st.Spec.VolumeClaimTemplates {
 			w.ClaimTemplates = append(w.ClaimTemplates, t.Name)
+			if q, ok := t.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+				w.ClaimSizes[t.Name] = q.String()
+			}
 		}
 		out = append(out, w)
 	}
 	for _, d := range dss {
-		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "DaemonSet", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes})
+		out = append(out, workloadSpec{Namespace: d.Namespace, Kind: "DaemonSet", Name: d.Name, Volumes: d.Spec.Template.Spec.Volumes, Labels: d.Labels, Annotations: d.Annotations})
 	}
 	for _, c := range cjs {
-		out = append(out, workloadSpec{Namespace: c.Namespace, Kind: "CronJob", Name: c.Name, Volumes: c.Spec.JobTemplate.Spec.Template.Spec.Volumes})
+		out = append(out, workloadSpec{Namespace: c.Namespace, Kind: "CronJob", Name: c.Name, Volumes: c.Spec.JobTemplate.Spec.Template.Spec.Volumes, Labels: c.Labels, Annotations: c.Annotations})
 	}
 	return out
 }
@@ -615,6 +626,8 @@ func (h *NodePoolHandler) GetVolumes(c *gin.Context) {
 	}
 	applyExpansion(items, in.PVCs, expandBySC, &summary)
 	applyStorageInfo(items, in.PVs, scParams)
+	applyManagement(items, in.PVCs, in.Specs)
+	h.trackIdle(items, cluster, &summary)
 	summary.SnapshotAPI = detectSnapshotVersion(ctx, client)
 	if snaps, ok := fetchSnapshots(ctx, client, summary.SnapshotAPI); ok {
 		applySnapshots(items, snaps, &summary)

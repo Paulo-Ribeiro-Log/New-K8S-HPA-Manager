@@ -6172,6 +6172,11 @@ export interface VolumeItem {
   usage_class?: "critical" | "warning" | "oversized" | "ok";
   created_at?: string;
   age_days?: number;
+  idle_since?: string;
+  idle_days?: number;
+  managed_by?: string;
+  template_size?: string;
+  template_owner?: string;
   storage?: StorageInfo;
   zone?: string;
   can_expand?: boolean;
@@ -6214,6 +6219,7 @@ export interface VolumesResponse {
     idle_old: number;
     zone_no_nodes: number; zone_single_node: number;
     snapshot_api?: string;
+    idle_tracking?: boolean;
     usage_known: number; usage_critical: number; usage_warning: number; usage_oversized: number;
     cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
 }

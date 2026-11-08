@@ -59,10 +59,10 @@ function csvCell(v: string | number): string {
 }
 
 function toCSV(items: VolumeItem[]): string {
-  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "sku", "redundancia", "tier_acesso", "protocolo", "conta_storage", "zona", "criado_em", "idade_dias", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
+  const head = ["tipo", "namespace", "aplicações", "origem_do_vinculo", "pvc", "status_pvc", "pv", "fase_pv", "storage_class", "origem", "origem_detalhe", "sku", "redundancia", "tier_acesso", "protocolo", "conta_storage", "zona", "criado_em", "idade_dias", "ocioso_visto_desde", "ocioso_dias_observados", "gerenciado_por", "tamanho_template_sts", "expansivel", "snapshots", "ultimo_snapshot", "capacidade_gib", "custo_brl_mes", "custo_tipo", "access_modes", "reclaim", "pods", "nodes", "node_pools", "uso_gib", "uso_%", "crescimento_gib_dia", "dias_para_encher", "classe_uso", "problemas"];
   const rows = items.map((i) => [
     i.kind, i.namespace, i.workloads.length ? i.workloads.join(" ") : (i.app_hint ? `(label) ${i.app_hint}` : ""), i.owner_source ?? "", i.pvc ?? "", i.pvc_status ?? "", i.pv ?? "", i.pv_phase ?? "",
-    i.storage_class, i.source ?? "", i.source_detail ?? "", i.storage?.sku ?? "", i.storage?.redundancy ?? "", i.storage?.tier ?? "", i.storage?.protocol ?? "", i.storage?.account ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
+    i.storage_class, i.source ?? "", i.source_detail ?? "", i.storage?.sku ?? "", i.storage?.redundancy ?? "", i.storage?.tier ?? "", i.storage?.protocol ?? "", i.storage?.account ?? "", i.zone ?? "", i.created_at ?? "", i.age_days ?? "", i.idle_since ?? "", i.idle_days ?? "", i.managed_by ?? "", i.template_size ?? "", i.can_expand === undefined ? "" : i.can_expand ? "sim" : "não", i.snapshots ?? 0, i.last_snapshot ?? "", (i.capacity_bytes / GIB).toFixed(2), i.cost_brl_month ? i.cost_brl_month.toFixed(2) : "", i.cost_kind ?? "", i.access_modes.join(" "), i.reclaim_policy ?? "", i.pods.join(" "), i.nodes.join(" "),
     i.node_pools.join(" "), i.used_bytes ? (i.used_bytes / GIB).toFixed(2) : "", i.usage_percentage ? i.usage_percentage.toFixed(1) : "",
     i.growth_bytes_per_day ? (i.growth_bytes_per_day / GIB).toFixed(3) : "", i.days_to_full ?? "", i.usage_class ?? "", i.issues.join(" | "),
   ]);
@@ -720,6 +720,7 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     <td className="px-2 py-1.5 font-mono">
                       <div title={i.pvc}>{i.pvc || <span className="text-muted-foreground">{i.kind === "nfs" ? "(direto no pod, sem PVC)" : "(sem PVC)"}</span>}</div>
                       {i.pv && <div className="text-[10px] text-muted-foreground" title={i.pv}>{i.pv}</div>}
+                      {i.managed_by && <div className="text-[10px] text-sky-300 font-sans" title="Controlador que gerencia este volume ou o workload dono: mudanças manuais podem ser revertidas">⎈ {i.managed_by}</div>}
                     </td>
                     <td className="px-2 py-1.5">{i.storage_class || "—"}</td>
                     <td className="px-2 py-1.5">
@@ -745,6 +746,11 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap text-muted-foreground" title={i.created_at ? `Criado em ${new Date(i.created_at).toLocaleString("pt-BR")}` : undefined}>
                       {i.age_days === undefined ? "—" : i.age_days >= 365 ? `${(i.age_days / 365).toFixed(1)} anos` : `${i.age_days} d`}
+                      {i.idle_days !== undefined && (
+                        <div className="text-[10px] text-amber-300" title={`Visto ocioso desde ${i.idle_since ? new Date(i.idle_since).toLocaleString("pt-BR") : "?"}. O registro começa na primeira vez que este servidor listou o volume; antes disso só vale a idade.`}>
+                          {i.idle_days >= 1 ? `ocioso há ${i.idle_days} d*` : "ocioso desde hoje*"}
+                        </div>
+                      )}
                     </td>
                     {costOn && (
                       <td className="px-2 py-1.5 whitespace-nowrap" title={i.cost_note}>
@@ -819,6 +825,16 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                 return action.type === "expand" ? (
                   <div className="space-y-2 text-xs">
                     <p><span className="font-mono">{action.item.namespace}/{name}</span> — atual: <b>{fmtGiB(action.item.capacity_bytes)}</b>. Disco só cresce; reduzir exige recriar o volume.</p>
+                    {action.item.managed_by && (
+                      <div className="rounded border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-sky-300">
+                        Gerenciado por <b>{action.item.managed_by}</b>. Se o manifesto no Git declara outro tamanho, o controlador tentará voltar a ele; como o Kubernetes recusa reduzir, o reconcile pode passar a falhar até o manifesto ser atualizado também.
+                      </div>
+                    )}
+                    {action.item.template_size && (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-amber-300">
+                        O <b>volumeClaimTemplate</b> do StatefulSet <span className="font-mono">{action.item.template_owner}</span> declara <b>{action.item.template_size}</b> e é imutável: réplicas novas continuarão nascendo com {action.item.template_size}. Para igualar é preciso recriar o StatefulSet (<span className="font-mono">kubectl delete sts {action.item.template_owner} --cascade=orphan</span>) com o novo tamanho no manifesto.
+                      </div>
+                    )}
                     <Input type="number" min={1} step={1} className="h-8 text-xs" placeholder="Novo tamanho em GiB" value={actionInput} onChange={(e) => setActionInput(e.target.value)} autoFocus />
                   </div>
                 ) : (
@@ -829,6 +845,16 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
                         ? <b className="text-red-400"> O reclaim é Delete: o disco e os dados serão apagados junto e não há como desfazer.</b>
                         : " O reclaim é " + (action.item.reclaim_policy || "desconhecido") + ": o disco pode continuar existindo (e cobrando) fora do cluster."}
                     </p>
+                    {action.item.managed_by && (
+                      <div className="rounded border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-sky-300">
+                        Gerenciado por <b>{action.item.managed_by}</b>: se o manifesto ainda declara este volume, o controlador pode recriá-lo vazio no próximo reconcile. Remova-o do Git também.
+                      </div>
+                    )}
+                    {action.item.template_owner && (
+                      <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-amber-300">
+                        PVC de StatefulSet (<span className="font-mono">{action.item.template_owner}</span>): ao subir a réplica, o StatefulSet cria um PVC novo, vazio.
+                      </div>
+                    )}
                     <p className="text-muted-foreground">O servidor confere de novo que ninguém está usando o volume. Copie a frase abaixo e cole no campo (não vale digitar):</p>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 rounded border border-border/40 bg-muted/40 px-2 py-1 font-mono [overflow-wrap:anywhere] select-all">{deletePhrase(action.item)}</code>

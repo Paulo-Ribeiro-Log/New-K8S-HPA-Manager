@@ -79,6 +79,8 @@ type NodePoolHandler struct {
 	nodePoolCacheMu sync.RWMutex
 	// Precificação dos volumes (visão Volumes); nil = sem custo. Injetado pelo server.go.
 	volumeCost VolumeCostSource
+	// Desde quando cada volume foi visto ocioso (visão Volumes); nil = sem registro. Injetado pelo server.go.
+	volumeIdle VolumeIdleTracker
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
