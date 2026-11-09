@@ -281,7 +281,7 @@ export const SecretMonitorTable = ({
       await Promise.all(
         selectedObjects.map(async (i) => {
           try {
-            await apiClient.delete(`/api/v1/secrets/${i.cluster}/${i.namespace}/${i.name}`);
+            await apiClient.delete(`/secrets/${encodeURIComponent(i.cluster)}/${encodeURIComponent(i.namespace)}/${encodeURIComponent(i.name)}`);
             succeeded++;
           } catch (err) {
             failed++;
