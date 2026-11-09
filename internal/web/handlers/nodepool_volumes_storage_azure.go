@@ -341,6 +341,12 @@ func azureTargetFor(info *StorageInfo, clusterSub string) (azTarget, error) {
 	return t, nil
 }
 
+// diskNotFound reconhece a resposta "ResourceNotFound" do ARM para o disco.
+func diskNotFound(err error) bool {
+	m := err.Error()
+	return strings.Contains(m, "ResourceNotFound") || strings.Contains(m, "was not found")
+}
+
 // collectAzureDetails faz as leituras (em paralelo) e monta o resultado. Falha parcial vira aviso.
 func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 	d := &AzStorageDetails{Subscription: t.sub, QueriedAt: time.Now().UTC().Format(time.RFC3339), Sections: []AzSection{}, Notes: []string{}, Warnings: []string{}}
@@ -357,7 +363,12 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 	if t.kind == "disk" {
 		dk, err := get(armBase + t.diskID + "?api-version=" + diskAPIVer)
 		if err != nil {
-			d.Warnings = append(d.Warnings, "Disco: "+err.Error())
+			if diskNotFound(err) {
+				d.Warnings = append(d.Warnings, "O disco não existe mais na Azure: o PV ainda aponta para ele, mas o recurso foi apagado (ou movido). "+
+					"Um pod que tentar usar este volume não consegue montá-lo. Se o volume está ocioso, é uma referência órfã: o PVC/PV podem ser removidos. Detalhe da Azure: "+err.Error())
+			} else {
+				d.Warnings = append(d.Warnings, "Disco: "+err.Error())
+			}
 			return d
 		}
 		diskSections(dk, d)
