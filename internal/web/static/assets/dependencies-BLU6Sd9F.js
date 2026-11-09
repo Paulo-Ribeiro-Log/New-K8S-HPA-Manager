@@ -30,7 +30,7 @@ Na coluna **Fonte** (no registro e na busca reversa) cada linha é um **link**: 
 - \`env: …\` (variável de ambiente de um deployment) abre a aba **Deployments**;
 - \`pvc: <nome>\` (storage montado por volume) abre o modal **Volumes** do cluster, filtrado pelo nome do PVC ou PV.
 
-Quando a linha também traz o **deployment**, ele aparece logo abaixo como um segundo link (\`deployment: <nome>\`). Se a troca de cluster falhar (VPN, por exemplo), a ferramenta avisa e **não** abre o recurso de outro cluster.
+Na **busca em Secrets e ConfigMaps** (por chave ou valor), o rótulo \`secret: <nome>\` / \`configmap: <nome>\` de cada resultado também é um link para a aba do recurso, no cluster e namespace do resultado. Quando a linha também traz o **deployment**, ele aparece logo abaixo como um segundo link (\`deployment: <nome>\`). Se a troca de cluster falhar (VPN, por exemplo), a ferramenta avisa e **não** abre o recurso de outro cluster.
 
 ## Busca em Secrets e ConfigMaps (índice de conteúdo)
 
