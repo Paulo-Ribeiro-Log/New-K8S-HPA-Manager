@@ -72,14 +72,17 @@ type ConversationHint struct {
 	ThreadType  string `json:"thread_type"`
 }
 
-// isTeamsURL verifica se a URL pertence ao Teams — direto ou via proxy MCAS.
+// isTeamsURL verifica se a URL pertence ao Teams — direto ou via proxy MCAS. O Teams migrou do
+// domínio teams.microsoft.com para teams.cloud.microsoft: uma aba aberta no domínio antigo
+// redireciona para o novo (às vezes antes da primeira checagem), e quem só reconhecia o antigo
+// ficava esperando o timeout de "Aguardando Teams carregar".
 func isTeamsURL(url string) bool {
-	return strings.Contains(url, "teams.microsoft.com")
+	return strings.Contains(url, "teams.microsoft.com") || strings.Contains(url, "teams.cloud.microsoft")
 }
 
 // isTeamsV2URL verifica especificamente a interface v2 do Teams (incluindo MCAS).
 func isTeamsV2URL(url string) bool {
-	return strings.Contains(url, "teams.microsoft.com") && strings.Contains(url, "/v2")
+	return isTeamsURL(url) && strings.Contains(url, "/v2")
 }
 
 func isAuthURL(url string) bool {

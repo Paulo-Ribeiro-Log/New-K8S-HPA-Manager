@@ -3866,3 +3866,25 @@ export interface AppRemovalSSEEvent {
   error?: string;
   result?: AppRemovalOutcome | { dry_run: boolean; failed: boolean; outcomes: AppRemovalOutcome[] };
 }
+
+// Teams Broadcast — histórico de envios (internal/storage/teams_sent_store.go)
+export interface BroadcastSentBatch {
+  id: string;
+  sent_at: string;
+  sent_by: string;
+  preview: string;
+  total: number;
+  ok: number;
+  active: number; // mensagens ainda existentes (enviadas ou editadas)
+  edited: number;
+  deleted: number;
+}
+
+export interface BroadcastSentMessage {
+  batch_id: string;
+  thread_id: string;
+  display_name: string;
+  message_id: string;
+  state: "sent" | "edited" | "deleted";
+  updated_at: string;
+}

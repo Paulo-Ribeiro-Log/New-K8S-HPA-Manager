@@ -162,6 +162,8 @@ import type {
   GenerateVMSSHKeyInput,
   GenerateVMSSHKeyResult,
   ImportLocalVMSSHKeyInput,
+  BroadcastSentBatch,
+  BroadcastSentMessage,
 } from "./types";
 
 import type {
@@ -5442,6 +5444,7 @@ class APIClient {
     markdown: string;
     is_plain_text?: boolean;
     html?: string;
+    names?: Record<string, string>; // thread_id -> nome, para o histórico de envios
   }): Promise<{ session_id?: string; total?: number; error?: string }> {
     return this.request("/teams/broadcast/send", {
       method: "POST",
@@ -5452,11 +5455,45 @@ class APIClient {
   async deleteBroadcastMessages(targets: { thread_id: string; message_id: string }[]): Promise<{
     deleted: number;
     failed: number;
+    cancelled?: number;
     results: { thread_id: string; message_id: string; ok: boolean; status: number; error?: string }[];
   }> {
     return this.request("/teams/broadcast/delete", {
       method: "POST",
       body: JSON.stringify({ targets }),
+    });
+  }
+
+  // Histórico de envios (message_id guardado no servidor) para apagar/editar depois.
+  async listBroadcastSent(): Promise<{ batches: BroadcastSentBatch[] }> {
+    return this.request("/teams/broadcast/sent");
+  }
+
+  async getBroadcastSent(batchId: string): Promise<{ messages: BroadcastSentMessage[] }> {
+    return this.request(`/teams/broadcast/sent/${encodeURIComponent(batchId)}`);
+  }
+
+  async forgetBroadcastSent(batchId: string): Promise<{ forgotten: string }> {
+    return this.request(`/teams/broadcast/sent/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+  }
+
+  // Cancela o envio/edição/exclusão em andamento: o lote em execução termina e o restante não roda.
+  async cancelBroadcast(): Promise<{ cancelled: number }> {
+    return this.request("/teams/broadcast/cancel", { method: "POST" });
+  }
+
+  async editBroadcastMessages(
+    targets: { thread_id: string; message_id: string }[],
+    content: { markdown: string; is_plain_text: boolean },
+  ): Promise<{
+    edited: number;
+    failed: number;
+    cancelled?: number;
+    results: { thread_id: string; message_id: string; ok: boolean; status: number; error?: string }[];
+  }> {
+    return this.request("/teams/broadcast/edit", {
+      method: "POST",
+      body: JSON.stringify({ targets, ...content }),
     });
   }
 

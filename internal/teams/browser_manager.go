@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,4 +186,28 @@ func waitForTeamsUIReady(page *rod.Page, sessionDir string, logger *zerolog.Logg
 func CloseBrowser() {
 	browserMgr.Close()
 	CloseDockerBrowser()
+}
+
+// pageURLsSummary resume as abas abertas (só host e caminho, sem query) para diagnosticar o timeout
+// de "Aguardando Teams carregar": mostra, por exemplo, se a aba foi parar num domínio que
+// isTeamsURL não reconhece.
+func pageURLsSummary(br *rod.Browser) string {
+	pages, err := br.Pages()
+	if err != nil {
+		return "(erro ao listar abas: " + err.Error() + ")"
+	}
+	var parts []string
+	for _, p := range pages {
+		info, _ := p.Info()
+		if info == nil {
+			continue
+		}
+		u, perr := url.Parse(info.URL)
+		if perr != nil {
+			parts = append(parts, "?")
+			continue
+		}
+		parts = append(parts, u.Host+u.Path)
+	}
+	return strings.Join(parts, " | ")
 }
