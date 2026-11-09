@@ -71,6 +71,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ResyncAkvModal } from "@/components/ResyncAkvModal";
+import { AzureStorageFallback } from "@/components/AzureStorageFallback";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { isProdClusterName } from "@/lib/clusterSafety";
@@ -1555,13 +1556,18 @@ export const DependenciesTab = () => {
                         </p>
                       </div>
                     ) : searchResults.total_found === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                        <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
-                        <p className="text-sm">Nenhum uso encontrado</p>
-                        <p className="text-xs mt-1">
-                          O serviço "{reverseSearchQuery}" não foi encontrado no registry
-                        </p>
-                      </div>
+                      <>
+                        <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
+                          <AlertCircle className="h-12 w-12 mb-4 opacity-50" />
+                          <p className="text-sm">Nenhum uso encontrado</p>
+                          <p className="text-xs mt-1">
+                            O serviço "{reverseSearchQuery}" não foi encontrado no registry
+                          </p>
+                        </div>
+                        <div className="px-2 pb-4">
+                          <AzureStorageFallback query={reverseSearchQuery} />
+                        </div>
+                      </>
                     ) : (
                       <div className="space-y-2">
                         <div className="text-xs text-muted-foreground mb-2">

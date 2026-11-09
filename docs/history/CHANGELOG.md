@@ -3,6 +3,11 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Volumes/Dependencies — ciclo de vida do storage e busca na subscription (Novembro 2026)
+
+- **Ciclo de vida:** o detalhe do storage (Consultar na Azure) lê `managementPolicies/default` em paralelo e mostra cada regra (filtro, ações Cool/Cold/Archive/excluir e dias, ativa ou não); regras que excluem e conta sem política viram pontos de atenção (`nodepool_volumes_storage_lifecycle.go`).
+- **Busca na subscription:** `GET /azure/storage-search?q=&cluster=&deep=` (`azure_storage_search.go`, só GET no ARM pelo `az rest`) lista storage accounts e discos da(s) subscription(s) dos clusters pelo nome, com ciclo de vida e containers das contas achadas; `deep=true` varre containers e file shares (até 30 contas por subscription). Sem `cluster`, usa as subscriptions de todos os clusters configurados. O texto só filtra no servidor (validado, nunca entra em URL) e o `nextLink` só é seguido dentro de management.azure.com. Frontend: `AzureStorageFallback` no modal Volumes (volumes, aplicações e NFS) e na busca reversa da aba Dependencies, sempre por botão, com o aviso "não pertence ao cluster, mas está na mesma subscription".
+
 ### Teams Broadcast — salvar destinatários junto do arquivo (Novembro 2026)
 
 Os diálogos "Salvar como" e "Arquivos salvos" ganham a opção **Salvar também os destinatários selecionados**. A lista vai no mesmo arquivo, num comentário HTML no topo (`<!--broadcast-recipients` + JSON, `>` escapado); ao abrir, o bloco é removido do texto e a seleção é restaurada. Arquivo salvo com destinatários os mantém no Ctrl+S. Só frontend (`TeamsBroadcastTab.tsx`: `packRecipients`/`unpackRecipients`); o backend continua gravando o texto como veio, e arquivos antigos abrem como antes.
