@@ -5,7 +5,7 @@
 
 ### Dependencies — abrir o recurso listado ao clicar (Novembro 2026)
 
-A coluna Fonte (registro e busca reversa) vira link (`SourceCell`, `dependencyTargets` em `DependenciesTab.tsx`): configmap/secret abrem as abas ConfigMaps/Secrets, env abre Deployments e pvc abre o modal Volumes; se a linha traz o deployment, ele ganha um segundo link. `Index.navigateToDependency` troca o cluster (`handleClusterChange` agora devolve se deu certo e a navegação para se falhar), define o namespace da aba e manda um `focusRequest` (nome + nonce) que ConfigMapsTab/SecretsTab/DeploymentsTab aplicam na busca; o modal de Volumes aceita `initialQuery`. Só frontend.
+A coluna Fonte (registro e busca reversa) vira link (`SourceCell`, `dependencyTargets` em `DependenciesTab.tsx`): configmap/secret abrem as abas ConfigMaps/Secrets, env abre Deployments e pvc abre o modal Volumes; se a linha traz o deployment, ele ganha um segundo link. `Index.navigateToDependency` troca o cluster (`handleClusterChange` agora devolve se deu certo e a navegação para se falhar), define o namespace da aba e manda um `focusRequest` (nome + nonce) que ConfigMapsTab/SecretsTab/DeploymentsTab aplicam na busca; o modal de Volumes aceita `initialQuery`. Também na busca em Secrets e ConfigMaps (`SecretDataResultsTable`, prop `onNavigate`): `secret: <nome>` / `configmap: <nome>` abrem a aba do recurso. Só frontend.
 
 ### Teams Broadcast — salvar destinatários junto do arquivo (Novembro 2026)
 

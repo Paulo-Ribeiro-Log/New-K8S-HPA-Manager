@@ -1605,6 +1605,7 @@ export const DependenciesTab = ({ onNavigate }: { onNavigate?: (target: Dependen
                       onResyncClick={(cluster, namespace, resourceName) =>
                         setResyncAkvTarget({ cluster, namespace, secretName: resourceName })
                       }
+                      onNavigate={onNavigate}
                     />
                   </div>
                 ) : (
