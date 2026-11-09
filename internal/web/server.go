@@ -2411,6 +2411,7 @@ func (s *Server) setupRoutes() {
 		// Injetar orchestrator e dependency registry no DT handler para investigação profunda
 		dtHandler.SetInvestigateStores(healthCheckOrchestrator, dependencyRegistry)
 		dependenciesHandler := handlers.NewDependenciesHandler(dependencyScanner, dependencyRegistry)
+		dependenciesHandler.SetVolumeSource(nodePoolHandler.VolumeDependencies) // storage montado por volume (Files/Blob/NFS)
 		dependenciesGroup := api.Group("/dependencies")
 		{
 			// Rotas públicas (GET) - Consultam SQLite

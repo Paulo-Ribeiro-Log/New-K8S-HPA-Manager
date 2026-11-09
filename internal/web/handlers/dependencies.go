@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,48 @@ import (
 type DependenciesHandler struct {
 	scanner  *healthcheck.DependencyScanner
 	registry *storage.DependencyRegistry
+
+	// volumeSource, quando definido, acrescenta ao scan o storage montado por volume (PV/PVC/NFS).
+	volumeSource func(ctx context.Context, cluster string) ([]storage.DependencyRecord, error)
+}
+
+// SetVolumeSource liga a fonte de dependências por volume (ver NodePoolHandler.VolumeDependencies).
+func (h *DependenciesHandler) SetVolumeSource(fn func(ctx context.Context, cluster string) ([]storage.DependencyRecord, error)) {
+	h.volumeSource = fn
+}
+
+// markIssue registra ou limpa o aviso de "scan não atualizou" do cluster (falha ao gravar só loga).
+func (h *DependenciesHandler) markIssue(cluster, scope, msg string) {
+	if err := h.registry.SetScanIssue(cluster, scope, msg); err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Falha ao gravar o aviso do scan")
+	}
+}
+
+// scanVolumes regrava, como retrato do cluster, as dependências vindas de volumes. Falha aqui não
+// derruba o scan (o cluster pode negar a listagem de PVs). Devolve quantas linhas gravou.
+func (h *DependenciesHandler) scanVolumes(ctx context.Context, cluster string) int {
+	if h.volumeSource == nil {
+		return 0
+	}
+	recs, err := h.volumeSource(ctx, cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Dependências por volume não coletadas")
+		h.markIssue(cluster, storage.ScanScopeVolumes, "Volumes (PV/PVC) não puderam ser lidos; as dependências de storage mostradas são do scan anterior: "+err.Error())
+		return 0 // mantém o retrato anterior
+	}
+	h.markIssue(cluster, storage.ScanScopeVolumes, "")
+	if err := h.registry.DeleteBySourceType(cluster, volumeSourceType); err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Falha ao limpar dependências por volume")
+	}
+	saved := 0
+	for i := range recs {
+		if err := h.registry.UpsertDependency(&recs[i]); err != nil {
+			log.Warn().Err(err).Str("service", recs[i].ServiceName).Msg("Failed to persist volume dependency")
+			continue
+		}
+		saved++
+	}
+	return saved
 }
 
 // NewDependenciesHandler cria um novo handler de dependências
@@ -75,10 +118,12 @@ func (h *DependenciesHandler) Scan(c *gin.Context) {
 		result, err := h.scanner.Scan(c.Request.Context(), cluster, req.Namespaces)
 		if err != nil {
 			log.Warn().Err(err).Str("cluster", cluster).Msg("Failed to scan cluster")
+			h.markIssue(cluster, storage.ScanScopeCluster, "O scan do cluster falhou; os dados mostrados são do scan anterior: "+err.Error())
 			totalErrors++
 			continue
 		}
 
+		h.markIssue(cluster, storage.ScanScopeCluster, "")
 		allResults = append(allResults, result)
 
 		// Persistir cada dependência encontrada no SQLite
@@ -112,7 +157,10 @@ func (h *DependenciesHandler) Scan(c *gin.Context) {
 			log.Warn().Err(err).Str("cluster", cluster).Msg("Failed to persist secret data index")
 		}
 
-		totalFound += len(result.Dependencies)
+		volSaved := h.scanVolumes(c.Request.Context(), cluster)
+		savedCount += volSaved
+
+		totalFound += len(result.Dependencies) + volSaved
 		totalSaved += savedCount
 
 		// Registrar histórico do scan
@@ -164,6 +212,7 @@ func (h *DependenciesHandler) ScanCluster(c *gin.Context) {
 
 	result, err := h.scanner.Scan(c.Request.Context(), cluster, nil)
 	if err != nil {
+		h.markIssue(cluster, storage.ScanScopeCluster, "O scan do cluster falhou; os dados mostrados são do scan anterior: "+err.Error())
 		// Detectar erro de VPN
 		errorMsg := err.Error()
 		isVPNError := strings.Contains(errorMsg, "no such host") ||
@@ -211,6 +260,9 @@ func (h *DependenciesHandler) ScanCluster(c *gin.Context) {
 			savedCount++
 		}
 	}
+
+	h.markIssue(cluster, storage.ScanScopeCluster, "")
+	savedCount += h.scanVolumes(c.Request.Context(), cluster)
 
 	// Persistir índice de chave/valor de Secrets (snapshot do cluster)
 	if err := h.registry.ReplaceSecretDataForCluster(cluster, convertSecretDataEntries(result.SecretDataEntries)); err != nil {
