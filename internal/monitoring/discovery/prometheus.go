@@ -24,6 +24,13 @@ type PrometheusEndpoint struct {
 // DiscoverEndpoint descobre e valida o endpoint Prometheus para um cluster
 func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 	name, env := parseClusterName(cluster)
+	if gcURL, handled, err := resolveGrafanaCloud(cluster); handled {
+		if err != nil {
+			return &PrometheusEndpoint{Cluster: cluster, Name: name, Environment: env, Available: false},
+				fmt.Errorf("Grafana Cloud: %w", err)
+		}
+		return validateResolved(cluster, name, env, gcURL, false)
+	}
 	url, requiresGCPAuth, portForward := resolvePrometheusSource(cluster, name, env)
 
 	if !portForward.isZero() {
@@ -35,6 +42,11 @@ func DiscoverEndpoint(cluster string) (*PrometheusEndpoint, error) {
 		url = localURL
 	}
 
+	return validateResolved(cluster, name, env, url, requiresGCPAuth)
+}
+
+// validateResolved monta o endpoint e confirma que responde (com cache negativo).
+func validateResolved(cluster, name, env, url string, requiresGCPAuth bool) (*PrometheusEndpoint, error) {
 	endpoint := &PrometheusEndpoint{
 		Cluster:         cluster,
 		Name:            name,
@@ -191,6 +203,13 @@ func validateEndpoint(endpoint *PrometheusEndpoint) error {
 // túnel antes de retornar — deixa de ser uma operação sem custo de rede nesse caso específico
 // (nenhuma instalação sem esse override é afetada). Retorna "" se o túnel falhar.
 func GetPrometheusURL(cluster string) string {
+	if gcURL, handled, err := resolveGrafanaCloud(cluster); handled {
+		if err != nil {
+			log.Warn().Err(err).Str("cluster", cluster).Msg("Grafana Cloud indisponível para o cluster")
+			return ""
+		}
+		return gcURL
+	}
 	name, env := parseClusterName(cluster)
 	url, _, portForward := resolvePrometheusSource(cluster, name, env)
 	if !portForward.isZero() {

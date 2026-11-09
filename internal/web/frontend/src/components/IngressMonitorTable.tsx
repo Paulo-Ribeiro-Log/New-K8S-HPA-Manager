@@ -210,18 +210,22 @@ export const IngressMonitorTable = ({
     if (bulkProcessing || selectedObjects.length === 0) return;
     setBulkProcessing(true);
     let succeeded = 0, failed = 0;
+    const errors: string[] = [];
     try {
       await Promise.all(
         selectedObjects.map(async (i) => {
           try {
-            await apiClient.delete(`/api/v1/ingresses/${i.cluster}/${i.namespace}/${i.name}`);
+            await apiClient.delete(`/ingresses/${encodeURIComponent(i.cluster)}/${encodeURIComponent(i.namespace)}/${encodeURIComponent(i.name)}`);
             succeeded++;
-          } catch { failed++; }
+          } catch (err) {
+            failed++;
+            if (err instanceof Error) errors.push(`${i.name}: ${err.message}`);
+          }
         })
       );
       if (succeeded > 0 && failed === 0) toast.success(`${succeeded} Ingress(es) deletado(s) com sucesso.`);
-      else if (succeeded > 0) toast.warning(`${succeeded} sucesso(s), ${failed} falha(s).`);
-      else toast.error("Falha na operação em lote.");
+      else if (succeeded > 0) toast.warning(`${succeeded} sucesso(s), ${failed} falha(s).`, { description: errors.join("\n") });
+      else toast.error("Falha ao deletar.", { description: errors[0] ?? "Erro desconhecido" });
     } catch (err) {
       toast.error("Erro na operação em lote", { description: err instanceof Error ? err.message : "Erro desconhecido" });
     } finally {
