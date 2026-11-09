@@ -66,6 +66,15 @@ func TestCollectAzureDetailsFileShare(t *testing.T) {
 	if len(d.Warnings) != 0 {
 		t.Fatalf("avisos: %v", d.Warnings)
 	}
+	var filesNA bool
+	for _, sec := range d.Sections {
+		if sec.Title == "Ciclo de vida (regras)" && strings.Contains(sec.Fields[0].Value, "Azure Files") {
+			filesNA = true
+		}
+	}
+	if !filesNA {
+		t.Errorf("Azure Files deveria dizer que não tem ciclo de vida: %+v", d.Sections)
+	}
 	var kind, tier bool
 	for _, s := range d.Sections {
 		for _, f := range s.Fields {
@@ -156,8 +165,12 @@ func TestCollectAzureDetailsDisk(t *testing.T) {
 	defer fakeAz(t, map[string]string{"/disks/pvc-1": `{"sku":{"name":"Premium_LRS"},"location":"brazilsouth","zones":["1"],"properties":{"diskSizeGB":128,"diskState":"Unattached","tier":"P10"}}`})()
 	id := "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/rg/providers/Microsoft.Compute/disks/pvc-1"
 	d := collectAzureDetails(context.Background(), azTarget{kind: "disk", diskID: id})
-	if len(d.Sections) != 1 || !strings.Contains(strings.Join(d.Notes, "|"), "Unattached") {
+	if len(d.Sections) != 2 || !strings.Contains(strings.Join(d.Notes, "|"), "Unattached") {
 		t.Fatalf("%+v", d)
+	}
+	// disco não tem ciclo de vida: a tela diz isso em vez de ficar muda
+	if lc := d.Sections[1]; lc.Title != "Ciclo de vida (regras)" || !strings.HasPrefix(lc.Fields[0].Value, "não") || !strings.Contains(lc.Fields[0].Value, "disco gerenciado") {
+		t.Errorf("seção de ciclo de vida do disco: %+v", lc)
 	}
 }
 

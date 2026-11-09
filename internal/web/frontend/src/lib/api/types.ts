@@ -3922,7 +3922,8 @@ export interface AzureStorageHit {
 export interface AzureStorageSearchResult {
   query: string;
   deep: boolean;
-  subscriptions: { id: string; name?: string; clusters: string[] }[];
+  all: boolean; // incluiu as subscriptions sem cluster que o az login enxerga
+  subscriptions: { id: string; name?: string; clusters: string[]; accounts_listed: number; disks_listed: number }[];
   results: AzureStorageHit[];
   warnings: string[];
   truncated?: boolean;

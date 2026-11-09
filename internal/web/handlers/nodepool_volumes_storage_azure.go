@@ -372,6 +372,7 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 			return d
 		}
 		diskSections(dk, d)
+		lifecycleNotApplicable("disco gerenciado", d)
 		return d
 	}
 
@@ -457,6 +458,8 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 	}
 	if itemKind == "containers" {
 		lifecycleSection(policy, policyErr, d)
+	} else {
+		lifecycleNotApplicable("Azure Files", d)
 	}
 	switch {
 	case t.share == "":

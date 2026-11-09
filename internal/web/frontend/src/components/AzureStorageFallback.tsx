@@ -55,7 +55,7 @@ function Lifecycle({ hit }: { hit: AzureStorageHit }) {
 
 function HitCard({ hit, cluster }: { hit: AzureStorageHit; cluster?: string }) {
   const where = hit.subscription_name || hit.subscription_id;
-  const owners = hit.clusters.length ? hit.clusters.join(", ") : "—";
+  const owners = hit.clusters?.length ? hit.clusters.join(", ") : "—";
   return (
     <div className="rounded-md border border-border/60 bg-card p-3 space-y-1.5">
       <div className="flex items-center gap-2 flex-wrap">
@@ -66,10 +66,16 @@ function HitCard({ hit, cluster }: { hit: AzureStorageHit; cluster?: string }) {
 
       <div className="flex items-start gap-1.5 text-[11px] text-amber-300">
         <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-        <span>
-          Não pertence {cluster ? <>ao cluster <b>{cluster}</b></> : "a nenhum cluster conhecido"}, mas está na mesma subscription: <b>{where}</b>
-          {!cluster && hit.clusters.length > 0 && <> (usada por {owners})</>}.
-        </span>
+        {!hit.clusters?.length ? (
+          <span>
+            Não pertence a nenhum cluster conhecido: está na subscription <b>{where}</b>, que <b>nenhum cluster usa</b>.
+          </span>
+        ) : (
+          <span>
+            Não pertence {cluster ? <>ao cluster <b>{cluster}</b></> : "a nenhum cluster conhecido"}, mas está na mesma subscription: <b>{where}</b>
+            {!cluster && <> (usada por {owners})</>}.
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
@@ -99,6 +105,7 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
   const q = query.trim();
   const [loading, setLoading] = useState(false);
   const [deepLoading, setDeepLoading] = useState(false);
+  const [allLoading, setAllLoading] = useState(false);
   const [result, setResult] = useState<AzureStorageSearchResult | null>(null);
   const [error, setError] = useState("");
 
@@ -110,17 +117,22 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
 
   if (!VALID_QUERY.test(q)) return null;
 
-  const run = async (deep: boolean) => {
-    (deep ? setDeepLoading : setLoading)(true);
+  // deep/all mantêm o escopo da busca anterior: "também em containers" não esquece o "em todas".
+  const run = async (opts: { deep?: boolean; all?: boolean }) => {
+    const deep = opts.deep ?? result?.deep ?? false;
+    const all = opts.all ?? result?.all ?? false;
+    const setBusy = opts.all ? setAllLoading : opts.deep ? setDeepLoading : setLoading;
+    setBusy(true);
     setError("");
     try {
-      setResult(await apiClient.searchAzureStorage(q, { cluster, deep }));
+      setResult(await apiClient.searchAzureStorage(q, { cluster, deep, all }));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Falha ao buscar na subscription");
     } finally {
-      (deep ? setDeepLoading : setLoading)(false);
+      setBusy(false);
     }
   };
+  const busy = loading || deepLoading || allLoading;
 
   return (
     <div className="mt-3 rounded-md border border-dashed border-border/70 p-3 space-y-2.5 text-xs">
@@ -129,7 +141,7 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
         <span className="text-muted-foreground">
           "<span className="font-mono">{q}</span>" não foi encontrado {cluster ? "neste cluster" : "nos clusters"}. Procurar na subscription (Azure)?
         </span>
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" disabled={loading || deepLoading} onClick={() => run(false)}>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" disabled={busy} onClick={() => run({ deep: false, all: false })}>
           {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
           {loading ? "Buscando…" : "Buscar na subscription"}
         </Button>
@@ -146,7 +158,20 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
             {result.truncated && " Lista truncada: refine o nome."}
           </div>
 
-          {result.warnings.map((w, i) => (
+          <details className="text-[11px] text-muted-foreground">
+            <summary className="cursor-pointer select-none">Subscriptions consultadas e o que o Azure listou</summary>
+            <ul className="mt-1 space-y-0.5">
+              {(result.subscriptions ?? []).map((s) => (
+                <li key={s.id}>
+                  <span className="text-foreground">{s.name || s.id}</span>
+                  {(s.clusters ?? []).length === 0 && <span className="text-sky-300"> (sem cluster)</span>}
+                  : {s.accounts_listed} conta(s) e {s.disks_listed} disco(s) listados
+                </li>
+              ))}
+            </ul>
+          </details>
+
+          {(result.warnings ?? []).map((w, i) => (
             <div key={i} className="flex items-start gap-1.5 text-amber-300"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" /><span>{w}</span></div>
           ))}
 
@@ -154,9 +179,16 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
             <div className="flex items-center gap-2 flex-wrap text-muted-foreground">
               <HardDrive className="w-4 h-4" />
               <span>Nenhuma conta ou disco com esse nome{result.deep ? ", nem container ou file share" : ""}.</span>
+              {!result.all && (
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" disabled={busy} onClick={() => run({ all: true })}
+                  title="Inclui as subscriptions que nenhum cluster usa, mas o az login do servidor enxerga">
+                  {allLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Cloud className="w-3.5 h-3.5" />}
+                  {allLoading ? "Consultando subscriptions…" : "Buscar em todas as subscriptions do az login"}
+                </Button>
+              )}
               {!result.deep && (
-                <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" disabled={deepLoading} onClick={() => run(true)}
-                  title="Lista os containers e file shares das contas da subscription (uma chamada por conta; pode levar um minuto)">
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" disabled={busy} onClick={() => run({ deep: true })}
+                  title="Lista os containers e file shares das contas (uma chamada por conta; pode levar um minuto)">
                   {deepLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                   {deepLoading ? "Varrendo contas…" : "Buscar também em containers e file shares"}
                 </Button>
@@ -166,8 +198,8 @@ export function AzureStorageFallback({ query, cluster }: { query: string; cluste
             <div className="space-y-2">
               {result.results.map((h) => <HitCard key={`${h.subscription_id}/${h.type}/${h.account ?? ""}/${h.name}`} hit={h} cluster={cluster} />)}
               {!result.deep && (
-                <Button size="sm" variant="ghost" className="h-7 text-xs gap-1.5" disabled={deepLoading} onClick={() => run(true)}
-                  title="Lista os containers e file shares das contas da subscription (uma chamada por conta; pode levar um minuto)">
+                <Button size="sm" variant="ghost" className="h-7 text-xs gap-1.5" disabled={busy} onClick={() => run({ deep: true })}
+                  title="Lista os containers e file shares das contas (uma chamada por conta; pode levar um minuto)">
                   {deepLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                   {deepLoading ? "Varrendo contas…" : "Buscar também em containers e file shares"}
                 </Button>

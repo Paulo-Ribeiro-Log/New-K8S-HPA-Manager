@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -163,5 +164,66 @@ func TestRGFromID(t *testing.T) {
 	}
 	if rgFromID("lixo") != "" {
 		t.Error("id inválido deveria dar vazio")
+	}
+}
+
+func TestBuscaContaQuantasContasForamListadas(t *testing.T) {
+	defer fakeARM(t, map[string]string{
+		"Microsoft.Storage/storageAccounts?api-version": `{"value":[` + acctJSON("stoutra", "rg", "StorageV2") + `,` + acctJSON("stdois", "rg", "StorageV2") + `]}`,
+		"Microsoft.Compute/disks":                       `{"value":[{"name":"d1","id":"/subscriptions/x/resourceGroups/r/providers/Microsoft.Compute/disks/d1"}]}`,
+	})()
+	subs := []SubscriptionInfo{{ID: subA, Name: "A"}}
+	res := searchSubscriptions(context.Background(), subs, "naoexiste", false)
+	if len(res.Results) != 0 {
+		t.Fatalf("não deveria achar: %+v", res.Results)
+	}
+	if res.Subscriptions[0].AccountsListed != 2 || res.Subscriptions[0].DisksListed != 1 {
+		t.Errorf("contagens da listagem: %+v", res.Subscriptions[0])
+	}
+}
+
+func TestAddVisibleSubscriptions(t *testing.T) {
+	subB, subC, subD := "bbbbbbbb-0000-0000-0000-000000000002", "cccccccc-0000-0000-0000-000000000003", "dddddddd-0000-0000-0000-000000000004"
+	defer fakeARM(t, map[string]string{"management.azure.com/subscriptions?api-version": fmt.Sprintf(`{"value":[
+		{"subscriptionId":%q,"displayName":"A (já conhecida)","state":"Enabled"},
+		{"subscriptionId":%q,"displayName":"B sem cluster","state":"Enabled"},
+		{"subscriptionId":%q,"displayName":"C desativada","state":"Disabled"},
+		{"subscriptionId":%q,"displayName":"D sem cluster","state":"enabled"}]}`, subA, subB, subC, subD)})()
+	known := []SubscriptionInfo{{ID: subA, Name: "A", Clusters: []string{"c1"}}}
+	out, warns, err := addVisibleSubscriptions(context.Background(), known)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("err=%v avisos=%v", err, warns)
+	}
+	if len(out) != 3 || out[0].ID != subA || out[1].ID != subB || out[2].ID != subD {
+		t.Fatalf("subscriptions: %+v", out)
+	}
+	if len(out[1].Clusters) != 0 || out[1].Name != "B sem cluster" || len(out[0].Clusters) != 1 {
+		t.Errorf("as novas ficam sem clusters e as conhecidas mantêm os seus: %+v", out)
+	}
+	if len(known) != 1 {
+		t.Error("não pode alterar a lista original")
+	}
+}
+
+func TestAddVisibleSubscriptionsFalhaDeListagem(t *testing.T) {
+	defer fakeARM(t, map[string]string{"management.azure.com/subscriptions?api-version": "ERR"})()
+	if _, _, err := addVisibleSubscriptions(context.Background(), nil); err == nil {
+		t.Error("erro do ARM deveria subir")
+	}
+}
+
+func TestRespostaDaBuscaNuncaTemSlicesNulos(t *testing.T) {
+	defer fakeARM(t, map[string]string{
+		"Microsoft.Storage/storageAccounts?api-version": `{"value":[]}`,
+		"Microsoft.Compute/disks":                       `{"value":[]}`,
+	})()
+	res := searchSubscriptions(context.Background(), []SubscriptionInfo{{ID: subA, Clusters: []string{}}}, "nada", false)
+	// mesma montagem do handler quando all=true e não há avisos
+	res.Warnings = append(append([]string{}, []string(nil)...), res.Warnings...)
+	b, _ := json.Marshal(res)
+	for _, bad := range []string{`"warnings":null`, `"results":null`, `"subscriptions":null`, `"clusters":null`} {
+		if strings.Contains(string(b), bad) {
+			t.Errorf("JSON com %s: %s", bad, b)
+		}
 	}
 }

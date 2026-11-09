@@ -161,3 +161,10 @@ func lifecycleSection(policy map[string]any, err error, d *AzStorageDetails) {
 	}
 	d.Sections = append(d.Sections, section("Ciclo de vida (regras)", fields...))
 }
+
+// lifecycleNotApplicable explica, no detalhe do storage, por que não há ciclo de vida: a política
+// existe só em contas de blob. Sem essa linha a tela ficava muda e parecia que a leitura falhou.
+func lifecycleNotApplicable(what string, d *AzStorageDetails) {
+	d.Sections = append(d.Sections, section("Ciclo de vida (regras)",
+		AzField{Label: "Aplicável", Value: "não — " + what + " não tem política de ciclo de vida (ela existe só em contas de blob, para mover blobs de camada ou expirá-los)"}))
+}

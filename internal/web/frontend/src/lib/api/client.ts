@@ -5467,11 +5467,13 @@ class APIClient {
 
   // Busca por nome de storage (conta, disco, container, file share) na(s) subscription(s) dos clusters.
   // Sem `cluster`, consulta as subscriptions de todos os clusters configurados. `deep` varre também os
-  // containers e file shares das contas (mais lento).
-  async searchAzureStorage(q: string, opts?: { cluster?: string; deep?: boolean }): Promise<AzureStorageSearchResult> {
+  // containers e file shares das contas (mais lento). `all` inclui as subscriptions que nenhum cluster usa
+  // mas o az login do servidor enxerga.
+  async searchAzureStorage(q: string, opts?: { cluster?: string; deep?: boolean; all?: boolean }): Promise<AzureStorageSearchResult> {
     const p = new URLSearchParams({ q });
     if (opts?.cluster) p.set("cluster", opts.cluster);
     if (opts?.deep) p.set("deep", "true");
+    if (opts?.all) p.set("all", "true");
     const res = await this.request<{ success: boolean; data: AzureStorageSearchResult }>(`/azure/storage-search?${p.toString()}`);
     return res.data;
   }

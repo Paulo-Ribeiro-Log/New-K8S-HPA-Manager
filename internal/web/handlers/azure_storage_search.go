@@ -39,7 +39,12 @@ var reStorageQuery = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$`)
 type SubscriptionInfo struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name,omitempty"`
-	Clusters []string `json:"clusters"`
+	Clusters []string `json:"clusters"` // vazio = subscription que nenhum cluster usa
+
+	// O que a listagem do ARM devolveu (antes de filtrar pelo nome): mostra, numa busca sem
+	// resultado, que a subscription foi lida de fato.
+	AccountsListed int `json:"accounts_listed"`
+	DisksListed    int `json:"disks_listed"`
 }
 
 // LifecycleSummary é a política de ciclo de vida de uma conta encontrada.
@@ -74,6 +79,7 @@ type StorageHit struct {
 type StorageSearchResult struct {
 	Query         string             `json:"query"`
 	Deep          bool               `json:"deep"`
+	All           bool               `json:"all"` // incluiu as subscriptions sem cluster que o az enxerga
 	Subscriptions []SubscriptionInfo `json:"subscriptions"`
 	Results       []StorageHit       `json:"results"`
 	Warnings      []string           `json:"warnings"`
@@ -108,8 +114,53 @@ func (h *AzureStorageSearchHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"success": false, "error": gin.H{"code": "NO_SUBSCRIPTION", "message": err.Error()}})
 		return
 	}
+	all := c.Query("all") == "true"
+	var warns []string
+	if all {
+		var err error
+		if subs, warns, err = addVisibleSubscriptions(ctx, subs); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": gin.H{"code": "AZURE_ERROR", "message": "Não consegui listar as subscriptions do az login: " + err.Error()}})
+			return
+		}
+	}
 	res := searchSubscriptions(ctx, subs, q, c.Query("deep") == "true")
+	res.All = all
+	res.Warnings = append(append([]string{}, warns...), res.Warnings...) // nunca null no JSON: a tela faz .map
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": res})
+}
+
+// storageSearchMaxSubs limita quantas subscriptions sem cluster entram na busca "em todas".
+const storageSearchMaxSubs = 40
+
+// addVisibleSubscriptions acrescenta, às subscriptions dos clusters, as demais que o `az login` do
+// servidor enxerga (GET /subscriptions, só as ativas). Elas ficam sem clusters: é exatamente o caso
+// de um storage que mora numa subscription que nenhum cluster usa.
+func addVisibleSubscriptions(ctx context.Context, known []SubscriptionInfo) ([]SubscriptionInfo, []string, error) {
+	list, _, err := armList(ctx, armBase+"/subscriptions?api-version=2022-12-01")
+	if err != nil {
+		return known, nil, err
+	}
+	have := map[string]bool{}
+	for _, k := range known {
+		have[strings.ToLower(k.ID)] = true
+	}
+	out := append([]SubscriptionInfo{}, known...)
+	var warns []string
+	added := 0
+	for _, it := range list {
+		id := digStr(it, "subscriptionId")
+		if id == "" || have[strings.ToLower(id)] || !strings.EqualFold(digStr(it, "state"), "Enabled") {
+			continue
+		}
+		if added >= storageSearchMaxSubs {
+			warns = append(warns, fmt.Sprintf("Mais de %d subscriptions sem cluster: só as %d primeiras foram consultadas.", storageSearchMaxSubs, storageSearchMaxSubs))
+			break
+		}
+		out = append(out, SubscriptionInfo{ID: id, Name: digStr(it, "displayName"), Clusters: []string{}})
+		have[strings.ToLower(id)] = true
+		added++
+	}
+	return out, warns, nil
 }
 
 // resolveSubscriptions descobre as subscriptions (id, nome e clusters) pelo clusters-config.json.
@@ -165,9 +216,9 @@ func searchSubscriptions(ctx context.Context, subs []SubscriptionInfo, q string,
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, storageSearchSubsPar)
-	for _, s := range subs {
+	for i := range subs {
 		wg.Add(1)
-		go func(s SubscriptionInfo) {
+		go func(s *SubscriptionInfo) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -177,7 +228,7 @@ func searchSubscriptions(ctx context.Context, subs []SubscriptionInfo, q string,
 			res.Warnings = append(res.Warnings, warns...)
 			res.Truncated = res.Truncated || trunc
 			mu.Unlock()
-		}(s)
+		}(&subs[i])
 	}
 	wg.Wait()
 	sort.SliceStable(res.Results, func(i, j int) bool {
@@ -202,7 +253,7 @@ func storageTypeOrder(t string) int {
 	return 3
 }
 
-func searchOneSubscription(ctx context.Context, s SubscriptionInfo, q string, deep bool) (hits []StorageHit, warns []string, truncated bool) {
+func searchOneSubscription(ctx context.Context, s *SubscriptionInfo, q string, deep bool) (hits []StorageHit, warns []string, truncated bool) {
 	label := s.Name
 	if label == "" {
 		label = s.ID
@@ -225,6 +276,7 @@ func searchOneSubscription(ctx context.Context, s SubscriptionInfo, q string, de
 	}()
 	wg.Wait()
 	truncated = tr1 || tr2
+	s.AccountsListed, s.DisksListed = len(accounts), len(disks) // cada goroutine escreve só na sua subscription
 	if accErr != nil {
 		warns = append(warns, fmt.Sprintf("%s: contas de armazenamento — %v", label, accErr))
 	}
@@ -273,7 +325,7 @@ func searchOneSubscription(ctx context.Context, s SubscriptionInfo, q string, de
 	}
 
 	if deep {
-		h, w := deepSearchContainers(ctx, s, accounts, needle)
+		h, w := deepSearchContainers(ctx, *s, accounts, needle)
 		hits = append(hits, h...)
 		warns = append(warns, w...)
 	}
