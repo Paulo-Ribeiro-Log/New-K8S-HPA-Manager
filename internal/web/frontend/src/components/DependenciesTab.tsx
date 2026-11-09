@@ -1025,7 +1025,7 @@ export const DependenciesTab = () => {
                                 {statsData.scan_issues.length}
                               </span>
                             </TooltipTrigger>
-                            <TooltipContent className="max-w-sm space-y-1.5 text-xs">
+                            <TooltipContent className="max-w-sm max-h-72 overflow-y-auto space-y-1.5 text-xs">
                               <p className="font-medium">O último scan não atualizou todos os dados</p>
                               {statsData.scan_issues.map((i) => (
                                 <p key={`${i.cluster}/${i.scope}`}>
