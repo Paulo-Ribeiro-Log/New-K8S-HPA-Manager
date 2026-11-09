@@ -25,7 +25,8 @@ func (h *NodePoolHandler) VolumeDependencies(ctx context.Context, cluster string
 // volumeDependencyRecords converte volumes em registros de dependência. O nome do serviço segue o
 // que o scanner de texto grava (<conta>.blob.core.windows.net), para a busca por conta juntar
 // quem a referencia por configuração e quem a monta por volume. Uma linha por aplicação que usa o
-// volume; volume sem aplicação vira uma linha sem deployment (referência órfã).
+// volume; volume sem aplicação vira uma linha sem deployment (referência órfã). O nome do PV
+// (pvc-<uuid> nos provisionados dinamicamente) vai em source_key, que a busca também consulta.
 func volumeDependencyRecords(cluster string, items []VolumeItem) []storage.DependencyRecord {
 	var out []storage.DependencyRecord
 	for _, it := range items {
@@ -53,6 +54,13 @@ func volumeDependencyRecords(cluster string, items []VolumeItem) []storage.Depen
 			if i := strings.Index(w, "/"); i >= 0 {
 				dep = w[i+1:]
 			}
+			key := w
+			if it.PV != "" {
+				key = "PV " + it.PV
+				if w != "" {
+					key += " · " + w
+				}
+			}
 			out = append(out, storage.DependencyRecord{
 				ServiceName: host,
 				ServiceType: "storage",
@@ -62,7 +70,7 @@ func volumeDependencyRecords(cluster string, items []VolumeItem) []storage.Depen
 				Deployment:  dep,
 				SourceType:  volumeSourceType,
 				SourceName:  name,
-				SourceKey:   w,
+				SourceKey:   key,
 			})
 		}
 	}
@@ -70,7 +78,7 @@ func volumeDependencyRecords(cluster string, items []VolumeItem) []storage.Depen
 }
 
 // volumeStorageTarget devolve o host e o share/container/caminho do storage externo do volume, ou
-// "" quando o volume não é um storage compartilhável (discos Azure/EBS/GCE).
+// "" quando o volume não tem backend identificável.
 func volumeStorageTarget(it VolumeItem) (host, topic string) {
 	if s := it.Storage; s != nil && s.Account != "" {
 		kind := "file"
@@ -78,6 +86,27 @@ func volumeStorageTarget(it VolumeItem) (host, topic string) {
 			kind = "blob"
 		}
 		return strings.ToLower(s.Account) + "." + kind + ".core.windows.net", s.Share
+	}
+	// Discos (Azure Disk, EBS, GCE PD): o "serviço" é o disco; o tópico diz o tipo.
+	switch {
+	case it.Source == "Azure Disk" || it.Source == "EBS" || it.Source == "GCE PD":
+		id := ""
+		if it.Storage != nil {
+			id = it.Storage.ResourceID
+		}
+		if id == "" {
+			id = it.SourceDetail
+		}
+		if i := strings.LastIndex(id, "/"); i >= 0 {
+			id = id[i+1:]
+		}
+		if id == "" {
+			id = it.PV
+		}
+		if id == "" {
+			return "", ""
+		}
+		return id, it.Source
 	}
 	if strings.HasPrefix(it.Source, "NFS") || strings.HasPrefix(it.Source, "EFS") {
 		h, p, _ := strings.Cut(it.SourceDetail, ":")

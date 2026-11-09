@@ -10,11 +10,12 @@ func TestVolumeDependencyRecords(t *testing.T) {
 			Storage: &StorageInfo{Driver: "blob.csi.azure.com", Account: "stacct", Share: "imgs"}},
 		{Kind: "nfs", Namespace: "b", Source: "NFS (direto no pod)", SourceDetail: "10.0.0.5:/export/x", Workloads: []string{"StatefulSet/db"}},
 		{Kind: "pv", PV: "pv-old", Source: "NFS", SourceDetail: "nas.local:/vol"},
-		{Kind: "pvc", Namespace: "a", PVC: "disco", Source: "Azure Disk", Storage: &StorageInfo{Driver: "disk.csi.azure.com"}},
+		{Kind: "pvc", Namespace: "a", PVC: "disco", PV: "pvc-8c091ac5", Source: "Azure Disk", Workloads: []string{"StatefulSet/kafka"},
+			Storage: &StorageInfo{Driver: "disk.csi.azure.com", ResourceID: "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/disks/kubernetes-dynamic-pvc-8c091ac5"}},
 	}
 	got := volumeDependencyRecords("c1", items)
-	if len(got) != 5 {
-		t.Fatalf("esperava 5 registros (2 workloads + órfão blob + nfs + pv órfão), veio %d: %+v", len(got), got)
+	if len(got) != 6 {
+		t.Fatalf("esperava 6 registros (2 workloads + órfão blob + nfs + pv órfão + disco), veio %d: %+v", len(got), got)
 	}
 	if got[0].ServiceName != "stacct.file.core.windows.net" || got[0].TopicName != "docs" || got[0].Deployment != "api" || got[1].Deployment != "job" {
 		t.Errorf("files: %+v %+v", got[0], got[1])
@@ -27,6 +28,10 @@ func TestVolumeDependencyRecords(t *testing.T) {
 	}
 	if got[4].Namespace != "-" || got[4].ServiceName != "nas.local" || got[4].SourceName != "pv-old" {
 		t.Errorf("pv órfão: %+v", got[4])
+	}
+	if d := got[5]; d.ServiceName != "kubernetes-dynamic-pvc-8c091ac5" || d.TopicName != "Azure Disk" ||
+		d.SourceKey != "PV pvc-8c091ac5 · StatefulSet/kafka" || d.Deployment != "kafka" {
+		t.Errorf("disco: %+v", d)
 	}
 	for _, r := range got {
 		if r.SourceType != "pvc" || r.ServiceType != "storage" || r.Cluster != "c1" {
