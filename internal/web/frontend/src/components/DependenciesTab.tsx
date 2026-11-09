@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Search,
   Loader2,
@@ -52,6 +53,7 @@ import {
   FileType,
   Clock,
   AlertCircle,
+  AlertTriangle,
   Download,
   ChevronDown,
   ChevronRight,
@@ -104,6 +106,8 @@ interface RegistryStats {
   by_type: Record<string, number>;
   secret_data_entries?: number;
   last_scan?: string;
+  // Clusters cujo último scan não atualizou tudo (os dados antigos seguem no registro)
+  scan_issues?: Array<{ cluster: string; scope: "cluster" | "volumes"; message: string; checked_at: string }>;
 }
 
 // Cores por tipo de serviço
@@ -1006,10 +1010,35 @@ export const DependenciesTab = () => {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-sm font-medium">Status do Registry</CardTitle>
-                      <CardDescription className="text-xs">
+                      <CardDescription className="text-xs flex items-center gap-1.5">
                         {statsData?.last_scan
                           ? `Último scan: ${formatRelativeDate(statsData.last_scan)}`
                           : "Nenhum scan realizado ainda"}
+                        {!!statsData?.scan_issues?.length && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex items-center gap-1 text-amber-600"
+                                aria-label="Scan não atualizou todos os dados"
+                              >
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                {statsData.scan_issues.length}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-sm space-y-1.5 text-xs">
+                              <p className="font-medium">O último scan não atualizou todos os dados</p>
+                              {statsData.scan_issues.map((i) => (
+                                <p key={`${i.cluster}/${i.scope}`}>
+                                  <span className="font-medium">{i.cluster}</span>
+                                  {i.scope === "volumes" ? " (volumes)" : ""}: {i.message}
+                                </p>
+                              ))}
+                              <p className="text-muted-foreground">
+                                Os dados desses clusters são do scan anterior. Clique em Atualizar para tentar de novo.
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                       </CardDescription>
                     </div>
                     {autoScanRunning ? (

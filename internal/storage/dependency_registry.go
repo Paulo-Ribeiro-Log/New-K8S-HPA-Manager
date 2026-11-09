@@ -135,6 +135,14 @@ func (r *DependencyRegistry) initSchema() error {
 		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS scan_issues (
+		cluster TEXT NOT NULL,
+		scope TEXT NOT NULL,
+		message TEXT NOT NULL DEFAULT '',
+		checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (cluster, scope)
+	);
+
 	CREATE TABLE IF NOT EXISTS scan_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		cluster TEXT NOT NULL,
@@ -642,6 +650,13 @@ func (r *DependencyRegistry) GetStats() (map[string]interface{}, error) {
 	}
 	stats["secret_data_entries"] = secretDataEntries
 
+	// Clusters cujo último scan não atualizou tudo
+	issues, err := r.GetScanIssues()
+	if err != nil {
+		return nil, err
+	}
+	stats["scan_issues"] = issues
+
 	// Último scan
 	var lastScanStr sql.NullString
 	if err := r.db.QueryRow("SELECT MAX(scanned_at) FROM scan_history").Scan(&lastScanStr); err != nil && err != sql.ErrNoRows {
@@ -707,6 +722,58 @@ func (r *DependencyRegistry) GetScanHistory(limit int) ([]map[string]interface{}
 	}
 
 	return history, nil
+}
+
+// Escopos de ScanIssue.
+const (
+	ScanScopeCluster = "cluster" // o scan do cluster inteiro falhou
+	ScanScopeVolumes = "volumes" // só a coleta de PV/PVC falhou
+)
+
+// ScanIssue é um cluster cujo último scan não atualizou parte dos dados (os dados antigos seguem
+// no registro). Some quando o scan seguinte do mesmo escopo dá certo.
+type ScanIssue struct {
+	Cluster   string `json:"cluster"`
+	Scope     string `json:"scope"`
+	Message   string `json:"message"`
+	CheckedAt string `json:"checked_at"`
+}
+
+// SetScanIssue registra (msg != "") ou limpa (msg == "") o problema do último scan do escopo.
+func (r *DependencyRegistry) SetScanIssue(cluster, scope, msg string) error {
+	if msg == "" {
+		_, err := r.db.Exec(`DELETE FROM scan_issues WHERE cluster = ? AND scope = ?`, cluster, scope)
+		return err
+	}
+	_, err := r.db.Exec(`INSERT INTO scan_issues (cluster, scope, message, checked_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(cluster, scope) DO UPDATE SET message = excluded.message, checked_at = CURRENT_TIMESTAMP`,
+		cluster, scope, msg)
+	return err
+}
+
+// GetScanIssues lista os problemas abertos, mais recentes primeiro.
+func (r *DependencyRegistry) GetScanIssues() ([]ScanIssue, error) {
+	rows, err := r.db.Query(`SELECT cluster, scope, message, checked_at FROM scan_issues ORDER BY checked_at DESC, cluster`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ScanIssue{}
+	for rows.Next() {
+		var i ScanIssue
+		if err := rows.Scan(&i.Cluster, &i.Scope, &i.Message, &i.CheckedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+// DeleteBySourceType apaga as dependências de um cluster vindas de um tipo de fonte (retrato:
+// o próximo scan regrava só o que ainda existe, sem deixar volumes removidos para trás).
+func (r *DependencyRegistry) DeleteBySourceType(cluster, sourceType string) error {
+	_, err := r.db.Exec(`DELETE FROM dependencies WHERE cluster = ? AND source_type = ?`, cluster, sourceType)
+	return err
 }
 
 // CleanOldRecords remove dependências não vistas há mais de X dias

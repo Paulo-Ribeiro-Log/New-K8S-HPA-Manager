@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dependencies — storage montado por volume (Novembro 2026)
+
+O scan de Dependencies passa a registrar o storage externo montado por PV/PVC (`handlers/nodepool_volumes_dependencies.go`, `DependenciesHandler.SetVolumeSource`): Azure Files e Blob (CSI) como `<conta>.file|blob.core.windows.net` (share/container em `topic_name`) e NFS/EFS pelo host. `source_type = "pvc"`, uma linha por aplicação (volume sem dono = sem deployment). Retrato por cluster (`DependencyRegistry.DeleteBySourceType` antes de regravar). Discos gerenciados ficam de fora. Reaproveita `collectVolumes` sem uso nem custo. Scan que não atualiza (cluster inacessível ou PVs ilegíveis) grava `scan_issues` por cluster/escopo (`SetScanIssue`, limpo no scan seguinte que funciona); `GET /dependencies/stats` devolve `scan_issues` e o card Status do Registry mostra um triângulo de atenção com tooltip.
+
 ### Node Pools — modal Volumes (PV/PVC/NFS) (Novembro 2026)
 
 Botão **Volumes** no painel direito da aba Node Pools/Groups (`GET /nodepools/volumes`, `handlers/nodepool_volumes*.go`, `NodePoolVolumesModal.tsx`).
