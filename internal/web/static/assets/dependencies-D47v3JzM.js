@@ -22,6 +22,16 @@ O scan também registra o **storage montado por volume**: Azure Files, Blob (CSI
    - **Busca em Secrets e ConfigMaps:** procure por **chave** ou por **valor** no índice de conteúdo (veja o aviso abaixo).
 3. **Exportar** gera o relatório em **PDF**, **Markdown** ou **CSV** (o CSV usa \`;\` como separador, para abrir direto no Excel em pt-BR).
 
+## Abrir o recurso a partir da lista
+
+Na coluna **Fonte** (no registro e na busca reversa) cada linha é um **link**: ao clicar, a ferramenta **troca para o cluster da dependência**, escolhe o **namespace** e abre o recurso já **filtrado pelo nome**:
+
+- \`configmap: <nome>\` abre a aba **ConfigMaps**; \`secret: <nome>\` abre a aba **Secrets**;
+- \`env: …\` (variável de ambiente de um deployment) abre a aba **Deployments**;
+- \`pvc: <nome>\` (storage montado por volume) abre o modal **Volumes** do cluster, filtrado pelo nome do PVC ou PV.
+
+Quando a linha também traz o **deployment**, ele aparece logo abaixo como um segundo link (\`deployment: <nome>\`). Se a troca de cluster falhar (VPN, por exemplo), a ferramenta avisa e **não** abre o recurso de outro cluster.
+
 ## Busca em Secrets e ConfigMaps (índice de conteúdo)
 
 Este modo é diferente do registro de dependências: ele **guarda o conteúdo** de Secrets e ConfigMaps, ou seja, **chave e valor** (decodificado e em base64), para você poder buscar. Os resultados mostram o valor **escondido** e você escolhe **revelar** (e ver em texto ou em base64) e **copiar**. Valores muito grandes são **truncados** (então um termo que só aparece depois do corte não é achado). O índice é um **retrato por cluster**: cada novo scan substitui o anterior. Depois de um **Resync AKV** (na aba Secrets), o botão de resync no resultado relê só aquele recurso.
