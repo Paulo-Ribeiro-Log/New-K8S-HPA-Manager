@@ -195,6 +195,9 @@ export interface FinOpsReport {
   summary: FinOpsSummary;
   pvcs?: PVCCostItem[];
   storage?: StorageSummary;
+  // Dados parciais da coleta (ex.: sem permissão para listar HPAs em alguns namespaces). O
+  // relatório sai mesmo assim.
+  warnings?: string[];
 }
 
 // ─── Tipos: Timeline ──────────────────────────────────────────────────────────

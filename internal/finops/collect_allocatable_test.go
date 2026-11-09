@@ -34,7 +34,7 @@ func TestCollectWorkloads_SomaAllocatablePorPool(t *testing.T) {
 			Status: corev1.PodStatus{Phase: corev1.PodRunning},
 		},
 	)
-	raw, _, _, alloc, err := collectWorkloads(context.Background(), client, nil)
+	raw, _, _, alloc, _, err := collectWorkloads(context.Background(), client, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
