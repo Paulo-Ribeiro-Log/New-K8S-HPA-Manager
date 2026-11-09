@@ -36,7 +36,7 @@ const teamsMessageFetchTimeout = 90 * time.Second
 // o "composetime" do cliente que gerou o link e o "arrival time" exibido pelo Teams de quem lê.
 const teamsMessageMatchToleranceMs = 5000
 
-var teamsMessageLinkRe = regexp.MustCompile(`teams\.microsoft\.com/l/message/([^/?]+)/(\d+)`)
+var teamsMessageLinkRe = regexp.MustCompile(`teams\.(?:microsoft\.com|cloud\.microsoft)/l/message/([^/?]+)/(\d+)`)
 
 // FetchedMessage é o resultado de FetchMessageByLink.
 type FetchedMessage struct {
@@ -107,13 +107,16 @@ type ImgCandidateDebug struct {
 // versão web" da página intermediária (mantido como rede de segurança abaixo mesmo assim, ver
 // dismissAppLauncherPrompt, caso a página apareça por algum outro motivo).
 func toTeamsHashRoute(link string) string {
-	const marker = "teams.microsoft.com/l/"
-	idx := strings.Index(link, marker)
-	if idx == -1 {
-		return link
+	// O Teams migrou de teams.microsoft.com para teams.cloud.microsoft: links copiados hoje podem
+	// vir de qualquer um dos dois.
+	for _, host := range []string{"teams.microsoft.com", "teams.cloud.microsoft"} {
+		marker := host + "/l/"
+		if idx := strings.Index(link, marker); idx != -1 {
+			prefixEnd := idx + len(host) + 1
+			return link[:prefixEnd] + "_#/" + link[prefixEnd:]
+		}
 	}
-	prefixEnd := idx + len("teams.microsoft.com/")
-	return link[:prefixEnd] + "_#/" + link[prefixEnd:]
+	return link
 }
 
 // ParseTeamsMessageLink extrai threadID e messageID de um link "Copiar link" de mensagem do
@@ -240,7 +243,7 @@ func fetchMessageAttempt(browser *rod.Browser, sessionDir, threadID, messageID s
 				continue
 			}
 			u := info.URL
-			if strings.Contains(u, "teams.microsoft.com") &&
+			if isTeamsURL(u) &&
 				!strings.Contains(u, "/error") &&
 				!strings.Contains(u, "login.microsoftonline") &&
 				u != "about:blank" {

@@ -60,7 +60,7 @@ func ScanConversations(sessionDir, outputPath string, logger *zerolog.Logger) ([
 				continue
 			}
 			u := info.URL
-			if strings.Contains(u, "teams.microsoft.com") &&
+			if isTeamsURL(u) &&
 				!strings.Contains(u, "/error") &&
 				!strings.Contains(u, "login.microsoftonline") &&
 				u != "about:blank" {

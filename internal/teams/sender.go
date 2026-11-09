@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 	"github.com/ysmood/gson"
+
+	"k8s-hpa-manager/internal/browser"
 )
 
 // SendResult representa o resultado do envio para um destinatário.
@@ -59,6 +62,73 @@ const teamsAuthExtractJS = `
 		let bearerToken = '';
 		let userMRI     = '';
 		let displayName = '';
+		// O cache MSAL guarda VÁRIOS access tokens (escopos/audiências diferentes, alguns já
+		// vencidos). Pegar "o último que casa" mandava, às vezes, um token vencido/errado e o
+		// Teams respondia 401 "Authentication failed" (errorCode 911) para todos os destinatários.
+		// Por isso coletamos todos, ordenamos (válido > vencido, escopo ic3.teams primeiro, mais
+		// novo primeiro) e fetchWithAuth tenta os demais quando o escolhido leva 401.
+		const tokenCandidates = [];
+		const nowSec = Date.now() / 1000;
+		const jwtExp = (t) => {
+			try {
+				const pl = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+				return Number(pl.exp) || 0;
+			} catch { return 0; }
+		};
+		const jwtAud = (t) => {
+			try {
+				const pl = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+				return String(pl.aud || '');
+			} catch { return ''; }
+		};
+		let currentKey = '';
+		const addCandidate = (token, pref) => {
+			if (!token || token.length <= 50 || tokenCandidates.some(c => c.token === token)) return;
+			tokenCandidates.push({ token, pref, exp: jwtExp(token), aud: jwtAud(token), key: currentKey.slice(0, 140) });
+		};
+		// Diagnóstico SEM segredo: só nomes de chave, formato do valor (nomes dos campos), audiência e
+		// validade. Serve para ver se o cache do Teams mudou (ex.: valores criptografados).
+		const authDiag = () => ({
+			candidates: tokenCandidates.map(c => ({ aud: c.aud, expMin: c.exp ? Math.round((c.exp - nowSec) / 60) : null, pref: c.pref, key: c.key })),
+			// Formato do cache "tmp.auth.v1" (caminho -> tipo/tamanho/4 primeiros caracteres; nunca o valor).
+			tmpShapes: (() => {
+				const out = [];
+				for (let i = 0; i < localStorage.length && out.length < 6; i++) {
+					const k = localStorage.key(i) || '';
+					if (!/^tmp\.auth\.v1\..*\.token\.https:\/\/(chatsvcagg|ic3|api\.spaces)/i.test(k)) continue;
+					const leaves = [];
+					const walk = (v, path, d) => {
+						if (leaves.length >= 14 || d > 5) return;
+						if (v === null || v === undefined) { leaves.push(path + ':null'); return; }
+						if (typeof v === 'string') {
+							if (v[0] === '{' || v[0] === '[') { try { walk(JSON.parse(v), path + '(json)', d + 1); return; } catch {} }
+							leaves.push(path + ':str[' + v.length + ']' + v.slice(0, 4));
+						} else if (typeof v === 'number' || typeof v === 'boolean') {
+							leaves.push(path + ':' + v);
+						} else if (typeof v === 'object') {
+							for (const kk in v) walk(v[kk], path + '.' + kk, d + 1);
+						}
+					};
+					try { walk(JSON.parse(localStorage.getItem(k) || ''), '', 0); } catch { leaves.push('não-JSON'); }
+					out.push({ key: k.slice(-48), leaves });
+				}
+				return out;
+			})(),
+			msalKeys: (() => {
+				const out = [];
+				for (let i = 0; i < localStorage.length && out.length < 40; i++) {
+					const k = localStorage.key(i) || '';
+					if (!/msal|accesstoken|idtoken|token/i.test(k)) continue;
+					let shape = '?';
+					try {
+						const o = JSON.parse(localStorage.getItem(k) || '');
+						shape = (o && typeof o === 'object') ? Object.keys(o).slice(0, 8).join(',') : typeof o;
+					} catch { shape = 'não-JSON'; }
+					out.push({ key: k.slice(0, 140), shape });
+				}
+				return out;
+			})(),
+		});
 
 		for (let i = 0; i < localStorage.length; i++) {
 			const key = localStorage.key(i);
@@ -66,6 +136,27 @@ const teamsAuthExtractJS = `
 			const val = localStorage.getItem(key);
 			if (!val) continue;
 
+			currentKey = key;
+			// Cache próprio do Teams (substituiu o MSAL para os tokens vigentes): chaves
+			// "tmp.auth.v1.<id>.Token.<RECURSO>" com { item, shouldRefresh, hitCount }. O token do
+			// chatsvcagg é o do endpoint de chat; o do MSAL ficou só como resíduo (vencido há semanas).
+			if (/^tmp\.auth\.v1\..*\.token\./i.test(key)) {
+				try {
+					const found = [];
+					const walk = (v, d) => {
+						if (v == null || d > 4) return;
+						if (typeof v === 'string') {
+							if (v.startsWith('eyJ') && v.length > 100) found.push(v);
+							else if (v[0] === '{') { try { walk(JSON.parse(v), d + 1); } catch {} }
+						} else if (typeof v === 'object') {
+							for (const k in v) walk(v[k], d + 1);
+						}
+					};
+					walk(JSON.parse(val), 0);
+					const up = key.toUpperCase();
+					for (const t of found) addCandidate(t, up.includes('CHATSVCAGG') ? 3 : (up.includes('IC3') ? 2 : 0));
+				} catch {}
+			}
 			if (key.toLowerCase().includes('accesstoken') &&
 				(key.toLowerCase().includes('ic3.teams') ||
 				 key.toLowerCase().includes('teams.officeclient') ||
@@ -73,7 +164,7 @@ const teamsAuthExtractJS = `
 				try {
 					const obj = JSON.parse(val);
 					const token = obj.secret || obj.access_token || obj.token || '';
-					if (token && token.length > 50) bearerToken = token;
+					addCandidate(token, key.toLowerCase().includes('ic3.teams') ? 1 : 0);
 				} catch {}
 			}
 			if (!userMRI && key.toLowerCase().includes('account')) {
@@ -89,7 +180,7 @@ const teamsAuthExtractJS = `
 		}
 
 		// Fallback: qualquer chave com token Bearer longo
-		if (!bearerToken) {
+		if (tokenCandidates.length === 0) {
 			for (let i = 0; i < localStorage.length; i++) {
 				const key = localStorage.key(i);
 				if (!key) continue;
@@ -99,17 +190,22 @@ const teamsAuthExtractJS = `
 					const obj = JSON.parse(val);
 					for (const c of [obj.secret, obj.access_token, obj.token]) {
 						if (typeof c === 'string' && c.length > 100 && c.startsWith('eyJ')) {
-							bearerToken = c;
-							break;
+							addCandidate(c, 0);
 						}
 					}
 				} catch {}
-				if (bearerToken) break;
 			}
 		}
 
+		tokenCandidates.sort((a, b) => {
+			const va = a.exp === 0 || a.exp > nowSec + 60 ? 1 : 0;
+			const vb = b.exp === 0 || b.exp > nowSec + 60 ? 1 : 0;
+			return (vb - va) || (b.pref - a.pref) || (b.exp - a.exp);
+		});
+		if (tokenCandidates.length) bearerToken = tokenCandidates[0].token;
+
 		if (!bearerToken) {
-			return JSON.stringify({ error: 'Bearer token não encontrado no localStorage' });
+			return JSON.stringify({ error: 'Bearer token não encontrado no localStorage', auth_diag: authDiag() });
 		}
 
 		// ── 2. MRI via JWT se não encontrado ──────────────────────────────────
@@ -129,12 +225,39 @@ const teamsAuthExtractJS = `
 
 		// ── 3. Host base (MCAS ou direto) ────────────────────────────────────
 		const baseURL = location.protocol + '//' + location.host;
+
+		// fetch com o Bearer escolhido; se o Teams responde 401, tenta os outros tokens do cache e
+		// passa a usar o que funcionar (um 401 não processa a requisição, então repetir é seguro).
+		const fetchWithAuth = async (url, init) => {
+			const call = (tok) => fetch(url, { ...init, headers: { ...init.headers, 'authorization': 'Bearer ' + tok } });
+			const resp = await call(bearerToken);
+			if (resp.status !== 401) return resp;
+			for (const c of tokenCandidates) {
+				if (c.token === bearerToken || (c.exp && c.exp < nowSec)) continue; // pula vencidos
+				const r = await call(c.token);
+				if (r.status !== 401) { bearerToken = c.token; return r; }
+			}
+			return resp;
+		};
 `
 
 // SendBatch abre o Teams via go-rod e envia htmlContent para cada threadID em lote.
 // onProgress é chamada após cada envio individual — pode ser nil.
 // Todo o tráfego HTTP passa pela página do Teams (same-origin) para contornar o MCAS.
 func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProgress ProgressFunc, logger *zerolog.Logger) ([]SendResult, error) {
+	return SendBatchNotify(context.Background(), sessionDir, threadIDs, htmlContent, onProgress, nil, logger)
+}
+
+// NoticeFunc recebe avisos para o usuário durante a operação (ex.: "faça login no Teams").
+type NoticeFunc func(msg string)
+
+// ErrCancelled indica que a operação foi cancelada pelo usuário antes de começar a enviar/alterar.
+var ErrCancelled = fmt.Errorf("operação cancelada")
+
+// SendBatchNotify é o SendBatch com um canal de avisos (onNotice pode ser nil) e cancelamento: ao
+// cancelar ctx, os lotes que ainda não começaram não são enviados (as mensagens já enviadas
+// continuam, com o message_id) e os destinatários restantes voltam com Error "cancelado".
+func SendBatchNotify(ctx context.Context, sessionDir string, threadIDs []string, htmlContent string, onProgress ProgressFunc, onNotice NoticeFunc, logger *zerolog.Logger) ([]SendResult, error) {
 	// Serializa contra RunDiscovery/ScanConversations (ver operationMu em browser_manager.go).
 	operationMu.Lock()
 	defer operationMu.Unlock()
@@ -164,7 +287,7 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 				continue
 			}
 			u := info.URL
-			if strings.Contains(u, "teams.microsoft.com") &&
+			if isTeamsURL(u) &&
 				!strings.Contains(u, "/error") &&
 				!strings.Contains(u, "login.microsoftonline") &&
 				u != "about:blank" {
@@ -180,6 +303,7 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		time.Sleep(2 * time.Second)
 	}
 	if !loaded {
+		logger.Warn().Str("abas", pageURLsSummary(browser)).Msg("[Sender] Nenhuma aba do Teams reconhecida antes do timeout")
 		return nil, fmt.Errorf("timeout aguardando Teams carregar")
 	}
 
@@ -192,6 +316,16 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 	logger.Info().Msg("[Sender] Aguardando Teams inicializar e autenticar (máx 4min)...")
 	if !waitForTeamsUIReady(page, sessionDir, logger, "[Sender]") {
 		return nil, fmt.Errorf("teams não terminou de carregar/autenticar a tempo — se uma tela de login apareceu, complete-a e tente novamente")
+	}
+
+	// A barra lateral aparece mesmo com a sessão expirada (o Teams mostra o pedido de login por
+	// cima), e o token do cache vencido gera 401 em todo destinatário. Confirma a autenticação de
+	// verdade e, se preciso, mantém a janela visível esperando o login.
+	if err := ensureTeamsAuth(ctx, page, sessionDir, logger, onNotice); err != nil {
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, ErrCancelled
 	}
 
 	// Daqui em diante os envios são via CDP/JS (preenche e clica o compose box) — sem
@@ -207,8 +341,10 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		if onProgress == nil {
 			return nil, nil
 		}
+		// O JS manda JSON.stringify(result): o gson já entrega isso como string (Unmarshal falha
+		// com "value has been parsed"), então o progresso ao vivo nunca chegava à tela.
 		var r SendResult
-		if err := j.Unmarshal(&r); err != nil {
+		if err := json.Unmarshal([]byte(j.Str()), &r); err != nil {
 			logger.Warn().Err(err).Msg("[Sender] Falha ao parsear progresso")
 			return nil, nil
 		}
@@ -245,6 +381,12 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		const results     = [];
 
 		for (let i = 0; i < threadIDs.length; i += batchSize) {
+			if (window.__bcCancel) {
+				for (let j = i; j < threadIDs.length; j++) {
+					results.push({ thread_id: threadIDs[j], ok: false, status: 0, error: 'cancelado', message_id: '', index: j, total });
+				}
+				break;
+			}
 			const batch = threadIDs.slice(i, i + batchSize);
 			const batchResults = await Promise.all(batch.map(async (threadId, batchIdx) => {
 				const globalIdx = i + batchIdx;
@@ -280,10 +422,9 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 
 				let result;
 				try {
-					const resp = await fetch(url, {
+					const resp = await fetchWithAuth(url, {
 						method: 'POST',
 						headers: {
-							'authorization': 'Bearer ' + bearerToken,
 							'content-type': 'application/json',
 							'behavioroverride': 'redirectAs404',
 							'x-ms-migration': 'True',
@@ -334,11 +475,13 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 			if (i + batchSize < threadIDs.length) await sleep(600);
 		}
 
-		return JSON.stringify({ results, mri: userMRI, display_name: displayName });
+		return JSON.stringify({ results, mri: userMRI, display_name: displayName, auth_diag: { ...authDiag(), usedAud: (tokenCandidates.find(c => c.token === bearerToken) || {}).aud || '' } });
 	}`, string(threadIDsJSON), escapedHTML)
 
 	logger.Info().Int("recipients", len(threadIDs)).Msg("[Sender] Iniciando envio em lote...")
 
+	stopCancel := armCancel(ctx, page, logger)
+	defer stopCancel()
 	res, err := page.Eval(js)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao executar envio JS: %w", err)
@@ -349,11 +492,13 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		Results     []SendResult `json:"results"`
 		MRI         string       `json:"mri"`
 		DisplayName string       `json:"display_name"`
+		AuthDiag    interface{}  `json:"auth_diag"`
 	}
 	if err := json.Unmarshal([]byte(res.Value.String()), &out); err != nil {
 		return nil, fmt.Errorf("erro ao parsear resultado: %w (raw: %.200s)", err, res.Value.String())
 	}
 	if out.Error != "" {
+		logAuthDiag(logger, out.AuthDiag)
 		return nil, fmt.Errorf("erro no JS de envio: %s", out.Error)
 	}
 
@@ -364,6 +509,15 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 		}
 	}
 	logger.Info().Str("mri", out.MRI).Int("sent", ok).Int("failed", len(out.Results)-ok).Msg("[Sender] Envio concluído")
+	for i := range out.Results {
+		if r := &out.Results[i]; !r.OK && r.Status == 401 {
+			r.Error = "Sessão do Teams expirada ou sem permissão (401): abra a janela do Chrome do Teams no servidor, faça login e reenvie. Detalhe: " + r.Error
+		}
+	}
+	logSendFailures(logger, out.Results)
+	if ok < len(out.Results) {
+		logAuthDiag(logger, out.AuthDiag)
+	}
 	return out.Results, nil
 }
 
@@ -375,7 +529,7 @@ func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProg
 // precisa ser o ID REAL atribuído pelo servidor (SendResult.MessageID, capturado do header
 // Location no momento do envio) — o clientmessageid usado só na hora de compor a mensagem nunca
 // serve como identificador pro servidor.
-func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.Logger) ([]DeleteResult, error) {
+func DeleteMessages(ctx context.Context, sessionDir string, targets []DeleteTarget, logger *zerolog.Logger) ([]DeleteResult, error) {
 	// Serializa contra RunDiscovery/ScanConversations/SendBatch (ver operationMu em
 	// browser_manager.go) — mesmo perfil de Chrome, abas paralelas podem invalidar o SkypeToken.
 	operationMu.Lock()
@@ -406,7 +560,7 @@ func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.L
 				continue
 			}
 			u := info.URL
-			if strings.Contains(u, "teams.microsoft.com") &&
+			if isTeamsURL(u) &&
 				!strings.Contains(u, "/error") &&
 				!strings.Contains(u, "login.microsoftonline") &&
 				u != "about:blank" {
@@ -422,12 +576,20 @@ func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.L
 		time.Sleep(2 * time.Second)
 	}
 	if !loaded {
+		logger.Warn().Str("abas", pageURLsSummary(browser)).Msg("[Sender] Nenhuma aba do Teams reconhecida antes do timeout")
 		return nil, fmt.Errorf("timeout aguardando Teams carregar")
 	}
 
 	logger.Info().Msg("[Sender] Aguardando Teams inicializar e autenticar (máx 4min)...")
 	if !waitForTeamsUIReady(page, sessionDir, logger, "[Sender]") {
 		return nil, fmt.Errorf("teams não terminou de carregar/autenticar a tempo — se uma tela de login apareceu, complete-a e tente novamente")
+	}
+
+	if err := ensureTeamsAuth(ctx, page, sessionDir, logger, nil); err != nil {
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, ErrCancelled
 	}
 
 	minimizeWindow(page, logger)
@@ -444,6 +606,12 @@ func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.L
 		const results   = [];
 
 		for (let i = 0; i < targets.length; i += batchSize) {
+			if (window.__bcCancel) {
+				for (const t of targets.slice(i)) {
+					results.push({ thread_id: t.thread_id, message_id: t.message_id, ok: false, status: 0, error: 'cancelado' });
+				}
+				break;
+			}
 			const batch = targets.slice(i, i + batchSize);
 			const batchResults = await Promise.all(batch.map(async (t) => {
 				const encodedThread = encodeURIComponent(t.thread_id);
@@ -452,10 +620,9 @@ func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.L
 
 				let result;
 				try {
-					const resp = await fetch(url, {
+					const resp = await fetchWithAuth(url, {
 						method: 'DELETE',
 						headers: {
-							'authorization': 'Bearer ' + bearerToken,
 							'behavioroverride': 'redirectAs404',
 							'x-ms-migration': 'True',
 						},
@@ -479,6 +646,8 @@ func DeleteMessages(sessionDir string, targets []DeleteTarget, logger *zerolog.L
 
 	logger.Info().Int("targets", len(targets)).Msg("[Sender] Apagando mensagens em lote...")
 
+	stopCancel := armCancel(ctx, page, logger)
+	defer stopCancel()
 	res, err := page.Eval(js)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao executar apagar JS: %w", err)
@@ -513,4 +682,130 @@ func escapeJSString(s string) string {
 	s = strings.ReplaceAll(s, "\n", `\n`)
 	s = strings.ReplaceAll(s, "\r", ``)
 	return s
+}
+
+// logSendFailures registra, agrupado por status HTTP, o motivo das falhas (antes o log só trazia a
+// contagem e o motivo real — ex.: 401 Authentication failed — ficava só na tela).
+func logSendFailures(logger *zerolog.Logger, results []SendResult) {
+	type key struct {
+		status int
+		msg    string
+	}
+	counts := map[key]int{}
+	for _, r := range results {
+		if r.OK {
+			continue
+		}
+		msg := r.Error
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		counts[key{r.Status, msg}]++
+	}
+	for k, n := range counts {
+		logger.Warn().Int("status", k.status).Str("erro", k.msg).Int("destinatarios", n).Msg("[Sender] Falha no envio")
+	}
+}
+
+// logAuthDiag registra o diagnóstico de autenticação do JS (sem nenhum token: nomes de chave,
+// formato do valor, audiência e validade) quando um envio falha.
+func logAuthDiag(logger *zerolog.Logger, diag interface{}) {
+	if diag == nil {
+		return
+	}
+	b, _ := json.Marshal(diag)
+	logger.Warn().RawJSON("auth_diag", b).Msg("[Sender] Diagnóstico de autenticação do Teams (sem tokens)")
+}
+
+// teamsAuthWaitTimeout é o teto de espera pelo login do usuário quando a sessão do Teams expirou.
+const teamsAuthWaitTimeout = 5 * time.Minute
+
+// probeTeamsAuth faz uma chamada autenticada barata ao chatsvc (com todos os tokens do cache, ver
+// fetchWithAuth) e devolve o status HTTP. 401 = sem sessão válida; 0 = nenhum token no cache; -1 =
+// falha de rede/JS (desconhecido: não trava o envio). Qualquer outro status significa que a
+// autenticação foi aceita.
+func probeTeamsAuth(page *rod.Page) int {
+	js := "async () => {\n\t\tconst sleep = ms => new Promise(r => setTimeout(r, ms));\n" +
+		teamsAuthExtractJS + `
+		try {
+			const resp = await fetchWithAuth(baseURL + '/api/chatsvc/amer/v1/users/ME/properties', {
+				method: 'GET',
+				headers: { 'behavioroverride': 'redirectAs404', 'x-ms-migration': 'True' },
+			});
+			return JSON.stringify({ status: resp.status });
+		} catch (e) {
+			return JSON.stringify({ status: -1, error: String(e) });
+		}
+	}`
+	res, err := page.Timeout(30 * time.Second).Eval(js)
+	if err != nil || res == nil {
+		return -1
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Error  string `json:"error"`
+	}
+	if json.Unmarshal([]byte(res.Value.String()), &out) != nil {
+		return -1
+	}
+	if out.Error != "" && out.Status == 0 {
+		return 0 // "Bearer token não encontrado"
+	}
+	return out.Status
+}
+
+// ensureTeamsAuth garante que o Teams aceita a autenticação antes de enviar/apagar. Se a sessão
+// expirou, traz a janela do Chrome para a frente, avisa o usuário (onNotice) e espera o login por
+// até teamsAuthWaitTimeout, tentando também o login SSO automático. Antes, a ferramenta
+// minimizava a janela e seguia em frente: o Teams pedia novo login por cima da barra lateral, e o
+// usuário só via "401 Authentication failed" em todos os destinatários, sem saber o motivo.
+func ensureTeamsAuth(ctx context.Context, page *rod.Page, sessionDir string, logger *zerolog.Logger, onNotice NoticeFunc) error {
+	st := probeTeamsAuth(page)
+	if st != 401 && st != 0 {
+		return nil
+	}
+	msg := "A sessão do Teams expirou: faça login na janela do Chrome do Teams (aberta no servidor). O envio continua sozinho assim que o login for concluído."
+	logger.Warn().Int("status", st).Msg("[Sender] Sessão do Teams sem autenticação válida — aguardando login do usuário")
+	restoreWindow(page, logger)
+	if onNotice != nil {
+		onNotice(msg)
+	}
+	deadline := time.Now().Add(teamsAuthWaitTimeout)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			SetTeamsDockerMFANumber("")
+			return ErrCancelled
+		}
+		browser.AttemptSSOAutoLogin(page, sessionDir, logger)
+		browser.SubmitMCASHiddenForm(page)
+		detectMFANumber(page, logger)
+		time.Sleep(3 * time.Second)
+		if st = probeTeamsAuth(page); st != 401 && st != 0 {
+			logger.Info().Msg("[Sender] Login do Teams concluído — retomando")
+			SetTeamsDockerMFANumber("")
+			return nil
+		}
+	}
+	SetTeamsDockerMFANumber("")
+	return fmt.Errorf("sessão do Teams expirada: o login não foi concluído em %d min — faça login na janela do Chrome do Teams e tente de novo", int(teamsAuthWaitTimeout.Minutes()))
+}
+
+// armCancel zera a bandeira de cancelamento da página e passa a observá-la: quando ctx é cancelado,
+// liga window.__bcCancel, que os JS de envio/edição/exclusão checam antes de cada lote. Devolve a
+// função que encerra o observador (chamar com defer).
+func armCancel(ctx context.Context, page *rod.Page, logger *zerolog.Logger) func() {
+	_, _ = page.Timeout(10 * time.Second).Eval(`() => { window.__bcCancel = false; }`)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if _, err := page.Timeout(10 * time.Second).Eval(`() => { window.__bcCancel = true; }`); err != nil {
+				logger.Warn().Err(err).Msg("[Sender] Falha ao sinalizar o cancelamento na página do Teams")
+			} else {
+				logger.Info().Msg("[Sender] Cancelamento sinalizado: os lotes restantes não serão executados")
+			}
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
 }

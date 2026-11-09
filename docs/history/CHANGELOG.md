@@ -3,6 +3,32 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Teams Broadcast — salvar destinatários junto do arquivo (Novembro 2026)
+
+Os diálogos "Salvar como" e "Arquivos salvos" ganham a opção **Salvar também os destinatários selecionados**. A lista vai no mesmo arquivo, num comentário HTML no topo (`<!--broadcast-recipients` + JSON, `>` escapado); ao abrir, o bloco é removido do texto e a seleção é restaurada. Arquivo salvo com destinatários os mantém no Ctrl+S. Só frontend (`TeamsBroadcastTab.tsx`: `packRecipients`/`unpackRecipients`); o backend continua gravando o texto como veio, e arquivos antigos abrem como antes.
+
+### Teams — domínio novo `teams.cloud.microsoft` (Novembro 2026)
+
+Após algumas ações seguidas, o envio ficava em "Aguardando Teams carregar" até o timeout de 3 min. O Teams migrou de `teams.microsoft.com` para `https://teams.cloud.microsoft/`: a aba aberta no domínio antigo redireciona para o novo e, quando isso acontecia antes da primeira checagem (2 s), nenhuma aba era reconhecida (corrida, por isso intermitente). `isTeamsURL`/`isTeamsV2URL` (`discover.go`) aceitam os dois domínios e passaram a ser usadas em todas as detecções de página (envio, edição, exclusão, scan, mensagem por link); os links `.../l/message/...` e a rota `_#` também. Se a espera estourar, o log traz `[Sender] Nenhuma aba do Teams reconhecida antes do timeout` com host+caminho das abas.
+
+### Teams Broadcast — cancelamento de envio, edição e exclusão (Novembro 2026)
+
+`POST /teams/broadcast/cancel` (`CancelOperations`) cancela as operações em andamento (registradas por `beginOp`). `SendBatchNotify`/`EditMessages`/`DeleteMessages` recebem um `context`: `armCancel` liga `window.__bcCancel` na página do Teams e o JS checa a bandeira antes de cada lote de 10 (a edição valida a 1ª mensagem sozinha antes). O lote em curso termina; o restante volta com `error: "cancelado"` (não conta como falha) e o que já saiu fica no histórico. O cancelamento também interrompe a espera por login (`ensureTeamsAuth`). Resposta de editar/apagar ganha `cancelled`; o evento `complete` do envio também. Frontend: botão Cancelar no envio, na faixa de resultados (editar/apagar) e no modal Envios; contatos cancelados aparecem como ⊘. Não interrompe o carregamento inicial do Chrome/Teams.
+
+### Teams Broadcast — histórico de envios e escolha de quem apagar/editar (Novembro 2026)
+
+- **Por contato:** na lista de resultados do envio, cada contato enviado tem uma caixa de seleção; Apagar/Editar agem só nos marcados.
+- **Histórico persistente:** `storage.TeamsSentStore` (`~/.k8s-hpa-manager/teams_sent.db`, 0600) guarda cada envio com o `message_id` de cada mensagem (lote, data, autor, resumo da primeira linha, nome do contato, estado `sent`/`edited`/`deleted`); o texto completo não é gravado. Retenção de 1 ano. Rotas `GET /teams/broadcast/sent`, `GET /teams/broadcast/sent/:batchId`, `DELETE /teams/broadcast/sent/:batchId` (esquece o lote localmente, não apaga no Teams); apagar/editar atualizam o estado. Frontend: botão **Envios** (`SentHistoryModal`) para apagar/editar contatos escolhidos a qualquer momento, mesmo após outros envios ou reiniciar o servidor. O envio manda `names` (thread_id → nome) para o histórico.
+
+### Teams Broadcast — editar mensagens enviadas e aviso de sessão expirada (Novembro 2026)
+
+- **Editar:** `POST /teams/broadcast/edit` (`handlers/teams_broadcast.go: EditMessages`, `internal/teams/editor.go: EditMessages`) substitui o conteúdo das mensagens já enviadas (PUT em `.../conversations/{thread}/messages/{messageId}`, corpo no formato do envio, mesmo `message_id` usado para apagar; imagens sobem pelo mesmo upload AMS). O formato exato da edição não foi capturado de um cliente real, então a **primeira** mensagem é editada sozinha e, se o Teams recusar, as demais não são tentadas (erro de até 400 caracteres no aviso). Frontend: botão "Editar N com o texto atual" ao lado de Apagar. Change History: `teams_broadcast_edit` (só contagens).
+- **Sessão expirada:** a "UI pronta" (barra lateral) aparece mesmo com o Teams pedindo novo login por cima, e a janela era minimizada: todo envio levava 401 sem explicação. `ensureTeamsAuth` faz uma chamada autenticada de teste após a UI carregar; com 401, traz a janela do Chrome para a frente, avisa na tela (evento SSE `broadcast_notice`, toast) e espera até 5 min pelo login, retomando sozinho. Vale para enviar, editar e apagar.
+
+### Teams Broadcast — envio falhava com 401 (Novembro 2026)
+
+Todos os destinatários falhavam com HTTP 401 `Authentication failed` (errorCode 911). Causa confirmada pelo diagnóstico do log: o JS de `internal/teams/sender.go` só lia o cache **MSAL** do localStorage, e o único token ali (`ic3.teams.office.com`) estava vencido havia ~14 dias. O Teams hoje guarda os tokens vigentes em chaves `tmp.auth.v1.<id>.Token.<RECURSO>` (`item`/`shouldRefresh`/`hitCount`), inclusive `CHATSVCAGG.TEAMS.MICROSOFT.COM`, que nunca eram lidas. Agora `teamsAuthExtractJS` coleta tokens dos dois caches, ordena (válido > vencido, `chatsvcagg` > `ic3` > demais, mais novo primeiro) e `fetchWithAuth` tenta os outros tokens válidos quando recebe 401, passando a usar o que funcionar (envio e exclusão). Também: o progresso ao vivo nunca chegava (`gson: value has been parsed`, agora `json.Unmarshal(j.Str())`); o log registra as falhas por status/erro (`logSendFailures`) e um diagnóstico de autenticação sem segredo (`logAuthDiag`: nomes de chave, formato, audiência e validade).
+
 ### Dependencies — storage montado por volume (Novembro 2026)
 
 O scan de Dependencies passa a registrar o storage externo montado por PV/PVC (`handlers/nodepool_volumes_dependencies.go`, `DependenciesHandler.SetVolumeSource`): Azure Files e Blob (CSI) como `<conta>.file|blob.core.windows.net` (share/container em `topic_name`) e NFS/EFS pelo host. `source_type = "pvc"`, uma linha por aplicação (volume sem dono = sem deployment). Retrato por cluster (`DependencyRegistry.DeleteBySourceType` antes de regravar). Discos (Azure Disk/EBS/GCE PD) entram com o nome do disco como serviço e o tipo em `topic_name`; o nome do PV (`pvc-<uuid>`) vai em `source_key` para a busca. Reaproveita `collectVolumes` sem uso nem custo. Scan que não atualiza (cluster inacessível ou PVs ilegíveis) grava `scan_issues` por cluster/escopo (`SetScanIssue`, limpo no scan seguinte que funciona); `GET /dependencies/stats` devolve `scan_issues` e o card Status do Registry mostra um triângulo de atenção com tooltip.

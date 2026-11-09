@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/teams"
 	"k8s-hpa-manager/internal/web/sse"
 
@@ -66,6 +68,9 @@ type SendBroadcastRequest struct {
 	// frontend). Quando true, `Markdown` é tratado como texto literal (escapado, sem interpretar
 	// `*`/`_`/`` ` ``/etc. como sintaxe) — via plainTextToTeamsHTML, não markdownToTeamsHTML.
 	IsPlainText bool `json:"is_plain_text"`
+	// Names — nome de exibição de cada destinatário (thread_id → nome), só para o histórico de
+	// envios poder mostrar para quem foi cada mensagem. Opcional.
+	Names map[string]string `json:"names"`
 }
 
 type BroadcastTemplate struct {
@@ -92,14 +97,22 @@ type TeamsBroadcastHandler struct {
 	logger         *zerolog.Logger
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
-	scanning       bool
-	scanMu         sync.Mutex
-	sending        bool
-	sendMu         sync.Mutex
-	fetchingMsg    bool
-	fetchMsgMu     sync.Mutex
-	deleting       bool
-	deleteMu       sync.Mutex
+	sentStore      *storage.TeamsSentStore // histórico de envios (message_id) para apagar/editar depois
+
+	// Operações em andamento (enviar/editar/apagar) que o usuário pode cancelar.
+	cancelMu    sync.Mutex
+	cancels     map[int]context.CancelFunc
+	cancelID    int
+	scanning    bool
+	scanMu      sync.Mutex
+	sending     bool
+	sendMu      sync.Mutex
+	fetchingMsg bool
+	fetchMsgMu  sync.Mutex
+	deleting    bool
+	deleteMu    sync.Mutex
+	editing     bool
+	editMu      sync.Mutex
 }
 
 // DeleteMessagesTarget identifica uma mensagem já enviada a apagar — thread_id + o message_id
@@ -112,6 +125,136 @@ type DeleteMessagesTarget struct {
 
 type DeleteMessagesRequest struct {
 	Targets []DeleteMessagesTarget `json:"targets"`
+}
+
+// beginOp registra uma operação cancelável. Devolve o contexto da operação e a função que a
+// finaliza (chamar com defer).
+func (h *TeamsBroadcastHandler) beginOp(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	h.cancelMu.Lock()
+	if h.cancels == nil {
+		h.cancels = map[int]context.CancelFunc{}
+	}
+	h.cancelID++
+	id := h.cancelID
+	h.cancels[id] = cancel
+	h.cancelMu.Unlock()
+	return ctx, func() {
+		h.cancelMu.Lock()
+		delete(h.cancels, id)
+		h.cancelMu.Unlock()
+		cancel()
+	}
+}
+
+// CancelOperations cancela o envio/edição/exclusão em andamento. Os lotes que ainda não
+// começaram não são executados; o que já foi feito no Teams permanece (e fica no histórico).
+// POST /api/v1/teams/broadcast/cancel
+func (h *TeamsBroadcastHandler) CancelOperations(c *gin.Context) {
+	h.cancelMu.Lock()
+	n := len(h.cancels)
+	for _, cancel := range h.cancels {
+		cancel()
+	}
+	h.cancelMu.Unlock()
+	h.logger.Info().Int("operacoes", n).Msg("[Broadcast] Cancelamento solicitado pelo usuário")
+	c.JSON(http.StatusOK, gin.H{"cancelled": n})
+}
+
+// teamsSentRetention é por quanto tempo um envio fica na lista para apagar/editar depois.
+const teamsSentRetention = 365 * 24 * time.Hour
+
+// SetSentStore liga o histórico de envios (opcional: sem ele a ferramenta funciona como antes, só
+// que apagar/editar fica restrito ao envio da tela aberta) e já descarta os envios com mais de um
+// ano.
+func (h *TeamsBroadcastHandler) SetSentStore(st *storage.TeamsSentStore) {
+	h.sentStore = st
+	if st != nil {
+		if n, err := st.PruneOlderThan(time.Now().Add(-teamsSentRetention)); err == nil && n > 0 {
+			h.logger.Info().Int64("lotes", n).Msg("[Broadcast] Envios antigos removidos do histórico")
+		}
+	}
+}
+
+// sentPreview é a primeira linha do texto, sem marcações de Markdown, cortada em 80 caracteres —
+// só para reconhecer o envio na lista (o texto completo não é gravado).
+func sentPreview(markdown string) string {
+	for _, line := range strings.Split(markdown, "\n") {
+		line = strings.NewReplacer("**", "", "__", "", "`", "", "~~", "").Replace(line)
+		line = strings.Trim(strings.TrimSpace(line), "#*_>-~ \t")
+		if line == "" {
+			continue
+		}
+		r := []rune(line)
+		if len(r) > 80 {
+			return string(r[:80]) + "…"
+		}
+		return line
+	}
+	return "(sem texto)"
+}
+
+// markSent atualiza o estado das mensagens no histórico (falha só loga: o Teams já foi alterado).
+func (h *TeamsBroadcastHandler) markSent(state string, refs [][2]string) {
+	if h.sentStore == nil || len(refs) == 0 {
+		return
+	}
+	if err := h.sentStore.MarkState(state, refs); err != nil {
+		h.logger.Warn().Err(err).Msg("[Broadcast] Falha ao atualizar o histórico de envios")
+	}
+}
+
+// ListSent lista os envios guardados (mais recentes primeiro).
+// GET /api/v1/teams/broadcast/sent
+func (h *TeamsBroadcastHandler) ListSent(c *gin.Context) {
+	if h.sentStore == nil {
+		c.JSON(http.StatusOK, gin.H{"batches": []storage.TeamsSentBatch{}})
+		return
+	}
+	batches, err := h.sentStore.ListBatches(200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"batches": batches})
+}
+
+// GetSent devolve as mensagens de um envio.
+// GET /api/v1/teams/broadcast/sent/:batchId
+func (h *TeamsBroadcastHandler) GetSent(c *gin.Context) {
+	if h.sentStore == nil {
+		c.JSON(http.StatusOK, gin.H{"messages": []storage.TeamsSentMessage{}})
+		return
+	}
+	msgs, err := h.sentStore.ListMessages(c.Param("batchId"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": msgs})
+}
+
+// ForgetSent remove um envio da lista local. Não apaga nada no Teams.
+// DELETE /api/v1/teams/broadcast/sent/:batchId
+func (h *TeamsBroadcastHandler) ForgetSent(c *gin.Context) {
+	if h.sentStore == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "histórico de envios indisponível"})
+		return
+	}
+	if err := h.sentStore.DeleteBatch(c.Param("batchId")); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"forgotten": c.Param("batchId")})
+}
+
+// EditMessagesRequest pede para substituir o conteúdo de mensagens já enviadas. O conteúdo novo
+// segue as mesmas regras do envio (Markdown/IsPlainText; HTML legado só se vier preenchido).
+type EditMessagesRequest struct {
+	Targets     []DeleteMessagesTarget `json:"targets"`
+	Markdown    string                 `json:"markdown"`
+	HTML        string                 `json:"html"`
+	IsPlainText bool                   `json:"is_plain_text"`
 }
 
 func NewTeamsBroadcastHandler(logger *zerolog.Logger, ht *history.HistoryTracker) *TeamsBroadcastHandler {
@@ -354,6 +497,98 @@ func (h *TeamsBroadcastHandler) DeleteTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": filename})
 }
 
+// EditMessages substitui o conteúdo de mensagens já enviadas pelo broadcast (mesmos message_id
+// usados para apagar). Síncrono, como DeleteMessages. A primeira mensagem é editada sozinha e, se
+// o Teams recusar, as demais não são tentadas (ver teams.EditMessages).
+// POST /api/v1/teams/broadcast/edit
+func (h *TeamsBroadcastHandler) EditMessages(c *gin.Context) {
+	var req EditMessagesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.Targets) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "targets é obrigatório"})
+		return
+	}
+	for _, t := range req.Targets {
+		if strings.TrimSpace(t.ThreadID) == "" || strings.TrimSpace(t.MessageID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cada target precisa de thread_id e message_id"})
+			return
+		}
+	}
+
+	htmlContent := req.HTML
+	if htmlContent == "" {
+		if strings.TrimSpace(req.Markdown) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "html ou markdown é obrigatório"})
+			return
+		}
+		if req.IsPlainText {
+			htmlContent = plainTextToTeamsHTML(req.Markdown)
+		} else {
+			htmlContent = markdownToTeamsHTML(resolveLocalImagePlaceholders(req.Markdown, h.logger))
+		}
+	}
+
+	h.editMu.Lock()
+	if h.editing {
+		h.editMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "outra edição já está em andamento"})
+		return
+	}
+	h.editing = true
+	h.editMu.Unlock()
+	defer func() {
+		h.editMu.Lock()
+		h.editing = false
+		h.editMu.Unlock()
+	}()
+
+	homeDir, _ := os.UserHomeDir()
+	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+	targets := make([]teams.EditTarget, len(req.Targets))
+	for i, t := range req.Targets {
+		targets[i] = teams.EditTarget{ThreadID: t.ThreadID, MessageID: t.MessageID}
+	}
+
+	h.logger.Info().Int("targets", len(targets)).Int("html_len", len(htmlContent)).Msg("[Broadcast] Editando mensagens...")
+	editStart := time.Now()
+	opCtx, endOp := h.beginOp(c.Request.Context())
+	defer endOp()
+	results, err := teams.EditMessages(opCtx, sessionDir, targets, htmlContent, func(msg string) {
+		h.logger.Warn().Msg("[Broadcast] " + msg)
+	}, h.logger)
+	if err != nil {
+		h.logBroadcast(c, "teams_broadcast_edit", len(targets), 0, editStart, err)
+		if errors.Is(err, teams.ErrCancelled) {
+			c.JSON(http.StatusOK, gin.H{"edited": 0, "failed": 0, "cancelled": len(targets), "results": []teams.EditResult{}})
+			return
+		}
+		h.logger.Error().Err(err).Msg("[Broadcast] Erro ao editar mensagens")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	edited, cancelled := 0, 0
+	for _, r := range results {
+		if r.OK {
+			edited++
+		} else if r.Error == "cancelado" {
+			cancelled++
+		}
+	}
+	var editedRefs [][2]string
+	for _, r := range results {
+		if r.OK {
+			editedRefs = append(editedRefs, [2]string{r.ThreadID, r.MessageID})
+		}
+	}
+	h.markSent(storage.TeamsSentStateEdited, editedRefs)
+	h.logBroadcast(c, "teams_broadcast_edit", len(targets), edited, editStart, nil)
+	c.JSON(http.StatusOK, gin.H{"edited": edited, "failed": len(results) - edited - cancelled, "cancelled": cancelled, "results": results})
+}
+
 // DeleteMessages apaga uma ou mais mensagens já enviadas pelo broadcast (ex: mensagem mal
 // formatada enviada por engano). Síncrono — diferente de Send, o volume aqui é sempre pequeno
 // (os destinatários de UM envio já concluído), não precisa de progresso via SSE.
@@ -399,24 +634,39 @@ func (h *TeamsBroadcastHandler) DeleteMessages(c *gin.Context) {
 	h.logger.Info().Int("targets", len(targets)).Msg("[Broadcast] Apagando mensagens...")
 
 	deleteStart := time.Now()
-	results, err := teams.DeleteMessages(sessionDir, targets, h.logger)
+	opCtx, endOp := h.beginOp(c.Request.Context())
+	defer endOp()
+	results, err := teams.DeleteMessages(opCtx, sessionDir, targets, h.logger)
 	if err != nil {
 		h.logBroadcast(c, "teams_broadcast_delete", len(targets), 0, deleteStart, err)
 	}
 	if err != nil {
+		if errors.Is(err, teams.ErrCancelled) {
+			c.JSON(http.StatusOK, gin.H{"deleted": 0, "failed": 0, "cancelled": len(targets), "results": []teams.DeleteResult{}})
+			return
+		}
 		h.logger.Error().Err(err).Msg("[Broadcast] Erro ao apagar mensagens")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	deleted := 0
+	deleted, cancelled := 0, 0
 	for _, r := range results {
 		if r.OK {
 			deleted++
+		} else if r.Error == "cancelado" {
+			cancelled++
 		}
 	}
+	var deletedRefs [][2]string
+	for _, r := range results {
+		if r.OK {
+			deletedRefs = append(deletedRefs, [2]string{r.ThreadID, r.MessageID})
+		}
+	}
+	h.markSent(storage.TeamsSentStateDeleted, deletedRefs)
 	h.logBroadcast(c, "teams_broadcast_delete", len(targets), deleted, deleteStart, nil)
-	c.JSON(http.StatusOK, gin.H{"deleted": deleted, "failed": len(results) - deleted, "results": results})
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted, "failed": len(results) - deleted - cancelled, "cancelled": cancelled, "results": results})
 }
 
 // FetchMessage carrega o texto de uma mensagem específica do Teams a partir do link de
@@ -629,42 +879,82 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 			})
 		}
 
-		results, err := teams.SendBatch(teamsSessionDir, req.ThreadIDs, htmlContent, onProgress, h.logger)
+		onNotice := func(msg string) {
+			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+				ID:      sessionID,
+				Type:    "broadcast_notice",
+				Phase:   "in_progress",
+				Message: msg,
+			})
+		}
+
+		opCtx, endOp := h.beginOp(context.Background())
+		defer endOp()
+		results, err := teams.SendBatchNotify(opCtx, teamsSessionDir, req.ThreadIDs, htmlContent, onProgress, onNotice, h.logger)
 		if err != nil {
 			h.logBroadcast(userCtx, "teams_broadcast_send", total, sent, sendStart, err)
 			h.logger.Error().Err(err).Msg("[Broadcast] Erro no envio")
+			msg := err.Error()
+			if errors.Is(err, teams.ErrCancelled) {
+				msg = "Envio cancelado antes de começar: nenhuma mensagem foi enviada."
+			}
 			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
 				ID:      sessionID,
 				Type:    "error",
 				Phase:   "failed",
-				Message: err.Error(),
-				Error:   err.Error(),
+				Message: msg,
+				Error:   msg,
 			})
 			return
 		}
 
-		// Calcular totais finais a partir dos resultados completos.
+		// Calcular totais finais a partir dos resultados completos. Cancelados não contam como falha.
 		sent, failed = 0, 0
+		cancelled := 0
 		for _, r := range results {
-			if r.OK {
+			switch {
+			case r.OK:
 				sent++
-			} else {
+			case r.Error == "cancelado":
+				cancelled++
+			default:
 				failed++
 			}
 		}
 
 		h.logBroadcast(userCtx, "teams_broadcast_send", total, sent, sendStart, nil)
 
-		raw, _ := json.Marshal(gin.H{"sent": sent, "failed": failed, "results": results})
+		// Guarda o envio (com o message_id de cada mensagem) para apagar/editar depois.
+		if h.sentStore != nil {
+			var saved []storage.TeamsSentMessage
+			for _, r := range results {
+				if r.OK && r.MessageID != "" {
+					saved = append(saved, storage.TeamsSentMessage{ThreadID: r.ThreadID, DisplayName: req.Names[r.ThreadID], MessageID: r.MessageID})
+				}
+			}
+			batch := storage.TeamsSentBatch{
+				ID: sessionID, SentAt: time.Now(), SentBy: history.UserFromContext(userCtx).Email,
+				Preview: sentPreview(req.Markdown), Total: total, OK: sent,
+			}
+			if err := h.sentStore.SaveBatch(batch, saved); err != nil {
+				h.logger.Warn().Err(err).Msg("[Broadcast] Falha ao guardar o envio no histórico")
+			}
+		}
+
+		raw, _ := json.Marshal(gin.H{"sent": sent, "failed": failed, "cancelled": cancelled, "results": results})
+		doneMsg := "Envio concluído"
+		if cancelled > 0 {
+			doneMsg = "Envio cancelado"
+		}
 		h.tracker.SendToClient(sessionID, sse.ProgressEvent{
 			ID:       sessionID,
 			Type:     "complete",
 			Phase:    "completed",
-			Message:  "Envio concluído",
+			Message:  doneMsg,
 			Progress: 1.0,
 			Details:  string(raw),
 		})
-		h.logger.Info().Int("sent", sent).Int("failed", failed).Msg("[Broadcast] Envio concluído")
+		h.logger.Info().Int("sent", sent).Int("failed", failed).Int("cancelled", cancelled).Msg("[Broadcast] " + doneMsg)
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{"session_id": sessionID, "total": total})

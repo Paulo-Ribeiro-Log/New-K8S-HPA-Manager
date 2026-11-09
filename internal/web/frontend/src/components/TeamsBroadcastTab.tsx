@@ -7,6 +7,7 @@ import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +18,11 @@ import {
   Bold, Italic, Strikethrough, Code, Link2, Image, List,
   ListOrdered, Quote, Minus, Table2, Eye, Code2,
   RefreshCw, X, MessageSquarePlus, ScanSearch, Type, Users, Copy, Check,
-  Save, FolderOpen, Trash2, FileText, FilePlus,
+  Save, FolderOpen, Trash2, FileText, FilePlus, Pencil, History,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import type { BroadcastSentBatch, BroadcastSentMessage } from "@/lib/api/types";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,35 @@ interface BroadcastChat {
   id: string;
   display_name: string;
   source: string;
+}
+
+// ── Destinatários dentro do arquivo salvo ─────────────────────────────────────
+// Ao salvar com a opção "salvar os destinatários", o arquivo ganha no topo um comentário HTML com
+// a lista em JSON (invisível em qualquer visualizador de Markdown). Ao abrir, o bloco é removido
+// do texto e a seleção de destinatários é restaurada. ">" vai escapado (\u003e) para um nome nunca
+// fechar o comentário antes da hora.
+const RECIPIENTS_BLOCK = /^<!--broadcast-recipients\r?\n([\s\S]*?)\r?\n-->\r?\n?/;
+
+function packRecipients(content: string, chats: BroadcastChat[]): string {
+  if (chats.length === 0) return content;
+  const json = JSON.stringify(chats.map((c) => ({ id: c.id, display_name: c.display_name, source: c.source })))
+    .replace(/>/g, "\\u003e");
+  return `<!--broadcast-recipients\n${json}\n-->\n${content}`;
+}
+
+function unpackRecipients(raw: string): { content: string; recipients: BroadcastChat[] | null } {
+  const m = raw.match(RECIPIENTS_BLOCK);
+  if (!m) return { content: raw, recipients: null };
+  try {
+    const arr = JSON.parse(m[1]);
+    if (!Array.isArray(arr)) throw new Error("formato");
+    const recipients = arr
+      .filter((c) => c && typeof c.id === "string" && c.id)
+      .map((c) => ({ id: c.id, display_name: String(c.display_name ?? c.id), source: String(c.source ?? "") }));
+    return { content: raw.slice(m[0].length), recipients };
+  } catch {
+    return { content: raw.slice(m[0].length), recipients: null }; // bloco ilegível: ignora, mantém o texto
+  }
 }
 
 interface SendResult {
@@ -416,18 +447,21 @@ function TemplatesModal({
   open,
   onClose,
   currentContent,
+  selectedChats,
   onLoad,
 }: {
   open: boolean;
   onClose: () => void;
   currentContent: string;
-  onLoad: (content: string, filename: string) => void;
+  selectedChats: BroadcastChat[];
+  onLoad: (content: string, filename: string, recipients: BroadcastChat[] | null) => void;
 }) {
   const [templates, setTemplates] = useState<{ filename: string; updated_at: string; size: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveExt, setSaveExt] = useState<Ext>(".md");
   const [saving, setSaving] = useState(false);
+  const [withRecipients, setWithRecipients] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -444,7 +478,8 @@ function TemplatesModal({
   }, []);
 
   useEffect(() => {
-    if (open) { setSaveName(""); setSaveMsg(null); loadList(); }
+    if (open) { setSaveName(""); setSaveMsg(null); setWithRecipients(selectedChats.length > 0); loadList(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, loadList]);
 
   const handleSave = async () => {
@@ -454,8 +489,9 @@ function TemplatesModal({
     setSaving(true);
     setSaveMsg(null);
     try {
-      await apiClient.saveBroadcastTemplate(filename, currentContent);
-      setSaveMsg({ ok: true, text: `Salvo como "${filename}"` });
+      const withChats = withRecipients && selectedChats.length > 0;
+      await apiClient.saveBroadcastTemplate(filename, withChats ? packRecipients(currentContent, selectedChats) : currentContent);
+      setSaveMsg({ ok: true, text: `Salvo como "${filename}"${withChats ? ` com ${selectedChats.length} destinatário(s)` : ""}` });
       setSaveName("");
       loadList();
     } catch (e: unknown) {
@@ -468,7 +504,8 @@ function TemplatesModal({
   const handleLoad = async (filename: string) => {
     try {
       const data = await apiClient.getBroadcastTemplate(filename);
-      onLoad(data.content, filename);
+      const { content, recipients } = unpackRecipients(data.content);
+      onLoad(content, filename, recipients);
       onClose();
     } catch {
       // silencioso — arquivo pode ter sido removido externamente
@@ -540,6 +577,16 @@ function TemplatesModal({
               Salvar
             </Button>
           </div>
+          <label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+            <Checkbox
+              checked={withRecipients && selectedChats.length > 0}
+              disabled={selectedChats.length === 0}
+              onCheckedChange={(v) => setWithRecipients(v === true)}
+            />
+            {selectedChats.length > 0
+              ? `Salvar também os ${selectedChats.length} destinatário(s) selecionado(s) no arquivo`
+              : "Salvar também os destinatários (nenhum selecionado)"}
+          </label>
           {saveMsg && (
             <p className={`text-[11px] ${saveMsg.ok ? "text-green-400" : "text-destructive"}`}>
               {saveMsg.ok ? "✅" : "❌"} {saveMsg.text}
@@ -615,15 +662,20 @@ function TemplatesModal({
 function SaveAsModal({
   open,
   initialName,
+  selectedCount,
+  defaultWithRecipients,
   onClose,
   onSave,
 }: {
   open: boolean;
   initialName: string;
+  selectedCount: number;
+  defaultWithRecipients: boolean;
   onClose: () => void;
-  onSave: (filename: string) => Promise<void>;
+  onSave: (filename: string, withRecipients: boolean) => Promise<void>;
 }) {
   const [name, setName] = useState(initialName);
+  const [withRecipients, setWithRecipients] = useState(false);
   const [ext, setExt] = useState<Ext>(".md");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -634,9 +686,11 @@ function SaveAsModal({
       // Preenche com o nome atual sem extensão
       const base = initialName.replace(/\.(md|txt)$/, "");
       setName(base || "");
+      setWithRecipients(selectedCount > 0 && defaultWithRecipients);
       setErr(null);
       setTimeout(() => inputRef.current?.select(), 50);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialName]);
 
   const doSave = async () => {
@@ -646,7 +700,7 @@ function SaveAsModal({
     setSaving(true);
     setErr(null);
     try {
-      await onSave(filename);
+      await onSave(filename, withRecipients && selectedCount > 0);
       onClose();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Erro ao salvar");
@@ -681,6 +735,16 @@ function SaveAsModal({
             {EXTENSIONS.map((e) => <option key={e} value={e}>{e}</option>)}
           </select>
         </div>
+        <label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+          <Checkbox
+            checked={withRecipients && selectedCount > 0}
+            disabled={selectedCount === 0}
+            onCheckedChange={(v) => setWithRecipients(v === true)}
+          />
+          {selectedCount > 0
+            ? `Salvar também os ${selectedCount} destinatário(s) selecionado(s) no arquivo`
+            : "Salvar também os destinatários (nenhum selecionado)"}
+        </label>
         {err && <p className="text-[11px] text-destructive">{err}</p>}
         <div className="flex justify-end gap-2 mt-2">
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose}>
@@ -690,6 +754,235 @@ function SaveAsModal({
             {saving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
             Salvar
           </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Modal Histórico de envios ─────────────────────────────────────────────────
+// Lista os envios guardados no servidor (com o message_id de cada mensagem) e permite apagar ou
+// editar mensagens escolhidas, a qualquer momento — mesmo depois de outros envios.
+
+const SENT_STATE_LABEL: Record<string, string> = { sent: "enviada", edited: "editada", deleted: "apagada" };
+
+function SentHistoryModal({
+  open,
+  onClose,
+  content,
+  isPlainText,
+}: {
+  open: boolean;
+  onClose: () => void;
+  content: string;
+  isPlainText: boolean;
+}) {
+  const [batches, setBatches] = useState<BroadcastSentBatch[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const [messages, setMessages] = useState<BroadcastSentMessage[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<"delete" | "edit" | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  const cancelOp = async () => {
+    setCancelling(true);
+    try {
+      await apiClient.cancelBroadcast();
+      toast.info("Cancelamento solicitado: o lote em andamento termina e o restante não é executado.");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao cancelar");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const loadBatches = useCallback(async () => {
+    setLoading(true);
+    try {
+      setBatches((await apiClient.listBroadcastSent()).batches ?? []);
+    } catch {
+      setBatches([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadMessages = useCallback(async (batchId: string) => {
+    try {
+      const msgs = (await apiClient.getBroadcastSent(batchId)).messages ?? [];
+      setMessages(msgs);
+      setPicked(new Set()); // nada marcado por padrão: apagar/editar é sempre uma escolha explícita
+    } catch {
+      setMessages([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) { setOpenBatch(null); setMessages([]); setPicked(new Set()); loadBatches(); }
+  }, [open, loadBatches]);
+
+  const toggleBatch = (id: string) => {
+    if (openBatch === id) { setOpenBatch(null); return; }
+    setOpenBatch(id);
+    loadMessages(id);
+  };
+
+  const actionable = messages.filter((m) => m.state !== "deleted");
+  const pickedMsgs = actionable.filter((m) => picked.has(m.thread_id + "|" + m.message_id));
+  const key = (m: BroadcastSentMessage) => m.thread_id + "|" + m.message_id;
+  const toggle = (m: BroadcastSentMessage) =>
+    setPicked((prev) => { const n = new Set(prev); if (n.has(key(m))) n.delete(key(m)); else n.add(key(m)); return n; });
+
+  const refreshAfterAction = async () => {
+    if (openBatch) await loadMessages(openBatch);
+    await loadBatches();
+  };
+
+  const doDelete = async () => {
+    if (pickedMsgs.length === 0) return;
+    if (!window.confirm(`Apagar ${pickedMsgs.length} mensagem(ns) no Teams? Não dá para desfazer.`)) return;
+    setBusy("delete");
+    try {
+      const res = await apiClient.deleteBroadcastMessages(pickedMsgs.map((m) => ({ thread_id: m.thread_id, message_id: m.message_id })));
+      if (res.cancelled) toast.warning(`Cancelado: ${res.deleted} apagada(s), ${res.cancelled} não executada(s)`);
+      else if (res.failed === 0) toast.success(`${res.deleted} mensagem(ns) apagada(s)`);
+      else toast.warning(`${res.deleted} apagada(s), ${res.failed} falharam`, { description: res.results.find((r) => !r.ok)?.error, duration: 20000 });
+      await refreshAfterAction();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao apagar");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doEdit = async () => {
+    if (pickedMsgs.length === 0 || !content.trim()) return;
+    if (!window.confirm(
+      `Substituir o conteúdo de ${pickedMsgs.length} mensagem(ns) pelo texto atual do editor?\n\n` +
+      "A primeira é editada sozinha para validar; se o Teams recusar, as demais não são tentadas."
+    )) return;
+    setBusy("edit");
+    try {
+      const res = await apiClient.editBroadcastMessages(
+        pickedMsgs.map((m) => ({ thread_id: m.thread_id, message_id: m.message_id })),
+        { markdown: content, is_plain_text: isPlainText },
+      );
+      if (res.cancelled) toast.warning(`Cancelado: ${res.edited} editada(s), ${res.cancelled} não executada(s)`);
+      else if (res.failed === 0) toast.success(`${res.edited} mensagem(ns) editada(s)`);
+      else toast.warning(`${res.edited} editada(s), ${res.failed} falharam`, { description: res.results.find((r) => !r.ok)?.error, duration: 20000 });
+      await refreshAfterAction();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao editar");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const forget = async (b: BroadcastSentBatch) => {
+    if (!window.confirm("Esquecer este envio? Ele sai desta lista, mas as mensagens continuam no Teams (não dá mais para apagá-las/editá-las por aqui).")) return;
+    try {
+      await apiClient.forgetBroadcastSent(b.id);
+      if (openBatch === b.id) { setOpenBatch(null); setMessages([]); }
+      await loadBatches();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao remover da lista");
+    }
+  };
+
+  const fmt = (iso: string) => {
+    try { return new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }); } catch { return iso; }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl w-full flex flex-col" style={{ maxHeight: "85vh" }}>
+        <DialogHeader className="flex-shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <History className="w-4 h-4" />
+            Envios anteriores
+            {loading && <RefreshCw className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-[11px] text-muted-foreground flex-shrink-0">
+          Cada envio guarda o identificador das mensagens: marque os contatos e apague ou edite (com o texto atual do editor) a qualquer momento.
+        </p>
+
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
+          {batches.length === 0 && !loading && (
+            <p className="text-xs text-muted-foreground py-6 text-center">Nenhum envio guardado ainda.</p>
+          )}
+          {batches.map((b) => (
+            <div key={b.id} className="border border-border rounded-md">
+              <div className="flex items-center gap-2 px-3 py-2">
+                <button className="flex-1 min-w-0 text-left" onClick={() => toggleBatch(b.id)}>
+                  <p className="text-xs font-medium truncate">{b.preview || "(sem texto)"}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {fmt(b.sent_at)}{b.sent_by ? ` · ${b.sent_by}` : ""} · {b.active} ativa(s)
+                    {b.edited > 0 ? ` (${b.edited} editada(s))` : ""}
+                    {b.deleted > 0 ? ` · ${b.deleted} apagada(s)` : ""}
+                    {b.ok < b.total ? ` · ${b.total - b.ok} falha(s) no envio` : ""}
+                  </p>
+                </button>
+                <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" title="Esquecer este envio (não apaga no Teams)" onClick={() => forget(b)}>
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+
+              {openBatch === b.id && (
+                <div className="border-t border-border px-3 py-2 flex flex-col gap-2 bg-muted/10">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
+                      onClick={() => setPicked(new Set(actionable.map(key)))} disabled={actionable.length === 0}>
+                      Marcar todos
+                    </Button>
+                    <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
+                      onClick={() => setPicked(new Set())} disabled={picked.size === 0}>
+                      Limpar
+                    </Button>
+                    <div className="flex-1" />
+                    {busy !== null && (
+                      <Button variant="outline" size="sm" className="h-6 text-[10px] gap-1 px-2 border-destructive/50 text-destructive hover:bg-destructive/10"
+                        onClick={cancelOp} disabled={cancelling}
+                        title="Cancela a operação: o lote em andamento termina e o restante não é executado">
+                        <X className="w-3 h-3" />
+                        {cancelling ? "Cancelando..." : "Cancelar"}
+                      </Button>
+                    )}
+                    <Button variant="outline" size="sm" className="h-6 text-[10px] gap-1 px-2"
+                      onClick={doEdit} disabled={pickedMsgs.length === 0 || busy !== null || !content.trim()}
+                      title="Substitui o conteúdo das marcadas pelo texto atual do editor">
+                      {busy === "edit" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Pencil className="w-3 h-3" />}
+                      Editar {pickedMsgs.length || ""}
+                    </Button>
+                    <Button variant="destructive" size="sm" className="h-6 text-[10px] gap-1 px-2"
+                      onClick={doDelete} disabled={pickedMsgs.length === 0 || busy !== null}>
+                      {busy === "delete" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                      Apagar {pickedMsgs.length || ""}
+                    </Button>
+                  </div>
+                  <div className="flex flex-col gap-1 max-h-56 overflow-y-auto">
+                    {messages.map((m) => (
+                      <label key={key(m)} className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${m.state === "deleted" ? "opacity-50" : "hover:bg-muted/40 cursor-pointer"}`}>
+                        <Checkbox
+                          checked={picked.has(key(m))}
+                          disabled={m.state === "deleted"}
+                          onCheckedChange={() => toggle(m)}
+                        />
+                        <span className={`flex-1 truncate ${m.state === "deleted" ? "line-through" : ""}`}>
+                          {m.display_name || m.thread_id}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground flex-shrink-0">
+                          {SENT_STATE_LABEL[m.state] ?? m.state} · {fmt(m.updated_at)}
+                        </span>
+                      </label>
+                    ))}
+                    {messages.length === 0 && <p className="text-[11px] text-muted-foreground">Nenhuma mensagem guardada neste envio.</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </DialogContent>
     </Dialog>
@@ -842,9 +1135,12 @@ export const TeamsBroadcastTab = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [sentHistoryOpen, setSentHistoryOpen] = useState(false);
   const [loadLinkOpen, setLoadLinkOpen] = useState(false);
   const [, setImageLoadVersion] = useState(0);
   const [currentFilename, setCurrentFilename] = useState<string | null>(null);
+  // O arquivo aberto/salvo por último guarda os destinatários? Se sim, Ctrl+S também os regrava.
+  const [fileHasRecipients, setFileHasRecipients] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendProgress, setSendProgress] = useState<{ done: number; total: number } | null>(null);
@@ -856,6 +1152,10 @@ export const TeamsBroadcastTab = () => {
   const contentRef = useRef(content);
   useEffect(() => { currentFilenameRef.current = currentFilename; }, [currentFilename]);
   useEffect(() => { contentRef.current = content; }, [content]);
+  const selectedRef = useRef(selected);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  const fileHasRecipientsRef = useRef(false);
+  useEffect(() => { fileHasRecipientsRef.current = fileHasRecipients; }, [fileHasRecipients]);
 
   // Divisor editor ↔ preview
   const [editorPct, setEditorPct] = useState(50);
@@ -864,11 +1164,13 @@ export const TeamsBroadcastTab = () => {
   const editorRef = useRef<MonacoNS.editor.IStandaloneCodeEditor | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
-  const saveToFilename = useCallback(async (filename: string) => {
-    await apiClient.saveBroadcastTemplate(filename, contentRef.current);
+  const saveToFilename = useCallback(async (filename: string, withRecipients: boolean) => {
+    const chats = withRecipients ? Array.from(selectedRef.current.values()) : [];
+    await apiClient.saveBroadcastTemplate(filename, packRecipients(contentRef.current, chats));
     setCurrentFilename(filename);
+    setFileHasRecipients(chats.length > 0);
     setIsDirty(false);
-    toast.success(`Salvo: ${filename}`);
+    toast.success(chats.length > 0 ? `Salvo: ${filename} (com ${chats.length} destinatário(s))` : `Salvo: ${filename}`);
   }, []);
 
   const handleSaveRef = useRef<() => void>(null!);
@@ -879,7 +1181,7 @@ export const TeamsBroadcastTab = () => {
       setSaveAsOpen(true);
       return;
     }
-    saveToFilename(fname).catch(() => toast.error("Erro ao salvar"));
+    saveToFilename(fname, fileHasRecipientsRef.current).catch(() => toast.error("Erro ao salvar"));
   }, [saveToFilename]);
 
   useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
@@ -977,6 +1279,11 @@ export const TeamsBroadcastTab = () => {
   const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
   const [deletingSent, setDeletingSent] = useState(false);
   const [deletedThreads, setDeletedThreads] = useState<Set<string>>(new Set());
+  const [editingSent, setEditingSent] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  // Contatos desmarcados na lista de resultados: apagar/editar age só nos marcados (todos, por padrão).
+  const [unpickedThreads, setUnpickedThreads] = useState<Set<string>>(new Set());
+  const [editedThreads, setEditedThreads] = useState<Set<string>>(new Set());
   const sseRef = useRef<EventSource | null>(null);
 
   // Mensagens enviadas com sucesso E com message_id capturado (ver comentário em SendResult) —
@@ -987,11 +1294,37 @@ export const TeamsBroadcastTab = () => {
     [sendResults, deletedThreads]
   );
 
+  const pickedResults = useMemo(
+    () => deletableResults.filter(r => !unpickedThreads.has(r.thread_id)),
+    [deletableResults, unpickedThreads]
+  );
+
+  // Cancela o envio/edição/exclusão em andamento (o lote em execução termina; o restante não roda).
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await apiClient.cancelBroadcast();
+      toast.info("Cancelamento solicitado: o lote em andamento termina e o restante não é executado.");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao cancelar");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const togglePicked = (threadId: string) =>
+    setUnpickedThreads(prev => {
+      const next = new Set(prev);
+      if (next.has(threadId)) next.delete(threadId); else next.add(threadId);
+      return next;
+    });
+
   const handleDeleteSent = async () => {
-    if (deletableResults.length === 0) return;
+    if (pickedResults.length === 0) return;
+    if (!window.confirm(`Apagar ${pickedResults.length} mensagem(ns) no Teams? Não dá para desfazer.`)) return;
     setDeletingSent(true);
     try {
-      const targets = deletableResults.map(r => ({ thread_id: r.thread_id, message_id: r.message_id! }));
+      const targets = pickedResults.map(r => ({ thread_id: r.thread_id, message_id: r.message_id! }));
       const res = await apiClient.deleteBroadcastMessages(targets);
       const okThreads = new Set(res.results.filter(r => r.ok).map(r => r.thread_id));
       setDeletedThreads(prev => {
@@ -999,7 +1332,9 @@ export const TeamsBroadcastTab = () => {
         okThreads.forEach(id => next.add(id));
         return next;
       });
-      if (res.failed === 0) {
+      if (res.cancelled) {
+        toast.warning(`Cancelado: ${res.deleted} apagada(s), ${res.cancelled} não executada(s)${res.failed ? `, ${res.failed} falharam` : ""}`);
+      } else if (res.failed === 0) {
         toast.success(`${res.deleted} mensagem(ns) apagada(s) no Teams`);
       } else {
         toast.warning(`${res.deleted} apagada(s), ${res.failed} falharam — veja o resultado abaixo`);
@@ -1008,6 +1343,41 @@ export const TeamsBroadcastTab = () => {
       toast.error(e instanceof Error ? e.message : "Falha ao apagar mensagens enviadas");
     } finally {
       setDeletingSent(false);
+    }
+  };
+
+  // Substitui, no Teams, o conteúdo das mensagens já enviadas pelo texto ATUAL do editor. O backend
+  // edita a primeira sozinha para validar; se o Teams recusar, as demais não são tentadas.
+  const handleEditSent = async () => {
+    if (pickedResults.length === 0 || !content.trim()) return;
+    const n = pickedResults.length;
+    if (!window.confirm(
+      `Substituir o conteúdo de ${n} mensagem(ns) já enviada(s) pelo texto atual do editor?\n\n` +
+      "A primeira é editada sozinha para validar; se o Teams recusar, as demais não são tentadas. " +
+      "O Teams marca as mensagens como \"editadas\"."
+    )) return;
+    setEditingSent(true);
+    try {
+      const targets = pickedResults.map(r => ({ thread_id: r.thread_id, message_id: r.message_id! }));
+      const res = await apiClient.editBroadcastMessages(targets, { markdown: content, is_plain_text: isPlainText });
+      const okThreads = new Set(res.results.filter(r => r.ok).map(r => r.thread_id));
+      setEditedThreads(prev => {
+        const next = new Set(prev);
+        okThreads.forEach(id => next.add(id));
+        return next;
+      });
+      if (res.cancelled) {
+        toast.warning(`Cancelado: ${res.edited} editada(s), ${res.cancelled} não executada(s)${res.failed ? `, ${res.failed} falharam` : ""}`);
+      } else if (res.failed === 0) {
+        toast.success(`${res.edited} mensagem(ns) editada(s) no Teams`);
+      } else {
+        const firstErr = res.results.find(r => !r.ok)?.error;
+        toast.warning(`${res.edited} editada(s), ${res.failed} falharam`, { description: firstErr, duration: 20000 });
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Falha ao editar mensagens enviadas");
+    } finally {
+      setEditingSent(false);
     }
   };
 
@@ -1022,6 +1392,8 @@ export const TeamsBroadcastTab = () => {
     setSendProgress({ done: 0, total });
     setSendResults(new Map());
     setDeletedThreads(new Set());
+    setEditedThreads(new Set());
+    setUnpickedThreads(new Set());
 
     // Fechar SSE anterior se existir.
     sseRef.current?.close();
@@ -1040,6 +1412,12 @@ export const TeamsBroadcastTab = () => {
           progress: number; details: string; error: string;
         };
 
+        if (evt.type === "broadcast_notice" && evt.message) {
+          // Ex.: sessão do Teams expirada — o usuário precisa agir na janela do Chrome do servidor.
+          toast.warning(evt.message, { duration: 60000 });
+          setSendStatus({ ok: false, msg: evt.message });
+        }
+
         if (evt.type === "broadcast_progress" && evt.details) {
           const r = JSON.parse(evt.details) as SendResult;
           setSendResults(prev => new Map(prev).set(r.thread_id, r));
@@ -1047,12 +1425,20 @@ export const TeamsBroadcastTab = () => {
         }
 
         if (evt.type === "complete" && evt.details) {
-          const final = JSON.parse(evt.details) as { sent: number; failed: number; results: SendResult[] };
+          const final = JSON.parse(evt.details) as { sent: number; failed: number; cancelled?: number; results: SendResult[] };
+          // Garante que todo destinatário tenha um resultado (inclusive os cancelados, que não geram progresso).
+          setSendResults(prev => {
+            const next = new Map(prev);
+            final.results?.forEach(r => { if (!next.has(r.thread_id)) next.set(r.thread_id, r); });
+            return next;
+          });
           setSendStatus({
-            ok: final.failed === 0,
-            msg: final.failed === 0
-              ? `Enviado para ${final.sent} chat(s)`
-              : `${final.sent} enviados, ${final.failed} falharam`,
+            ok: final.failed === 0 && !final.cancelled,
+            msg: final.cancelled
+              ? `Envio cancelado: ${final.sent} enviado(s), ${final.cancelled} não enviado(s)${final.failed ? `, ${final.failed} falharam` : ""}`
+              : final.failed === 0
+                ? `Enviado para ${final.sent} chat(s)`
+                : `${final.sent} enviados, ${final.failed} falharam`,
           });
           setSendProgress(null);
           setSending(false);
@@ -1091,6 +1477,7 @@ export const TeamsBroadcastTab = () => {
         thread_ids: Array.from(selected.keys()),
         markdown: content,
         is_plain_text: isPlainText,
+        names: Object.fromEntries(Array.from(selected.values()).map((c) => [c.id, c.display_name])),
       });
       // 202 retornado — aguardar eventos SSE para concluir.
     } catch (e: unknown) {
@@ -1135,6 +1522,7 @@ export const TeamsBroadcastTab = () => {
             if (isDirty && !window.confirm("Há alterações não salvas. Descartar e criar novo arquivo?")) return;
             setContent(DEFAULT_MARKDOWN);
             setCurrentFilename(null);
+            setFileHasRecipients(false);
             setIsDirty(false);
           }}
           title="Novo arquivo (descarta o conteúdo atual)"
@@ -1183,6 +1571,15 @@ export const TeamsBroadcastTab = () => {
         >
           <FolderOpen className="w-3.5 h-3.5" />
           Abrir
+        </button>
+
+        <button
+          onClick={() => setSentHistoryOpen(true)}
+          title="Envios anteriores: apagar ou editar mensagens já enviadas"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <History className="w-3.5 h-3.5" />
+          Envios
         </button>
 
         <button
@@ -1359,6 +1756,19 @@ export const TeamsBroadcastTab = () => {
               {sendStatus.ok ? "✅" : "❌"} {sendStatus.msg}
             </span>
           )}
+          {sending && (
+            <Button
+              onClick={handleCancel}
+              disabled={cancelling}
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5 border-destructive/50 text-destructive hover:bg-destructive/10"
+              title="Cancela o envio: o lote em andamento termina e o restante não é enviado (o que já saiu continua no Teams)"
+            >
+              <X className="w-3 h-3" />
+              {cancelling ? "Cancelando..." : "Cancelar envio"}
+            </Button>
+          )}
           <Button
             onClick={handleSend}
             disabled={selected.size === 0 || !content.trim() || sending}
@@ -1385,9 +1795,36 @@ export const TeamsBroadcastTab = () => {
               Resultado do envio
             </div>
             {deletableResults.length > 0 && (
+              <div className="flex items-center gap-1.5">
+              {(editingSent || deletingSent) && (
+                <Button
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] gap-1 px-2 border-destructive/50 text-destructive hover:bg-destructive/10"
+                  title="Cancela a operação: o lote em andamento termina e o restante não é executado"
+                >
+                  <X className="w-3 h-3" />
+                  {cancelling ? "Cancelando..." : "Cancelar"}
+                </Button>
+              )}
+              <Button
+                onClick={handleEditSent}
+                disabled={editingSent || deletingSent || pickedResults.length === 0 || !content.trim()}
+                variant="outline"
+                size="sm"
+                className="h-6 text-[10px] gap-1 px-2"
+                title="Substitui o conteúdo destas mensagens, no Teams, pelo texto atual do editor"
+              >
+                {editingSent
+                  ? <RefreshCw className="w-3 h-3 animate-spin" />
+                  : <Pencil className="w-3 h-3" />}
+                {editingSent ? "Editando..." : `Editar ${pickedResults.length} com o texto atual`}
+              </Button>
               <Button
                 onClick={handleDeleteSent}
-                disabled={deletingSent}
+                disabled={deletingSent || editingSent || pickedResults.length === 0}
                 variant="destructive"
                 size="sm"
                 className="h-6 text-[10px] gap-1 px-2"
@@ -1396,20 +1833,25 @@ export const TeamsBroadcastTab = () => {
                 {deletingSent
                   ? <RefreshCw className="w-3 h-3 animate-spin" />
                   : <Trash2 className="w-3 h-3" />}
-                {deletingSent ? "Apagando..." : `Apagar ${deletableResults.length} mensagem(ns) enviada(s)`}
+                {deletingSent ? "Apagando..." : `Apagar ${pickedResults.length} mensagem(ns) enviada(s)`}
               </Button>
+              </div>
             )}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {Array.from(selected.values()).map((chat) => {
               const r = sendResults.get(chat.id);
               const deleted = deletedThreads.has(chat.id);
+              const edited = editedThreads.has(chat.id);
+              const canPick = !!r && r.ok && !!r.message_id && !deleted;
               return (
                 <span
                   key={chat.id}
                   title={
                     deleted
                       ? "Mensagem apagada no Teams"
+                      : edited
+                      ? "Mensagem editada no Teams"
                       : r ? (r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)) : "Aguardando..."
                   }
                   className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
@@ -1419,10 +1861,20 @@ export const TeamsBroadcastTab = () => {
                       ? "bg-muted/30 border-border text-muted-foreground"
                       : r.ok
                       ? "bg-green-950/40 border-green-800/50 text-green-400"
+                      : r.error === "cancelado"
+                      ? "bg-muted/30 border-border text-muted-foreground"
                       : "bg-red-950/40 border-red-800/50 text-red-400"
                   }`}
                 >
-                  {deleted ? "🗑" : !r ? "⋯" : r.ok ? "✓" : "✗"}
+                  {canPick && (
+                    <Checkbox
+                      className="h-3 w-3"
+                      checked={!unpickedThreads.has(chat.id)}
+                      onCheckedChange={() => togglePicked(chat.id)}
+                      title="Incluir ao apagar/editar"
+                    />
+                  )}
+                  {deleted ? "🗑" : edited ? "✎" : !r ? "⋯" : r.ok ? "✓" : r.error === "cancelado" ? "⊘" : "✗"}
                   {" "}
                   <span className="max-w-[120px] truncate">{chat.display_name}</span>
                   {r && !r.ok && r.status > 0 && <span className="opacity-60">{r.status}</span>}
@@ -1447,17 +1899,33 @@ export const TeamsBroadcastTab = () => {
         open={templatesOpen}
         onClose={() => setTemplatesOpen(false)}
         currentContent={content}
-        onLoad={(text, filename) => {
+        selectedChats={Array.from(selected.values())}
+        onLoad={(text, filename, recipients) => {
           setContent(text);
           setCurrentFilename(filename);
           setIsDirty(false);
+          setFileHasRecipients(recipients !== null && recipients.length > 0);
+          if (recipients && recipients.length > 0) {
+            setSelected(new Map(recipients.map((c) => [c.id, c])));
+            toast.success(`${recipients.length} destinatário(s) carregado(s) do arquivo`);
+          }
         }}
+      />
+
+      {/* ── Modal Envios anteriores (apagar/editar a qualquer momento) ── */}
+      <SentHistoryModal
+        open={sentHistoryOpen}
+        onClose={() => setSentHistoryOpen(false)}
+        content={content}
+        isPlainText={isPlainText}
       />
 
       {/* ── Modal Salvar Como ── */}
       <SaveAsModal
         open={saveAsOpen}
         initialName={currentFilename ?? ""}
+        selectedCount={selected.size}
+        defaultWithRecipients={currentFilename ? fileHasRecipients : true}
         onClose={() => setSaveAsOpen(false)}
         onSave={saveToFilename}
       />
@@ -1475,6 +1943,7 @@ export const TeamsBroadcastTab = () => {
           // Simples) pra essa formatação aparecer no editor/preview.
           setIsPlainText(false);
           setCurrentFilename(null);
+          setFileHasRecipients(false);
           setIsDirty(true);
           setLoadLinkOpen(false);
           const baseMsg = meta.approximate

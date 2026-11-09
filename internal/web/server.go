@@ -1973,6 +1973,13 @@ func (s *Server) setupRoutes() {
 		// Hoje o RBAC de grupo é um no-op (middleware/rbac.go): o filtro mantém as rotas cobertas
 		// quando for reativado.
 		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger, s.historyTracker)
+		if home, herr := os.UserHomeDir(); herr == nil {
+			if sentStore, serr := storage.NewTeamsSentStore(filepath.Join(home, ".k8s-hpa-manager", "teams_sent.db")); serr != nil {
+				fmt.Printf("⚠️  Histórico de envios do Teams indisponível: %v\n", serr)
+			} else {
+				broadcastHandler.SetSentStore(sentStore)
+			}
+		}
 		teamsGroup.GET("/broadcast/chats", broadcastHandler.GetChats)
 		teamsGroup.POST("/broadcast/chats/scan", rbacMiddleware.RequireSREGroup(), broadcastHandler.ScanChats)
 		teamsGroup.GET("/broadcast/templates", broadcastHandler.ListTemplates)
@@ -1983,6 +1990,11 @@ func (s *Server) setupRoutes() {
 		teamsGroup.DELETE("/broadcast/images", rbacMiddleware.RequireSREGroup(), broadcastHandler.ClearBroadcastImages)
 		teamsGroup.POST("/broadcast/send", rbacMiddleware.RequireSREGroup(), broadcastHandler.Send)
 		teamsGroup.POST("/broadcast/delete", rbacMiddleware.RequireSREGroup(), broadcastHandler.DeleteMessages)
+		teamsGroup.POST("/broadcast/edit", rbacMiddleware.RequireSREGroup(), broadcastHandler.EditMessages)
+		teamsGroup.POST("/broadcast/cancel", rbacMiddleware.RequireSREGroup(), broadcastHandler.CancelOperations)
+		teamsGroup.GET("/broadcast/sent", broadcastHandler.ListSent)
+		teamsGroup.GET("/broadcast/sent/:batchId", broadcastHandler.GetSent)
+		teamsGroup.DELETE("/broadcast/sent/:batchId", rbacMiddleware.RequireSREGroup(), broadcastHandler.ForgetSent)
 		// SSE stream: EventSource não suporta headers → token via query param
 		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
 			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
