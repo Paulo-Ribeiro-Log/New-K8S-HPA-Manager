@@ -126,3 +126,13 @@ func TestCollectAzureDetailsDisk(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 }
+
+func TestDiskNotFound(t *testing.T) {
+	err := fmt.Errorf(`ERROR: Not Found({"error":{"code":"ResourceNotFound","message":"The Resource 'Microsoft.Compute/disks/x' was not found."}})`)
+	if !diskNotFound(err) {
+		t.Error("ResourceNotFound do ARM deveria ser reconhecido")
+	}
+	if diskNotFound(fmt.Errorf("ERROR: Forbidden(AuthorizationFailed)")) {
+		t.Error("AuthorizationFailed não é disco inexistente")
+	}
+}
