@@ -49,6 +49,9 @@ const formatVersion = (version: string | undefined): string => {
 };
 
 interface ConfigMapsTabProps {
+  // focusRequest — pedido de outra aba (ex.: Dependencies) para destacar um recurso: o nome vai para a
+  // busca. O nonce muda a cada pedido, então o mesmo nome pode ser pedido de novo.
+  focusRequest?: { name: string; nonce: number } | null;
   cluster: string;
   namespaces: Namespace[];
   selectedNamespace: string;
@@ -72,12 +75,19 @@ export const ConfigMapsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
   isActive = true,
+  focusRequest = null,
 }: ConfigMapsTabProps) => {
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
   const canWriteConfigMaps = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteConfigMaps : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('configmaps', 'searchQuery', "");
+
+  // Pedido de foco vindo de outra aba (ex.: Dependencies): o nome do recurso vira a busca.
+  useEffect(() => {
+    if (focusRequest?.name) setSearchQuery(focusRequest.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só reage a um novo pedido (nonce)
+  }, [focusRequest?.nonce]);
   const [selectedConfigMap, setSelectedConfigMap] = usePersistedTabState<ConfigMapSummary | null>('configmaps', 'selectedConfigMap', null);
   const leftListRef = useRef<HTMLDivElement>(null);
   useRevealOnKeyChange(

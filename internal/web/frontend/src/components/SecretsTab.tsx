@@ -58,6 +58,9 @@ const formatVersion = (version: string | undefined): string => {
 };
 
 interface SecretsTabProps {
+  // focusRequest — pedido de outra aba (ex.: Dependencies) para destacar um recurso: o nome vai para a
+  // busca. O nonce muda a cada pedido, então o mesmo nome pode ser pedido de novo.
+  focusRequest?: { name: string; nonce: number } | null;
   cluster: string;
   namespaces: Namespace[];
   selectedNamespace: string;
@@ -81,6 +84,7 @@ export const SecretsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
   isActive = true,
+  focusRequest = null,
 }: SecretsTabProps) => {
 
   const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
@@ -88,6 +92,12 @@ export const SecretsTab = ({
 
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
+
+  // Pedido de foco vindo de outra aba (ex.: Dependencies): o nome do recurso vira a busca.
+  useEffect(() => {
+    if (focusRequest?.name) setSearchQuery(focusRequest.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só reage a um novo pedido (nonce)
+  }, [focusRequest?.nonce]);
   const [selectedSecret, setSelectedSecret] = usePersistedTabState<SecretSummary | null>('secrets', 'selectedSecret', null);
   const leftListRef = useRef<HTMLDivElement>(null);
   useRevealOnKeyChange(

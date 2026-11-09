@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dependencies — abrir o recurso listado ao clicar (Novembro 2026)
+
+A coluna Fonte (registro e busca reversa) vira link (`SourceCell`, `dependencyTargets` em `DependenciesTab.tsx`): configmap/secret abrem as abas ConfigMaps/Secrets, env abre Deployments e pvc abre o modal Volumes; se a linha traz o deployment, ele ganha um segundo link. `Index.navigateToDependency` troca o cluster (`handleClusterChange` agora devolve se deu certo e a navegação para se falhar), define o namespace da aba e manda um `focusRequest` (nome + nonce) que ConfigMapsTab/SecretsTab/DeploymentsTab aplicam na busca; o modal de Volumes aceita `initialQuery`. Só frontend.
+
 ### Teams Broadcast — salvar destinatários junto do arquivo (Novembro 2026)
 
 Os diálogos "Salvar como" e "Arquivos salvos" ganham a opção **Salvar também os destinatários selecionados**. A lista vai no mesmo arquivo, num comentário HTML no topo (`<!--broadcast-recipients` + JSON, `>` escapado); ao abrir, o bloco é removido do texto e a seleção é restaurada. Arquivo salvo com destinatários os mantém no Ctrl+S. Só frontend (`TeamsBroadcastTab.tsx`: `packRecipients`/`unpackRecipients`); o backend continua gravando o texto como veio, e arquivos antigos abrem como antes.

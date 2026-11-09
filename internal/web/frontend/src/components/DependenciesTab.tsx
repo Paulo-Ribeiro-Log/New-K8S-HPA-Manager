@@ -53,6 +53,7 @@ import {
   FileType,
   Clock,
   AlertCircle,
+  ExternalLink,
   AlertTriangle,
   Download,
   ChevronDown,
@@ -98,6 +99,42 @@ interface DependencyRecord {
 // Entrada de chave/valor de um Secret indexada para a busca em Secrets (modo "Secrets" da aba,
 // distinto do modo "Dependência" acima — ver DependencyRecord). Espelha storage.SecretDataRecord
 // (internal/storage/dependency_registry.go).
+// Para onde uma linha da lista pode levar: a aba do recurso (ConfigMaps/Secrets/Deployments) ou o modal
+// de Volumes, no cluster e namespace da dependência, já filtrado pelo nome.
+export interface DependencyNavTarget {
+  cluster: string;
+  namespace: string;
+  tab: "configmaps" | "secrets" | "deployments" | "volumes";
+  name: string;
+}
+
+const NAV_LABEL: Record<DependencyNavTarget["tab"], string> = {
+  configmaps: "ConfigMap",
+  secrets: "Secret",
+  deployments: "Deployment",
+  volumes: "Volumes",
+};
+
+// dependencyTargets decide o destino principal pela origem da dependência e, quando a linha traz o
+// deployment e o principal é outro recurso, um destino secundário para o deployment.
+function dependencyTargets(dep: DependencyRecord): { primary?: DependencyNavTarget; deployment?: DependencyNavTarget } {
+  const base = { cluster: dep.cluster, namespace: dep.namespace };
+  const dpl: DependencyNavTarget | undefined = dep.deployment
+    ? { ...base, tab: "deployments", name: dep.deployment }
+    : undefined;
+  switch (dep.source_type) {
+    case "configmap":
+      return { primary: { ...base, tab: "configmaps", name: dep.source_name }, deployment: dpl };
+    case "secret":
+      return { primary: { ...base, tab: "secrets", name: dep.source_name }, deployment: dpl };
+    case "pvc":
+      // namespace "-" = PV sem PVC (sem namespace): o modal de Volumes não precisa dele
+      return { primary: { ...base, tab: "volumes", name: dep.source_name }, deployment: dpl };
+    default:
+      return { primary: dpl }; // env: o recurso é o próprio deployment
+  }
+}
+
 interface RegistryStats {
   total_dependencies: number;
   unique_services: number;
@@ -139,7 +176,35 @@ const SERVICE_TYPE_LABELS: Record<string, string> = {
 const LAST_SCAN_KEY = "dependencies-last-scan";
 const SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 
-export const DependenciesTab = () => {
+// Origem da dependência como link: abre o recurso correspondente (e o deployment, se houver).
+function SourceCell({ dep, onNavigate }: { dep: DependencyRecord; onNavigate?: (target: DependencyNavTarget) => void }) {
+  const label = `${dep.source_type}: ${dep.source_name}`;
+  const { primary, deployment } = dependencyTargets(dep);
+  const link = (t: DependencyNavTarget, text: string) => (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 text-left text-sky-400 hover:underline"
+      title={`Abrir ${NAV_LABEL[t.tab]} "${t.name}" em ${t.cluster.replace(/-admin$/, "")}${t.tab !== "volumes" ? ` / ${t.namespace}` : ""}`}
+      onClick={() => onNavigate?.(t)}
+    >
+      {text}
+      <ExternalLink className="h-3 w-3 shrink-0" />
+    </button>
+  );
+  if (!onNavigate || !primary) return <span className="text-muted-foreground">{label}</span>;
+  return (
+    <div className="space-y-0.5">
+      <div>{link(primary, label)}</div>
+      {deployment && primary.tab !== "deployments" && (
+        <div className="text-[10px] text-muted-foreground">
+          deployment: {link(deployment, dep.deployment)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const DependenciesTab = ({ onNavigate }: { onNavigate?: (target: DependencyNavTarget) => void }) => {
   // Clusters disponíveis
   const { clusters: allClusters, loading: clustersLoading } = useClusters();
 
@@ -1379,9 +1444,7 @@ export const DependenciesTab = () => {
                                         </TableCell>
                                         <TableCell className="text-xs">{dep.namespace}</TableCell>
                                         <TableCell className="text-xs">
-                                          <span className="text-muted-foreground">
-                                            {dep.source_type}: {dep.source_name}
-                                          </span>
+                                          <SourceCell dep={dep} onNavigate={onNavigate} />
                                           {dep.source_key && (
                                             <span className="text-muted-foreground ml-1">
                                               [{dep.source_key}]
@@ -1600,8 +1663,8 @@ export const DependenciesTab = () => {
                                   {dep.cluster.replace(/-admin$/, "")}
                                 </TableCell>
                                 <TableCell className="text-xs">{dep.namespace}</TableCell>
-                                <TableCell className="text-xs text-muted-foreground">
-                                  {dep.source_type}: {dep.source_name}
+                                <TableCell className="text-xs">
+                                  <SourceCell dep={dep} onNavigate={onNavigate} />
                                 </TableCell>
                               </TableRow>
                             ))}
