@@ -3888,3 +3888,44 @@ export interface BroadcastSentMessage {
   state: "sent" | "edited" | "deleted";
   updated_at: string;
 }
+
+// Busca por nome de storage na(s) subscription(s) dos clusters (handlers/azure_storage_search.go)
+export interface AzureLifecycleRule {
+  name: string;
+  enabled: boolean;
+  blob_types?: string[];
+  prefixes?: string[];
+  actions: string[];
+  deletes: boolean;
+}
+
+export interface AzureStorageHit {
+  type: "storage_account" | "disk" | "container" | "file_share";
+  name: string;
+  resource_group: string;
+  location?: string;
+  subscription_id: string;
+  subscription_name?: string;
+  clusters: string[]; // clusters que usam esta subscription
+  aks_managed: boolean; // RG de infraestrutura do AKS (MC_…)
+  account?: string; // container/file share: a conta dona
+  kind?: string;
+  sku?: string;
+  tier?: string;
+  size_gb?: string;
+  state?: string;
+  attached_to?: string;
+  containers?: string[];
+  lifecycle?: { has_policy: boolean; rules: AzureLifecycleRule[]; error?: string };
+}
+
+export interface AzureStorageSearchResult {
+  query: string;
+  deep: boolean;
+  all: boolean; // incluiu as subscriptions sem cluster que o az login enxerga
+  subscriptions: { id: string; name?: string; clusters: string[]; accounts_listed: number; disks_listed: number }[];
+  results: AzureStorageHit[];
+  warnings: string[];
+  truncated?: boolean;
+  queried_at: string;
+}

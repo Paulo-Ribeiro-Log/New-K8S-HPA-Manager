@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { AzureStorageFallback } from "@/components/AzureStorageFallback";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { apiClient, type AzStorageDetails, type SnapshotCreated, type SnapshotInfo, type VolumeAppCost, type VolumeItem, type VolumesResponse } from "@/lib/api/client";
 
@@ -596,7 +597,10 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
         <div className="flex-1 min-h-0 overflow-auto border border-border/40 rounded">
           {nfsView && !loading && !error ? (
             nfsServers.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">Nenhum volume NFS com esses filtros.</div>
+              <div className="p-4 text-sm text-muted-foreground">
+                Nenhum volume NFS com esses filtros.
+                {query.trim() && <AzureStorageFallback query={query} cluster={cluster} />}
+              </div>
             ) : (
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card border-b border-border/40 text-muted-foreground z-10">
@@ -631,7 +635,10 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
             )
           ) : appsView && !loading && !error ? (
             apps.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">Nenhuma aplicação com esses filtros.</div>
+              <div className="p-4 text-sm text-muted-foreground">
+                Nenhuma aplicação com esses filtros.
+                {query.trim() && <AzureStorageFallback query={query} cluster={cluster} />}
+              </div>
             ) : (
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card border-b border-border/40 text-muted-foreground z-10">
@@ -669,7 +676,10 @@ export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props)
           ) : error ? (
             <div className="p-4 text-sm text-red-400 whitespace-pre-wrap">{error}</div>
           ) : rows.length === 0 ? (
-            <div className="p-4 text-sm text-muted-foreground">{items.length === 0 ? "Este cluster não tem PVs nem PVCs." : "Nenhum volume com esses filtros."}</div>
+            <div className="p-4 text-sm text-muted-foreground">
+              {items.length === 0 ? "Este cluster não tem PVs nem PVCs." : "Nenhum volume com esses filtros."}
+              {query.trim() && <AzureStorageFallback query={query} cluster={cluster} />}
+            </div>
           ) : (
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-card border-b border-border/40 text-muted-foreground z-10">

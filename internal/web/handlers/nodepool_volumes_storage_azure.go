@@ -372,6 +372,7 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 			return d
 		}
 		diskSections(dk, d)
+		lifecycleNotApplicable("disco gerenciado", d)
 		return d
 	}
 
@@ -400,8 +401,8 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 	}
 
 	var wg sync.WaitGroup
-	var acc, svc, item map[string]any
-	var accErr, svcErr, itemErr error
+	var acc, svc, item, policy map[string]any
+	var accErr, svcErr, itemErr, policyErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -422,6 +423,13 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 		defer wg.Done()
 		svc, svcErr = get(base + "/" + svcName + "/default?api-version=" + storageAPIVer)
 	}()
+	if itemKind == "containers" { // ciclo de vida só existe para blobs
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			policy, policyErr = get(base + "/managementPolicies/default?api-version=" + storageAPIVer)
+		}()
+	}
 	if t.share != "" {
 		wg.Add(1)
 		extra := ""
@@ -447,6 +455,11 @@ func collectAzureDetails(ctx context.Context, t azTarget) *AzStorageDetails {
 		protectionSection("Proteção dos file shares", svc, []string{"properties", "shareDeleteRetentionPolicy"}, false, d)
 	default:
 		protectionSection("Proteção dos blobs", svc, []string{"properties", "deleteRetentionPolicy"}, true, d)
+	}
+	if itemKind == "containers" {
+		lifecycleSection(policy, policyErr, d)
+	} else {
+		lifecycleNotApplicable("Azure Files", d)
 	}
 	switch {
 	case t.share == "":

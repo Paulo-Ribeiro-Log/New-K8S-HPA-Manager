@@ -66,6 +66,15 @@ func TestCollectAzureDetailsFileShare(t *testing.T) {
 	if len(d.Warnings) != 0 {
 		t.Fatalf("avisos: %v", d.Warnings)
 	}
+	var filesNA bool
+	for _, sec := range d.Sections {
+		if sec.Title == "Ciclo de vida (regras)" && strings.Contains(sec.Fields[0].Value, "Azure Files") {
+			filesNA = true
+		}
+	}
+	if !filesNA {
+		t.Errorf("Azure Files deveria dizer que não tem ciclo de vida: %+v", d.Sections)
+	}
 	var kind, tier bool
 	for _, s := range d.Sections {
 		for _, f := range s.Fields {
@@ -90,12 +99,45 @@ func TestCollectAzureDetailsFileShare(t *testing.T) {
 
 func TestCollectAzureDetailsLRSNaoPedeExpandGeo(t *testing.T) {
 	defer fakeAz(t, map[string]string{
-		"/storageAccounts/stfoo?": `{"kind":"StorageV2","sku":{"name":"Standard_LRS"},"properties":{"accessTier":"Hot"}}`,
-		"/blobServices/default?":  `{"properties":{"deleteRetentionPolicy":{"enabled":true,"days":7}}}`,
+		"/storageAccounts/stfoo?":      `{"kind":"StorageV2","sku":{"name":"Standard_LRS"},"properties":{"accessTier":"Hot"}}`,
+		"/blobServices/default?":       `{"properties":{"deleteRetentionPolicy":{"enabled":true,"days":7}}}`,
+		"/managementPolicies/default?": lifecyclePolicyJSON,
 	})()
 	d := collectAzureDetails(context.Background(), azTarget{kind: "storage", driver: "blob.csi.azure.com", sub: "s", rg: "rg", account: "stfoo"})
 	if len(d.Warnings) != 0 || len(d.Sections) == 0 {
 		t.Fatalf("conta LRS não deveria dar aviso: warnings=%v sections=%d", d.Warnings, len(d.Sections))
+	}
+	var lifecycle bool
+	for _, sec := range d.Sections {
+		if sec.Title == "Ciclo de vida (regras)" && len(sec.Fields) == 2 {
+			lifecycle = true
+		}
+	}
+	if !lifecycle {
+		t.Errorf("conta de blob deveria trazer a seção de ciclo de vida: %+v", d.Sections)
+	}
+}
+
+func TestCollectAzureDetailsSemPoliticaDeCicloDeVida(t *testing.T) {
+	// sem a rota managementPolicies o fake responde erro; aqui simulamos o 404 real do ARM
+	old := azRestGet
+	defer func() { azRestGet = old }()
+	azRestGet = func(_ context.Context, u string) ([]byte, error) {
+		switch {
+		case strings.Contains(u, "/managementPolicies/"):
+			return nil, fmt.Errorf(`ERROR: Not Found({"error":{"code":"ManagementPolicyNotFound"}})`)
+		case strings.Contains(u, "/blobServices/default?"):
+			return []byte(`{"properties":{}}`), nil
+		default:
+			return []byte(`{"kind":"StorageV2","sku":{"name":"Standard_LRS"}}`), nil
+		}
+	}
+	d := collectAzureDetails(context.Background(), azTarget{kind: "storage", driver: "blob.csi.azure.com", sub: "s", rg: "rg", account: "stfoo"})
+	if len(d.Warnings) != 0 {
+		t.Fatalf("ausência de política não é aviso de falha: %v", d.Warnings)
+	}
+	if !strings.Contains(strings.Join(d.Notes, "|"), "sem política") {
+		t.Errorf("deveria avisar que não há política: %v", d.Notes)
 	}
 }
 
@@ -109,8 +151,9 @@ func TestIsGeoSKU(t *testing.T) {
 
 func TestCollectAzureDetailsPartialFailure(t *testing.T) {
 	defer fakeAz(t, map[string]string{
-		"/storageAccounts/stfoo?": `{"kind":"StorageV2","sku":{"name":"Standard_LRS"}}`,
-		"/blobServices/default?":  "", // 403
+		"/storageAccounts/stfoo?":      `{"kind":"StorageV2","sku":{"name":"Standard_LRS"}}`,
+		"/blobServices/default?":       "", // 403
+		"/managementPolicies/default?": lifecyclePolicyJSON,
 	})()
 	d := collectAzureDetails(context.Background(), azTarget{kind: "storage", driver: "blob.csi.azure.com", sub: "s", rg: "rg", account: "stfoo"})
 	if len(d.Sections) == 0 || len(d.Warnings) != 1 || !strings.Contains(d.Warnings[0], "Proteção de dados") {
@@ -122,8 +165,12 @@ func TestCollectAzureDetailsDisk(t *testing.T) {
 	defer fakeAz(t, map[string]string{"/disks/pvc-1": `{"sku":{"name":"Premium_LRS"},"location":"brazilsouth","zones":["1"],"properties":{"diskSizeGB":128,"diskState":"Unattached","tier":"P10"}}`})()
 	id := "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/rg/providers/Microsoft.Compute/disks/pvc-1"
 	d := collectAzureDetails(context.Background(), azTarget{kind: "disk", diskID: id})
-	if len(d.Sections) != 1 || !strings.Contains(strings.Join(d.Notes, "|"), "Unattached") {
+	if len(d.Sections) != 2 || !strings.Contains(strings.Join(d.Notes, "|"), "Unattached") {
 		t.Fatalf("%+v", d)
+	}
+	// disco não tem ciclo de vida: a tela diz isso em vez de ficar muda
+	if lc := d.Sections[1]; lc.Title != "Ciclo de vida (regras)" || !strings.HasPrefix(lc.Fields[0].Value, "não") || !strings.Contains(lc.Fields[0].Value, "disco gerenciado") {
+		t.Errorf("seção de ciclo de vida do disco: %+v", lc)
 	}
 }
 
