@@ -260,8 +260,7 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose, onMe
                     <pre className="font-mono text-[12.5px] leading-[1.45] py-1 min-w-max">
                       {lines.map((line, i) => (
                         <div key={i} className={`flex whitespace-pre ${lineClass(line.kind)}`}>
-                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500" aria-hidden>{line.oldNo ?? ""}</span>
-                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500 border-r border-zinc-700/60" aria-hidden>{line.newNo ?? ""}</span>
+                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500 border-r border-zinc-700/60" aria-hidden>{line.newNo ?? line.oldNo ?? ""}</span>
                           <span className="px-3">{line.text || " "}</span>
                         </div>
                       ))}
