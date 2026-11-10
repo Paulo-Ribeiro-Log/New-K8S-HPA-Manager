@@ -1,4 +1,4 @@
-const a=`## Para que serve
+const o=`## Para que serve
 
 Compara a **versão que está em produção** de uma aplicação com uma **nova tag do GitHub** e mostra **o que muda**: commits, arquivos alterados e linhas adicionadas e removidas. Serve para **revisar uma mudança (CHG) antes de ir para produção**, com os dados da CHG do ServiceNow.
 
@@ -38,9 +38,10 @@ Consultar e comparar não exige o grupo SRE; as rotas usam o **seu token do GitH
 - **Erros de SAML** do GitHub indicam que o token precisa ser **autorizado para a organização** (SSO). Autorize o token e tente de novo.
 - **O diff do GitHub é limitado**: comparações muito grandes podem vir truncadas.
 - **O lote é local**: ele não é compartilhado com outros usuários nem entre navegadores.
+- **Servidor no WSL sem modo gráfico (WSLg):** o login do ServiceNow e do Teams precisa de um Chrome com display. Sem ele aparece um aviso com o botão **Ver tutorial de instalação** (passo a passo com comandos copiáveis e **Testar de novo**). Enquanto isso, links abertos pelo servidor (inclusive o \`az login\`) vão para o navegador padrão do Windows; \`K8S_HPA_BROWSER=windows|linux|auto\` força a escolha, e \`new-k8s-hpa diagnose-display\` mostra o diagnóstico.
 - **A extração via navegador pode travar por vários minutos** no login do Azure AD; **Cancelar** interrompe de verdade.
 
 ## Veja também
 
 [Deployments](ajuda:deployments), [Code Editor](ajuda:code-editor).
-`;export{a as default};
+`;export{o as default};

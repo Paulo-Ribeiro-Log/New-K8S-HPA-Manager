@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### WSL: teste de modo gráfico e navegador padrão do Windows (Novembro 2026)
+
+`internal/displayenv`: `Detect` testa de verdade se há display (conecta no socket X11/Wayland do WSLg, em vez de só olhar `DISPLAY`/`WAYLAND_DISPLAY`), a versão do WSL, o interop com o Windows, Chrome/Xvfb/Docker/xdg-open, os abridores do Windows (`wslview`, `rundll32.exe`, `explorer.exe`) e o navegador padrão do Windows (registro, via `reg.exe`), e diz o que funciona: abrir links, `az login`, robô do Teams e login do ServiceNow. Sondas injetáveis (`Probe`) testam WSL2 com/sem WSLg, WSL1, sem interop, Linux nativo, Wayland, X11 por TCP, macOS e Windows. `OpenURL` abre links: com display, `xdg-open`; **no WSL sem display, o navegador padrão do Windows** (`K8S_HPA_BROWSER=windows|linux` força); só aceita http/https e passa a URL como argumento (sem shell, `&` intacto). `AzLoginEnv` aponta o `BROWSER` do `az login` para o Windows nesse caso. `EnsureDisplayEnv` define `DISPLAY` quando o WSLg responde mas a variável não foi herdada. Subcomando `new-k8s-hpa diagnose-display [--json] [--open <url>]` e `GET /api/v1/system/display` (cache de 30 s). `openBrowser` do `web` passou a usar isso (antes `xdg-open` fixo; no Windows, `cmd /c start`, que quebrava URL com `&`). **Limite:** o robô do Teams e o login do ServiceNow precisam *controlar* o navegador (CDP) e continuam exigindo display; o navegador do Windows só abre links.
+
+### WSL: tutorial de instalação do WSLg na interface (Novembro 2026)
+
+Quando o servidor roda no WSL e o robô do Teams/ServiceNow não tem display, `GraphicalModeNotice` (aba Teams Broadcast, importação do ServiceNow e sessão ServiceNow do perfil) mostra a mensagem de falta de suporte ao WSLg com o botão "Ver tutorial de instalação". `WSLgTutorialModal` lista os passos (WSL 2, `wsl --update`, `.wslconfig`, `wsl --shutdown`, conferência no Linux, Chrome), com os já resolvidos marcados a partir de `GET /system/display`, comandos copiáveis e "Testar de novo" (`?refresh=true`). Lógica pura em `lib/wslgTutorial.ts`.
+
 ### Qual build está rodando + testes de frontend (Novembro 2026)
 
 - **Build id:** `internal/buildinfo` (commit, `dirty` e data do commit via `debug.ReadBuildInfo`, hora do binário, início do processo, e o `frontend_bundle` embutido lido do `index.html`). `GET /health` passa a devolver `build` (o `version` fixo `1.0.0-poc` foi trocado pela versão real); o log de partida, `new-k8s-hpa version` e o `rebuild-web.sh` mostram o mesmo. No frontend, `BuildBadge` no `Header` (commit, `*` = mudanças sem commit; tooltip com os detalhes) e `StaleFrontendBanner` quando o bundle carregado pelo navegador difere do embutido no servidor (recarregar), com `useBuildInfo` reconsultando a cada 5 min e ao voltar para a janela. Elimina a dúvida "estou no build antigo?" (testes feitos em binário/página antigos).

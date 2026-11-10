@@ -24,7 +24,7 @@ make web-build                          # só frontend: vite build + copia dist/
 ./build/new-k8s-hpa web -f              # servidor em foreground (porta 8080); `web --ad` = bypass RBAC de emergência
 K8S_HPA_PPROF=1 ./build/new-k8s-hpa web -f   # + /api/v1/debug/runtime e /debug/pprof/:name (JWT) para medir memória/CPU do servidor
 ./build/new-k8s-hpa autodiscover        # descobre clusters AKS+EKS+GKE em paralelo
-# outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), teams-discover (mapeia APIs internas do Teams)
+# outros subcomandos (cmd/): version, diagnose-ca [url] (CA customizada), diagnose-display [--json] [--open <url>] (WSLg/display e navegador do Windows; `GET /api/v1/system/display`), teams-discover (mapeia APIs internas do Teams)
 make web-install                        # npm install do frontend (clone novo)
 make web-dev                            # Vite HMR (5173) — rode o backend em paralelo
 

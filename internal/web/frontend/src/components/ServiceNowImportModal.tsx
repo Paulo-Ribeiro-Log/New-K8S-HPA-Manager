@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { GraphicalModeNotice } from "@/components/GraphicalModeNotice";
 import {
   Dialog,
   DialogContent,
@@ -856,6 +857,7 @@ export function ServiceNowImportModal({
             Extraia dados de CHGs e adicione a comparações. Feche quando terminar.
           </DialogDescription>
         </DialogHeader>
+        <GraphicalModeNotice className="rounded-md flex-shrink-0 mt-2" />
 
         {/* Corpo rolável — DialogHeader fica fixo, tab bar + conteúdo da aba rolam dentro do
             espaço restante. Necessário pro modal virar resizable (flex-1 min-h-0), ver nota em

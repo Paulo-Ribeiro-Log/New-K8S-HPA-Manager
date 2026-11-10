@@ -15,6 +15,13 @@
 | Cluster inacessível | VPN ou cluster desligado — `kubectl cluster-info --context <name>` |
 | Editor YAML "apiVersion not set" | Adicionar TypeMeta antes do `yaml.Marshal` (API typed do K8s não preenche TypeMeta) |
 
+### WSL sem modo gráfico (WSLg) e o navegador do Windows
+
+`new-k8s-hpa diagnose-display` (ou `GET /api/v1/system/display`) diz se há um display que atende (socket X11/Wayland do WSLg, testado de verdade, não só `DISPLAY`), se o Windows é chamável de dentro do WSL (interop) e qual é o navegador padrão do Windows (lido do registro). O que depende de navegador se divide em dois:
+- **Abrir um link** (a interface, o login do `az`, OAuth): sem display, abre no **navegador padrão do Windows** (`wslview`, ou `rundll32.exe url.dll,FileProtocolHandler`). Com display, segue no `xdg-open` do Linux. `K8S_HPA_BROWSER=windows|linux` força um dos dois. O login do `az` pela interface recebe `BROWSER=…` apontando para o Windows nesse caso.
+- **Controlar um navegador** (robô do Teams, login do ServiceNow): precisa de uma janela visível que a ferramenta comande por CDP. O navegador do Windows aberto por link **não** serve; sem WSLg esses dois ficam indisponíveis (o diagnóstico diz). Ative o WSLg com `wsl --update` no Windows (e `guiApplications` não pode estar `false` em `.wslconfig`).
+- Se o WSLg responde mas `DISPLAY` está vazio (serviço/sessão sem perfil de login), o `web` define `DISPLAY=:0` sozinho ao subir.
+
 ## Auth / JWT
 
 | Problema | Solução |

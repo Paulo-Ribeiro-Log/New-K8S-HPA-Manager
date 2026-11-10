@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import { GraphicalModeNotice } from "@/components/GraphicalModeNotice";
 import { packRecipients, unpackRecipients, type BroadcastChat } from "@/lib/broadcastRecipients";
 import type { BroadcastSentBatch, BroadcastSentMessage } from "@/lib/api/types";
 
@@ -1458,6 +1459,7 @@ export const TeamsBroadcastTab = () => {
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-background">
+      <GraphicalModeNotice className="flex-shrink-0 border-b" />
 
       {/* ── Toolbar ── */}
       <div className="flex items-center gap-0.5 px-3 py-1.5 border-b border-border flex-shrink-0 bg-card flex-wrap">
