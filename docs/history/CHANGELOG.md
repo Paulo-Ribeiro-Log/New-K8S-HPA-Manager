@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Dependencies — abrir o recurso listado ao clicar (Novembro 2026)
+
+A coluna Fonte (registro e busca reversa) vira link (`SourceCell`, `dependencyTargets` em `DependenciesTab.tsx`): configmap/secret abrem as abas ConfigMaps/Secrets, env abre Deployments e pvc abre o modal Volumes; se a linha traz o deployment, ele ganha um segundo link. `Index.navigateToDependency` troca o cluster (`handleClusterChange` agora devolve se deu certo e a navegação para se falhar), define o namespace da aba e manda um `focusRequest` (nome + nonce) que ConfigMapsTab/SecretsTab/DeploymentsTab aplicam na busca; o modal de Volumes aceita `initialQuery`. Também na busca em Secrets e ConfigMaps (`SecretDataResultsTable`, prop `onNavigate`): `secret: <nome>` / `configmap: <nome>` abrem a aba do recurso. Só frontend.
+
 ### Volumes/Dependencies — ciclo de vida do storage e busca na subscription (Novembro 2026)
 
 - **Ciclo de vida:** o detalhe do storage (Consultar na Azure) lê `managementPolicies/default` em paralelo e mostra cada regra (filtro, ações Cool/Cold/Archive/excluir e dias, ativa ou não); regras que excluem e conta sem política viram pontos de atenção (`nodepool_volumes_storage_lifecycle.go`).

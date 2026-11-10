@@ -240,6 +240,9 @@ const formatVersion = (version: string | undefined): string => {
 };
 
 interface DeploymentsTabProps {
+  // focusRequest — pedido de outra aba (ex.: Dependencies) para destacar um recurso: o nome vai para a
+  // busca. O nonce muda a cada pedido, então o mesmo nome pode ser pedido de novo.
+  focusRequest?: { name: string; nonce: number } | null;
   cluster: string;
   namespaces: Namespace[];
   selectedNamespace: string;
@@ -275,12 +278,19 @@ export const DeploymentsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
   isActive = true,
+  focusRequest = null,
   stateScope = 'deployments',
   embedded,
   nodeFilter,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>(stateScope, 'searchQuery', "");
+
+  // Pedido de foco vindo de outra aba (ex.: Dependencies): o nome do recurso vira a busca.
+  useEffect(() => {
+    if (focusRequest?.name) setSearchQuery(focusRequest.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só reage a um novo pedido (nonce)
+  }, [focusRequest?.nonce]);
   // Filtro Todos/APPs/Sistema — pedido explícito do usuário, mesma ideia do badge isCompanyApp
   // (ver CompanyAppBadge), mas como filtro de verdade na lista: "APPs" mostra só aplicações da
   // empresa (isCompanyApp), "Sistema" mostra só o resto (ferramentas/infra), sem misturar.

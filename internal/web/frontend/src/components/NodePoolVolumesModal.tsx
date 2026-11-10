@@ -15,6 +15,7 @@ import { apiClient, type AzStorageDetails, type SnapshotCreated, type SnapshotIn
 interface Props {
   cluster: string;
   resourceLabel: string; // "Node Pools" ou "Node Groups"
+  initialQuery?: string; // abre já filtrado (ex.: vindo da aba Dependencies)
   onClose: () => void;
 }
 
@@ -334,14 +335,14 @@ function SnapshotDialog({ cluster, item, onClose, onDone }: { cluster: string; i
   );
 }
 
-export function NodePoolVolumesModal({ cluster, resourceLabel, onClose }: Props) {
+export function NodePoolVolumesModal({ cluster, resourceLabel, initialQuery, onClose }: Props) {
   const [data, setData] = useState<VolumesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [includeUsage, setIncludeUsage] = useState(false);
   const [includeCost, setIncludeCost] = useState(false);
   const [view, setView] = useState<"volumes" | "apps" | "nfs">("volumes");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery ?? "");
   const [namespace, setNamespace] = useState("");
   const [pool, setPool] = useState("");
   const [source, setSource] = useState("");

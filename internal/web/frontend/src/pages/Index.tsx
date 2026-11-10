@@ -67,7 +67,7 @@ import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import { HelmTab } from "@/components/HelmTab";
 import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
-import { DependenciesTab } from "@/components/DependenciesTab";
+import { DependenciesTab, type DependencyNavTarget } from "@/components/DependenciesTab";
 import CertificatesTab from "@/components/CertificatesTab";
 import AccessCheckTab from "@/components/AccessCheckTab";
 import LatencyTestTab from "@/components/LatencyTestTab";
@@ -224,6 +224,10 @@ const Index = ({ onLogout }: IndexProps) => {
   const [nodePoolErrors, setNodePoolErrors] = useState<Record<string, string>>({});
   const [showSequencingModal, setShowSequencingModal] = useState(false);
   const [showVolumesModal, setShowVolumesModal] = useState(false);
+  // Navegação vinda da aba Dependencies: pedido de foco (nome do recurso) para a aba de destino e
+  // consulta inicial do modal de Volumes.
+  const [resourceFocus, setResourceFocus] = useState<{ tab: string; name: string; nonce: number } | null>(null);
+  const [volumesInitialQuery, setVolumesInitialQuery] = useState("");
   const [showVolumeScan, setShowVolumeScan] = useState(false);
   const volumeScan = useVolumeScan();
   const volumeAttention = scanAttention(volumeScan.data);
@@ -299,6 +303,32 @@ const Index = ({ onLogout }: IndexProps) => {
     } catch (error) {
       console.error("[NavigateToHPA] Erro ao navegar:", error);
       toast.error("Erro ao navegar para o HPA");
+    }
+  };
+
+  // Abre, a partir de uma linha da aba Dependencies, o recurso listado: troca o cluster, escolhe o
+  // namespace e vai para a aba (ConfigMaps/Secrets/Deployments) já filtrada pelo nome, ou abre o modal
+  // de Volumes filtrado.
+  const navigateToDependency = async (t: DependencyNavTarget) => {
+    try {
+      if (t.cluster !== selectedCluster) {
+        toast.info(`Trocando para o cluster ${t.cluster.replace(/-admin$/, "")}...`);
+        if (!(await handleClusterChange(t.cluster))) return; // falhou (já avisou com toast): não abre o recurso de outro cluster
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (t.tab === "volumes") {
+        setVolumesInitialQuery(t.name);
+        setShowVolumesModal(true);
+        return;
+      }
+      if (t.tab === "configmaps") setConfigMapsNamespace(t.namespace);
+      if (t.tab === "secrets") setSecretsNamespace(t.namespace);
+      if (t.tab === "deployments") setDeploymentsNamespace(t.namespace);
+      setResourceFocus({ tab: t.tab, name: t.name, nonce: Date.now() });
+      handleTabChange(t.tab);
+    } catch (error) {
+      console.error("[NavigateToDependency] Erro ao navegar:", error);
+      toast.error("Erro ao abrir o recurso");
     }
   };
 
@@ -633,8 +663,9 @@ const Index = ({ onLogout }: IndexProps) => {
   }, [selectedCluster, clusterProviders, triggerGcpSsoLogin]);
 
   // 🔧 FIX: Handler para mudança de cluster com switch de contexto
-  const handleClusterChange = async (newCluster: string) => {
-    if (newCluster === selectedCluster) return;
+  // Devolve true se o cluster está selecionado ao final (já era o atual ou a troca deu certo).
+  const handleClusterChange = async (newCluster: string): Promise<boolean> => {
+    if (newCluster === selectedCluster) return true;
 
     console.log(`[ClusterSwitch] Switching from ${selectedCluster} to ${newCluster}`);
 
@@ -708,10 +739,11 @@ const Index = ({ onLogout }: IndexProps) => {
       toast.error(`Erro ao alterar contexto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
 
       // Não alterar o cluster selecionado se houve erro
-      return;
+      return false;
     } finally {
       setIsContextSwitching(false);
     }
+    return true;
   };
 
   // Reset namespace when cluster changes (exceto quando há navegação pendente)
@@ -1462,7 +1494,7 @@ const Index = ({ onLogout }: IndexProps) => {
       case "dependencies":
         return (
           <ErrorBoundary componentName="Dependencies Tab">
-            <DependenciesTab />
+            <DependenciesTab onNavigate={navigateToDependency} />
           </ErrorBoundary>
         );
 
@@ -1885,6 +1917,7 @@ const Index = ({ onLogout }: IndexProps) => {
               onToggleSystemNamespaces={toggleSystemNamespaces}
               onOpenCompare={handleOpenCompare}
               isActive={activeTab === "configmaps"}
+              focusRequest={resourceFocus?.tab === "configmaps" ? resourceFocus : null}
             />
           )}
         </div>
@@ -1902,6 +1935,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
                 isActive={activeTab === "deployments"}
+                focusRequest={resourceFocus?.tab === "deployments" ? resourceFocus : null}
               />
             </ErrorBoundary>
           )}
@@ -1920,6 +1954,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onToggleSystemNamespaces={toggleSystemNamespaces}
                 onOpenCompare={handleOpenCompare}
                 isActive={activeTab === "secrets"}
+                focusRequest={resourceFocus?.tab === "secrets" ? resourceFocus : null}
               />
             </ErrorBoundary>
           )}
@@ -2056,7 +2091,7 @@ const Index = ({ onLogout }: IndexProps) => {
         />
       )}
       {showVolumesModal && selectedCluster && (
-        <NodePoolVolumesModal cluster={selectedCluster} resourceLabel={nodeResourceLabel} onClose={() => setShowVolumesModal(false)} />
+        <NodePoolVolumesModal cluster={selectedCluster} resourceLabel={nodeResourceLabel} initialQuery={volumesInitialQuery} onClose={() => { setShowVolumesModal(false); setVolumesInitialQuery(""); }} />
       )}
 
       {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}

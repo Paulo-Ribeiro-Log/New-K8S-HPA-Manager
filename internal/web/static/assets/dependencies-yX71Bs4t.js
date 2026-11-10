@@ -22,6 +22,16 @@ O scan também registra o **storage montado por volume**: Azure Files, Blob (CSI
    - **Busca em Secrets e ConfigMaps:** procure por **chave** ou por **valor** no índice de conteúdo (veja o aviso abaixo).
 3. **Exportar** gera o relatório em **PDF**, **Markdown** ou **CSV** (o CSV usa \`;\` como separador, para abrir direto no Excel em pt-BR).
 
+## Abrir o recurso a partir da lista
+
+Na coluna **Fonte** (no registro e na busca reversa) cada linha é um **link**: ao clicar, a ferramenta **troca para o cluster da dependência**, escolhe o **namespace** e abre o recurso já **filtrado pelo nome**:
+
+- \`configmap: <nome>\` abre a aba **ConfigMaps**; \`secret: <nome>\` abre a aba **Secrets**;
+- \`env: …\` (variável de ambiente de um deployment) abre a aba **Deployments**;
+- \`pvc: <nome>\` (storage montado por volume) abre o modal **Volumes** do cluster, filtrado pelo nome do PVC ou PV.
+
+Na **busca em Secrets e ConfigMaps** (por chave ou valor), o rótulo \`secret: <nome>\` / \`configmap: <nome>\` de cada resultado também é um link para a aba do recurso, no cluster e namespace do resultado. Quando a linha também traz o **deployment**, ele aparece logo abaixo como um segundo link (\`deployment: <nome>\`). Se a troca de cluster falhar (VPN, por exemplo), a ferramenta avisa e **não** abre o recurso de outro cluster.
+
 ## Busca na subscription (quando não está em nenhum cluster)
 
 Se a **busca por serviço** não encontra o nome no registry (por exemplo uma storage account que nenhum cluster referencia), a tela mostra **Buscar na subscription**. A busca é **só leitura** e **sempre a pedido**: a ferramenta consulta o Azure nas **subscriptions de todos os clusters configurados** e lista **storage accounts** e **discos** (inclusive \`pvc-<uuid>\`) cujo nome contém o texto. Cada resultado vem com o aviso **"não pertence a nenhum cluster conhecido, mas está na mesma subscription"**, a subscription e quais clusters a usam, resource group (com marca para os de infraestrutura do AKS, \`MC_…\`), região, SKU, alguns containers e a **política de ciclo de vida** da conta. **Buscar também em containers e file shares** procura o nome dentro das contas (uma chamada por conta, até 30 por subscription; leva cerca de um minuto). Se nada for encontrado, **Buscar em todas as subscriptions do az login** inclui também as subscriptions que **nenhum cluster usa**, mas que o \`az login\` do servidor enxerga; a lista de **subscriptions consultadas** mostra quantas contas e discos o Azure listou em cada uma. Precisa do \`az login\` válido no servidor e de leitura nas subscriptions; falha em uma subscription vira aviso e as outras seguem.

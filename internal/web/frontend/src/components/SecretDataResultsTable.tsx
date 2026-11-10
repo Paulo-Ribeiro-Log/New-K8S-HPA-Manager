@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { SecretDataRecord } from "@/lib/api/types";
-import { Eye, EyeOff, Copy, RefreshCcw, KeyRound, AlertCircle, Loader2, ListFilter, Check } from "lucide-react";
+import type { DependencyNavTarget } from "@/components/DependenciesTab";
+import { Eye, EyeOff, Copy, RefreshCcw, KeyRound, AlertCircle, Loader2, ListFilter, Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -88,9 +89,12 @@ interface SecretDataResultsTableProps {
   hasSearched: boolean;
   query: string;
   onResyncClick: (cluster: string, namespace: string, resourceName: string) => void;
+  // Quando informado, "secret: <nome>" / "configmap: <nome>" viram link para a aba do recurso (troca
+  // o cluster, escolhe o namespace e filtra pelo nome).
+  onNavigate?: (target: DependencyNavTarget) => void;
 }
 
-export const SecretDataResultsTable = ({ items, loading, hasSearched, query, onResyncClick }: SecretDataResultsTableProps) => {
+export const SecretDataResultsTable = ({ items, loading, hasSearched, query, onResyncClick, onNavigate }: SecretDataResultsTableProps) => {
   const [clusterFilter, setClusterFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
   const [kindFilter, setKindFilter] = useState<Set<string>>(new Set());
@@ -286,9 +290,26 @@ export const SecretDataResultsTable = ({ items, loading, hasSearched, query, onR
                 <span className="truncate self-start pt-0.5" title={rec.cluster}>{rec.cluster.replace(/-admin$/, "")}</span>
                 <span className="truncate self-start pt-0.5" title={rec.namespace}>{rec.namespace}</span>
                 <div className="flex items-center gap-1.5 min-w-0 self-start pt-0.5">
-                  <span className="truncate text-muted-foreground" title={`${rec.resource_kind}: ${rec.resource_name}`}>
-                    {rec.resource_kind}: {rec.resource_name}
-                  </span>
+                  {onNavigate ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 min-w-0 text-left text-sky-400 hover:underline"
+                      title={`Abrir ${rec.resource_kind === "secret" ? "o Secret" : "o ConfigMap"} "${rec.resource_name}" em ${rec.cluster.replace(/-admin$/, "")} / ${rec.namespace}`}
+                      onClick={() => onNavigate({
+                        cluster: rec.cluster,
+                        namespace: rec.namespace,
+                        tab: rec.resource_kind === "secret" ? "secrets" : "configmaps",
+                        name: rec.resource_name,
+                      })}
+                    >
+                      <span className="truncate">{rec.resource_kind}: {rec.resource_name}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0" />
+                    </button>
+                  ) : (
+                    <span className="truncate text-muted-foreground" title={`${rec.resource_kind}: ${rec.resource_name}`}>
+                      {rec.resource_kind}: {rec.resource_name}
+                    </span>
+                  )}
                   {rec.resource_kind === "secret" && rec.resource_name.toLowerCase().includes("akv") && (
                     <ProtectedAction>
                       <Button
