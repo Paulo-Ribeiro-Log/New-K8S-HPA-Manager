@@ -122,6 +122,33 @@ type PRMergeStatus struct {
 	Mergeable      *bool  `json:"mergeable"`       // nil: o GitHub ainda está calculando
 	MergeableState string `json:"mergeable_state"` // clean | dirty | blocked | behind | unstable | draft | has_hooks | unknown
 	Draft          bool   `json:"draft"`
+	// MergeBlockReason: por que NÃO dá para mergear agora ("" = pode). Calculado a partir do estado acima.
+	MergeBlockReason string `json:"merge_block_reason,omitempty"`
+}
+
+// mergeBlockReason diz por que o PR não pode ser mergeado agora ("" quando pode). Só deixa passar o que
+// o GitHub chama de clean (tudo verde), has_hooks (verde, com hooks) e behind (verde, só atrasado em
+// relação ao destino). Os checks e as aprovações exigidos pela proteção da branch entram em "blocked".
+func mergeBlockReason(st PRMergeStatus) string {
+	switch {
+	case st.State == "merged":
+		return "o PR já foi mergeado"
+	case st.State != "open":
+		return "o PR está fechado: reabra-o para mergear"
+	case st.Draft || st.MergeableState == "draft":
+		return "o PR é um rascunho"
+	}
+	switch st.MergeableState {
+	case "clean", "has_hooks", "behind":
+		return ""
+	case "dirty":
+		return "o PR tem conflito com a branch de destino"
+	case "unstable":
+		return "há checks falhando"
+	case "blocked":
+		return "o GitHub bloqueia o merge: checks obrigatórios, aprovações ou regra de proteção da branch pendentes"
+	}
+	return "o GitHub ainda está calculando se dá para mergear: tente de novo em alguns segundos"
 }
 
 // GetPRMergeStatus — GET /api/v1/code-editor/repos/:id/pr/status?pr=<n>&profile_id=<id>
@@ -132,7 +159,7 @@ func (h *CodeEditorHandler) GetPRMergeStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "pr é obrigatório"})
 		return
 	}
-	t, ok := h.resolvePlanTarget(c)
+	t, ok := h.resolveRepoAccess(c) // não depende da branch atual: serve a qualquer PR do repositório
 	if !ok {
 		return
 	}
@@ -163,5 +190,6 @@ func fetchPRMergeStatus(ctx context.Context, token, owner, repo string, number i
 	if raw.Merged {
 		st.State = "merged"
 	}
+	st.MergeBlockReason = mergeBlockReason(st)
 	return st, nil
 }

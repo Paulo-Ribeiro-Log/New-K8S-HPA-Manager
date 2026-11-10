@@ -55,7 +55,11 @@ type ghPullDetail struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	Head struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 }
 
