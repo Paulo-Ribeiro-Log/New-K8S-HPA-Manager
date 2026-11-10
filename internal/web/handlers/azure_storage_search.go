@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,11 +25,13 @@ import (
 
 const (
 	storageSearchTimeout    = 90 * time.Second
-	storageSearchMaxPages   = 30 // páginas de listagem do ARM por tipo de recurso
-	storageSearchMaxHits    = 50 // resultados por tipo
-	storageSearchSubsPar    = 4  // subscriptions consultadas em paralelo
-	storageSearchEnrich     = 5  // contas encontradas que ganham ciclo de vida e containers
-	storageSearchDeepCap    = 30 // contas varridas por containers/shares no modo profundo, por subscription
+	storageSearchDeepOneTTL = 240 * time.Second // varredura de containers de UMA subscription (46 contas levaram ~87 s)
+	storageSearchMaxPages   = 30                // páginas de listagem do ARM por tipo de recurso
+	storageSearchMaxHits    = 50                // resultados por tipo
+	storageSearchSubsPar    = 4                 // subscriptions consultadas em paralelo
+	storageSearchEnrich     = 5                 // contas encontradas que ganham ciclo de vida e containers
+	storageSearchDeepCap    = 30                // contas varridas por containers/shares no modo profundo, por subscription
+	storageSearchDeepCapOne = 100               // idem, quando a busca é de UMA subscription só (a tela varre uma por vez)
 	storageSearchDeepPar    = 6
 	storageSearchContainers = 20 // containers listados por conta encontrada
 )
@@ -95,7 +98,7 @@ func NewAzureStorageSearchHandler(km *config.KubeConfigManager) *AzureStorageSea
 	return &AzureStorageSearchHandler{kubeManager: km}
 }
 
-// Search — GET /azure/storage-search?q=<nome>[&cluster=<cluster>][&deep=true]
+// Search — GET /azure/storage-search?q=<nome>[&cluster=<cluster>][&deep=true][&all=true][&subscription=<id>][&disks=false]
 //
 // Sem cluster, consulta todas as subscriptions dos clusters configurados. Com deep=true, além de
 // contas e discos, varre os containers e file shares das contas (mais lento: uma chamada por conta).
@@ -106,7 +109,11 @@ func (h *AzureStorageSearchHandler) Search(c *gin.Context) {
 			"message": "Informe de 3 a 64 caracteres (letras, números, ponto, hífen ou sublinhado)."}})
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), storageSearchTimeout)
+	timeout := storageSearchTimeout
+	if c.Query("deep") == "true" && c.Query("subscription") != "" {
+		timeout = storageSearchDeepOneTTL
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
 	subs, err := h.resolveSubscriptions(ctx, c.Query("cluster"))
@@ -123,7 +130,20 @@ func (h *AzureStorageSearchHandler) Search(c *gin.Context) {
 			return
 		}
 	}
-	res := searchSubscriptions(ctx, subs, q, c.Query("deep") == "true")
+	// subscription=<id[,id]>: varre só essas (a tela percorre uma por vez na busca em containers, para
+	// cada chamada caber no prazo e uma falha não perder as demais).
+	if sel := c.Query("subscription"); sel != "" {
+		var err error
+		if subs, err = selectSubscriptions(subs, sel); err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"success": false, "error": gin.H{"code": "UNKNOWN_SUBSCRIPTION", "message": err.Error()}})
+			return
+		}
+	}
+	opts := searchOpts{SkipDisks: c.Query("disks") == "false"}
+	if len(subs) == 1 {
+		opts.DeepCap = storageSearchDeepCapOne
+	}
+	res := searchSubscriptionsOpts(ctx, subs, q, c.Query("deep") == "true", opts)
 	res.All = all
 	res.Warnings = append(append([]string{}, warns...), res.Warnings...) // nunca null no JSON: a tela faz .map
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": res})
@@ -209,9 +229,20 @@ func (h *AzureStorageSearchHandler) resolveSubscriptions(ctx context.Context, cl
 	return out, nil
 }
 
+// searchOpts ajusta a busca: a varredura de containers, uma subscription por vez, não precisa
+// relistar os discos (já vieram na busca anterior) e pode olhar mais contas.
+type searchOpts struct {
+	SkipDisks bool
+	DeepCap   int // 0 = storageSearchDeepCap
+}
+
 // searchSubscriptions faz a busca em todas as subscriptions (em paralelo limitado). Falha numa
 // subscription vira aviso e não derruba as demais.
 func searchSubscriptions(ctx context.Context, subs []SubscriptionInfo, q string, deep bool) *StorageSearchResult {
+	return searchSubscriptionsOpts(ctx, subs, q, deep, searchOpts{})
+}
+
+func searchSubscriptionsOpts(ctx context.Context, subs []SubscriptionInfo, q string, deep bool, opts searchOpts) *StorageSearchResult {
 	res := &StorageSearchResult{Query: q, Deep: deep, Subscriptions: subs, Results: []StorageHit{}, Warnings: []string{}, QueriedAt: time.Now().UTC().Format(time.RFC3339)}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -222,7 +253,7 @@ func searchSubscriptions(ctx context.Context, subs []SubscriptionInfo, q string,
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			hits, warns, trunc := searchOneSubscription(ctx, s, q, deep)
+			hits, warns, trunc := searchOneSubscription(ctx, s, q, deep, opts)
 			mu.Lock()
 			res.Results = append(res.Results, hits...)
 			res.Warnings = append(res.Warnings, warns...)
@@ -253,7 +284,7 @@ func storageTypeOrder(t string) int {
 	return 3
 }
 
-func searchOneSubscription(ctx context.Context, s *SubscriptionInfo, q string, deep bool) (hits []StorageHit, warns []string, truncated bool) {
+func searchOneSubscription(ctx context.Context, s *SubscriptionInfo, q string, deep bool, opts searchOpts) (hits []StorageHit, warns []string, truncated bool) {
 	label := s.Name
 	if label == "" {
 		label = s.ID
@@ -265,18 +296,24 @@ func searchOneSubscription(ctx context.Context, s *SubscriptionInfo, q string, d
 	var accErr, diskErr error
 	var tr1, tr2 bool
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		accounts, tr1, accErr = armList(ctx, base+"/providers/Microsoft.Storage/storageAccounts?api-version="+storageAPIVer)
 	}()
-	go func() {
-		defer wg.Done()
-		disks, tr2, diskErr = armList(ctx, base+"/providers/Microsoft.Compute/disks?api-version="+diskAPIVer)
-	}()
+	if !opts.SkipDisks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			disks, tr2, diskErr = armList(ctx, base+"/providers/Microsoft.Compute/disks?api-version="+diskAPIVer)
+		}()
+	}
 	wg.Wait()
 	truncated = tr1 || tr2
-	s.AccountsListed, s.DisksListed = len(accounts), len(disks) // cada goroutine escreve só na sua subscription
+	s.AccountsListed = len(accounts) // cada goroutine escreve só na sua subscription
+	if !opts.SkipDisks {
+		s.DisksListed = len(disks)
+	}
 	if accErr != nil {
 		warns = append(warns, fmt.Sprintf("%s: contas de armazenamento — %v", label, accErr))
 	}
@@ -325,7 +362,7 @@ func searchOneSubscription(ctx context.Context, s *SubscriptionInfo, q string, d
 	}
 
 	if deep {
-		h, w := deepSearchContainers(ctx, *s, accounts, needle)
+		h, w := deepSearchContainers(ctx, *s, accounts, needle, opts.DeepCap)
 		hits = append(hits, h...)
 		warns = append(warns, w...)
 	}
@@ -375,17 +412,21 @@ func fetchLifecycle(ctx context.Context, accBase string) *LifecycleSummary {
 
 // deepSearchContainers procura o nome em containers e file shares das contas (uma chamada por conta
 // e por tipo), limitado a storageSearchDeepCap contas.
-func deepSearchContainers(ctx context.Context, s SubscriptionInfo, accounts []map[string]any, needle string) ([]StorageHit, []string) {
+func deepSearchContainers(ctx context.Context, s SubscriptionInfo, accounts []map[string]any, needle string, capAccounts int) ([]StorageHit, []string) {
+	if capAccounts <= 0 {
+		capAccounts = storageSearchDeepCap
+	}
 	var hits []StorageHit
 	var warns []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var okCalls int32 // listagens que terminaram
 	sem := make(chan struct{}, storageSearchDeepPar)
 	subBase := armBase + "/subscriptions/" + url.PathEscape(s.ID)
 	scanned := accounts
-	if len(scanned) > storageSearchDeepCap {
-		scanned = scanned[:storageSearchDeepCap]
-		warns = append(warns, fmt.Sprintf("Busca em containers limitada às %d primeiras de %d contas da subscription.", storageSearchDeepCap, len(accounts)))
+	if len(scanned) > capAccounts {
+		scanned = scanned[:capAccounts]
+		warns = append(warns, fmt.Sprintf("%s: busca em containers limitada às %d primeiras de %d contas.", subLabel(s), capAccounts, len(accounts)))
 	}
 	for _, a := range scanned {
 		name, id, loc, kind := digStr(a, "name"), digStr(a, "id"), digStr(a, "location"), digStr(a, "kind")
@@ -405,6 +446,7 @@ func deepSearchContainers(ctx context.Context, s SubscriptionInfo, accounts []ma
 				if err != nil {
 					return // conta sem permissão de listagem: segue sem ela
 				}
+				atomic.AddInt32(&okCalls, 1)
 				for _, it := range list {
 					n := digStr(it, "name")
 					if !strings.Contains(strings.ToLower(n), needle) {
@@ -422,6 +464,10 @@ func deepSearchContainers(ctx context.Context, s SubscriptionInfo, accounts []ma
 		}
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		warns = append(warns, fmt.Sprintf("%s: o tempo da varredura de containers acabou (%d de %d listagens concluídas): o resultado é parcial; rode de novo ou use \"Ver containers e file shares desta conta\" nas contas que interessam.",
+			subLabel(s), atomic.LoadInt32(&okCalls), len(scanned)*2))
+	}
 	return hits, warns
 }
 
@@ -465,4 +511,41 @@ func rgFromID(id string) string {
 		}
 	}
 	return ""
+}
+
+func subLabel(s SubscriptionInfo) string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return s.ID
+}
+
+// selectSubscriptions fica só com as subscriptions pedidas em `csv` (IDs separados por vírgula).
+// Um ID fora da lista das consultadas é recusado: a busca nunca sai do escopo já conhecido.
+func selectSubscriptions(subs []SubscriptionInfo, csv string) ([]SubscriptionInfo, error) {
+	var out []SubscriptionInfo
+	for _, raw := range strings.Split(csv, ",") {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if !reUUID.MatchString(id) {
+			return nil, fmt.Errorf("subscription inválida: %q", id)
+		}
+		found := false
+		for _, s := range subs {
+			if strings.EqualFold(s.ID, id) {
+				out = append(out, s)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("a subscription %s não está entre as consultadas (use a busca em todas as subscriptions)", id)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("nenhuma subscription informada")
+	}
+	return out, nil
 }

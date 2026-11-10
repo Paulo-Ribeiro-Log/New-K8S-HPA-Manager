@@ -165,6 +165,7 @@ import type {
   BroadcastSentBatch,
   BroadcastSentMessage,
   AzureStorageSearchResult,
+  AzureAccountContents,
 } from "./types";
 
 import type {
@@ -5469,12 +5470,22 @@ class APIClient {
   // Sem `cluster`, consulta as subscriptions de todos os clusters configurados. `deep` varre também os
   // containers e file shares das contas (mais lento). `all` inclui as subscriptions que nenhum cluster usa
   // mas o az login do servidor enxerga.
-  async searchAzureStorage(q: string, opts?: { cluster?: string; deep?: boolean; all?: boolean }): Promise<AzureStorageSearchResult> {
+  async searchAzureStorage(q: string, opts?: { cluster?: string; deep?: boolean; all?: boolean; subscription?: string; disks?: boolean }): Promise<AzureStorageSearchResult> {
     const p = new URLSearchParams({ q });
     if (opts?.cluster) p.set("cluster", opts.cluster);
     if (opts?.deep) p.set("deep", "true");
     if (opts?.all) p.set("all", "true");
+    if (opts?.subscription) p.set("subscription", opts.subscription); // só essa subscription (a varredura de containers vai uma por vez)
+    if (opts?.disks === false) p.set("disks", "false"); // não relistar discos
     const res = await this.request<{ success: boolean; data: AzureStorageSearchResult }>(`/azure/storage-search?${p.toString()}`);
+    return res.data;
+  }
+
+  // Containers e file shares de UMA conta de armazenamento já achada (só leitura): olha só para ela, sem refazer
+  // a busca por subscription.
+  async getAzureAccountContents(subscription: string, resourceGroup: string, account: string): Promise<AzureAccountContents> {
+    const p = new URLSearchParams({ subscription, resource_group: resourceGroup, account });
+    const res = await this.request<{ success: boolean; data: AzureAccountContents }>(`/azure/storage-account/contents?${p.toString()}`);
     return res.data;
   }
 

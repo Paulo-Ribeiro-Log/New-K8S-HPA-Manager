@@ -898,9 +898,10 @@ func (s *Server) setupRoutes() {
 	// plano B de quando o nome não aparece em nenhum volume/dependência. Só leitura (GET no ARM), a pedido.
 	azureStorageSearch := handlers.NewAzureStorageSearchHandler(s.kubeManager)
 	api.GET("/azure/storage-search", rbacMiddleware.RequireSREGroup(), azureStorageSearch.Search)
-	api.GET("/nodepools/volumes/snapshot-info", nodePoolHandler.GetSnapshotInfo)                              // versão da API de snapshot e classes compatíveis com o PVC
-	api.POST("/nodepools/volumes/snapshot", rbacMiddleware.RequireSREGroup(), nodePoolHandler.CreateSnapshot) // cria um VolumeSnapshot do PVC
-	api.POST("/nodepools/volumes/delete", rbacMiddleware.RequireSREGroup(), nodePoolHandler.DeleteVolume)     // apaga PVC sem pod / PV sem uso (exige colar a frase de confirmação)
+	api.GET("/azure/storage-account/contents", rbacMiddleware.RequireSREGroup(), azureStorageSearch.AccountContents) // containers e file shares de UMA conta já achada (só leitura)
+	api.GET("/nodepools/volumes/snapshot-info", nodePoolHandler.GetSnapshotInfo)                                     // versão da API de snapshot e classes compatíveis com o PVC
+	api.POST("/nodepools/volumes/snapshot", rbacMiddleware.RequireSREGroup(), nodePoolHandler.CreateSnapshot)        // cria um VolumeSnapshot do PVC
+	api.POST("/nodepools/volumes/delete", rbacMiddleware.RequireSREGroup(), nodePoolHandler.DeleteVolume)            // apaga PVC sem pod / PV sem uso (exige colar a frase de confirmação)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
 	api.POST("/nodepools/:cluster/:resource_group/:name/abort", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Abort)
 	api.POST("/nodepools/:cluster/:resource_group/:name/reconcile", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Reconcile) // reaplica a config atual (pool em Failed/Canceled)

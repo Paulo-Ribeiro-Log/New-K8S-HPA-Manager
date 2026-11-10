@@ -3919,6 +3919,35 @@ export interface AzureStorageHit {
   lifecycle?: { has_policy: boolean; rules: AzureLifecycleRule[]; error?: string };
 }
 
+// Containers e file shares de UMA conta (handlers/azure_storage_account.go)
+export interface AzureContainerInfo {
+  name: string;
+  public_access?: string; // None | Blob | Container
+  lease_state?: string;
+  last_modified?: string;
+  immutable?: boolean;
+  deleted?: boolean;
+}
+
+export interface AzureShareInfo {
+  name: string;
+  tier?: string;
+  protocol?: string; // SMB | NFS
+  quota_gb?: string;
+  last_modified?: string;
+}
+
+export interface AzureAccountContents {
+  account: string;
+  resource_group: string;
+  subscription_id: string;
+  containers: AzureContainerInfo[];
+  shares: AzureShareInfo[];
+  warnings: string[];
+  truncated?: boolean;
+  queried_at: string;
+}
+
 export interface AzureStorageSearchResult {
   query: string;
   deep: boolean;
