@@ -77,6 +77,7 @@ import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { isProdClusterName } from "@/lib/clusterSafety";
 import { apiClient } from "@/lib/api/client";
+import { dependencyTargets, NAV_LABEL, type DependencyNavTarget } from "@/lib/dependencyNav";
 import type { SecretDataRecord } from "@/lib/api/types";
 import { SecretDataResultsTable } from "@/components/SecretDataResultsTable";
 import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
@@ -100,42 +101,6 @@ interface DependencyRecord {
 // Entrada de chave/valor de um Secret indexada para a busca em Secrets (modo "Secrets" da aba,
 // distinto do modo "Dependência" acima — ver DependencyRecord). Espelha storage.SecretDataRecord
 // (internal/storage/dependency_registry.go).
-// Para onde uma linha da lista pode levar: a aba do recurso (ConfigMaps/Secrets/Deployments) ou o modal
-// de Volumes, no cluster e namespace da dependência, já filtrado pelo nome.
-export interface DependencyNavTarget {
-  cluster: string;
-  namespace: string;
-  tab: "configmaps" | "secrets" | "deployments" | "volumes";
-  name: string;
-}
-
-const NAV_LABEL: Record<DependencyNavTarget["tab"], string> = {
-  configmaps: "ConfigMap",
-  secrets: "Secret",
-  deployments: "Deployment",
-  volumes: "Volumes",
-};
-
-// dependencyTargets decide o destino principal pela origem da dependência e, quando a linha traz o
-// deployment e o principal é outro recurso, um destino secundário para o deployment.
-function dependencyTargets(dep: DependencyRecord): { primary?: DependencyNavTarget; deployment?: DependencyNavTarget } {
-  const base = { cluster: dep.cluster, namespace: dep.namespace };
-  const dpl: DependencyNavTarget | undefined = dep.deployment
-    ? { ...base, tab: "deployments", name: dep.deployment }
-    : undefined;
-  switch (dep.source_type) {
-    case "configmap":
-      return { primary: { ...base, tab: "configmaps", name: dep.source_name }, deployment: dpl };
-    case "secret":
-      return { primary: { ...base, tab: "secrets", name: dep.source_name }, deployment: dpl };
-    case "pvc":
-      // namespace "-" = PV sem PVC (sem namespace): o modal de Volumes não precisa dele
-      return { primary: { ...base, tab: "volumes", name: dep.source_name }, deployment: dpl };
-    default:
-      return { primary: dpl }; // env: o recurso é o próprio deployment
-  }
-}
-
 interface RegistryStats {
   total_dependencies: number;
   unique_services: number;

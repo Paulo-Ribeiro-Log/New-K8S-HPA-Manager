@@ -125,6 +125,26 @@ start_server() {
     fi
 }
 
+# Mostra QUAL build está respondendo (commit, se havia mudanças sem commit, quando o binário foi gerado e
+# qual bundle do frontend ele embute) — para não testar um build antigo sem perceber.
+print_build_info() {
+    local json
+    json=$(curl -s "http://localhost:$PORT/health" 2>/dev/null) || return 0
+    field() { echo "$json" | grep -oE "\"$1\" *: *\"[^\"]*\"" | head -1 | cut -d'"' -f4; }
+    local commit built bundle started
+    commit=$(field commit_short)
+    built=$(field built_at)
+    bundle=$(field frontend_bundle)
+    started=$(field started_at)
+    local dirty=""
+    echo "$json" | grep -qE '"dirty" *: *true' && dirty=" (com mudanças sem commit)"
+    print_info "Build no ar: commit ${commit:-desconhecido}${dirty}"
+    [ -n "$built" ] && print_info "Binário gerado em: $built"
+    [ -n "$bundle" ] && print_info "Frontend embutido: $bundle"
+    [ -n "$started" ] && print_info "Processo iniciado em: $started"
+    return 0
+}
+
 check_health() {
     print_step "Verificando health do servidor..."
 
@@ -132,6 +152,7 @@ check_health() {
 
     if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
         print_success "Servidor respondendo corretamente!"
+        print_build_info
         return 0
     else
         print_error "Servidor não está respondendo em http://localhost:$PORT/health"
@@ -186,6 +207,7 @@ show_status() {
         # Tentar health check
         if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
             print_success "Health check OK: http://localhost:$PORT/health"
+            print_build_info
         else
             print_error "Porta em uso mas health check falhou"
         fi

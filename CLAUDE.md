@@ -37,6 +37,7 @@ make test-coverage                                    # gera coverage.out + cove
 
 cd internal/web/frontend
 npx tsc --noEmit -p tsconfig.app.json   # type-check REAL (ver abaixo); `make web-typecheck` na raiz, é o que a CI roda (~4 min)
+npm test                                # Vitest: lógica pura (`src/**/*.test.ts`, sem navegador; `// @vitest-environment jsdom` quando precisa de localStorage); `make web-test` na raiz, a CI roda (bloqueia)
 npm run lint                            # eslint (no-undef desligado); `make web-lint` na raiz, é o que a CI roda (bloqueia; ~2 min)
 npm run help:check                      # abas sem página de ajuda; `make web-help-check` na raiz (aviso na CI)
 ```
@@ -49,7 +50,8 @@ Antes de commitar: `go test ... -race`, `make build`, `go fmt ./...`, `go mod ve
 - `vendor/github.com/go-rod/rod/lib/cdp/client.go` tem **patch manual** (`consumeMessages` loga+`continue` em vez de `panic` em frame CDP malformado; comentário `PATCH MANUAL`). `go mod vendor` apaga o patch em silêncio — reaplique (o comentário no código cita uma seção "Notas de Build" que virou esta lista).
 - `go.mod` tem `godebug tlsmlkem=0` (o key share pós-quântico do Go 1.24+ trava handshake TLS em VPN/EKS privado). Não remover. O comentário no `go.mod` cita a seção "Bug real corrigido — TLS handshake timeout…", que hoje está em `docs/history/CLAUDE-DETAILED-NOTES.md` (~linha 326).
 - `make release`/`build-all` num host Linux geram binários **darwin com SQLite quebrado** (cgo desligado → stub do `go-sqlite3` compila mas falha em runtime; detecção em `internal/storage/sqlite_health.go`). Release de verdade = workflow `release.yml` (runners macOS nativos, alvo `make release-single` com `GOOS`/`GOARCH` no ambiente). O `make release` em `ci.yml` é só smoke-test de compilação.
-- Não existe test runner de frontend (a CI roda `tsc` e `eslint`, mas não testes de tela). `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- Frontend: a CI roda `tsc`, `eslint` e **Vitest** só para lógica pura (funções sem DOM). **Não há teste de tela** (componente/navegador): lógica nova que dê para isolar em `src/lib/*.ts` (sem React) entra com `*.test.ts` ao lado — foi assim com a mesclagem da busca na subscription, o destino dos links de Dependencies e o `normalizeEndpoint` do `apiClient`. `make run-test` está quebrado (`cmd/k8s-teste` não existe).
+- **Qual build está rodando:** `GET /health` devolve `build` (commit, `dirty`, hora do binário, início do processo e `frontend_bundle`, o `index-XXXX.js` embutido); o `Header` mostra o commit (`*` = mudanças sem commit) e o `StaleFrontendBanner` avisa quando o bundle que o navegador carregou difere do embutido (recarregar). `./rebuild-web.sh` imprime o mesmo ao subir, e `new-k8s-hpa version` também. O commit vem do `debug.ReadBuildInfo` (vale em qualquer `go build` num repositório git, sem `ldflags`).
 - A raiz tem muitos scripts soltos (`create-release*.sh`, `create_release.sh`, `web-server*.sh`, `new-web-server.sh`, `teste.*`, …). O fluxo oficial é `make` + `rebuild-web.sh` (dev) e `release.yml` (release); `install.sh`/`auto-update.sh`/`uninstall.sh` são os instaladores do usuário final. Não tome os demais como referência.
 
 ## Arquitetura (visão geral)

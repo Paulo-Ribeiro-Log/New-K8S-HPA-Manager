@@ -102,6 +102,32 @@ jobs:
       - name: Type-check
         run: make web-typecheck
 
+  # ─── Frontend: testes (Vitest) ───
+  # Só a lógica pura (funções sem DOM): mesclagem/persistência da busca na subscription, destino dos
+  # links de Dependencies, destinatários do Teams, normalização do endpoint do apiClient, build id.
+  web-test:
+    name: Frontend (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: internal/web/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: internal/web/frontend
+        run: npm ci
+
+      - name: Test
+        run: make web-test
+
   # ─── Frontend: eslint ───
   # Bloqueia. Baseline: 0 erros. no-explicit-any está como aviso (323 usos = dívida de tipagem),
   # então só erro novo de verdade reprova.

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { SecretDataRecord } from "@/lib/api/types";
-import type { DependencyNavTarget } from "@/components/DependenciesTab";
+import type { DependencyNavTarget } from "@/lib/dependencyNav";
 import { Eye, EyeOff, Copy, RefreshCcw, KeyRound, AlertCircle, Loader2, ListFilter, Check, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

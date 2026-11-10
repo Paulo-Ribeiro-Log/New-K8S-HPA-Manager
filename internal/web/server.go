@@ -666,13 +666,7 @@ func (s *Server) setupRoutes() {
 		s.router.GET("/oauth/google/callback", s.aiTokensHandler.GoogleOAuthCallback)
 	}
 
-	s.router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "ok",
-			"version": "1.0.0-poc",
-			"mode":    "web",
-		})
-	})
+	s.router.GET("/health", func(c *gin.Context) { c.JSON(200, healthPayload()) })
 
 	// Heartbeat endpoint (sem auth) - frontend envia a cada 5 minutos
 	s.router.POST("/heartbeat", func(c *gin.Context) {
@@ -2608,6 +2602,7 @@ func (s *Server) Start() error {
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
 	fmt.Printf("\n")
 	fmt.Printf("🌐 Server URL:    http://localhost%s\n", addr)
+	fmt.Printf("🏷️  Build:         %s\n", buildInfoLabel())
 	fmt.Printf("📍 API Endpoint:  http://localhost%s/api/v1\n", addr)
 	fmt.Printf("🔐 Auth Token:    %s\n", s.token)
 	fmt.Printf("❤️  Health Check: http://localhost%s/health\n", addr)

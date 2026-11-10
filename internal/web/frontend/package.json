@@ -9,7 +9,9 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "help:check": "node scripts/check-help-coverage.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -93,6 +95,7 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^15.15.0",
+    "jsdom": "^25.0.1",
     "lovable-tagger": "^1.1.11",
     "playwright": "^1.58.0",
     "postcss": "^8.5.6",
@@ -102,6 +105,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.38.0",
     "vite": "^5.4.21",
-    "vite-plugin-monaco-editor": "^1.1.0"
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "vitest": "^2.1.9"
   }
 }
