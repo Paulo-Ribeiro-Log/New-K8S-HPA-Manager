@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -137,7 +138,16 @@ func TestRotasDePRAceitamBranchPedidaESemCheckout(t *testing.T) {
 
 	// ListOpenPRs de ponta a ponta contra um GitHub falso
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]map[string]any{openPRJSON(7, "feat/x", "o/r", "main", false)}) //nolint:errcheck
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/graphql"): // status dos abertos: sem dados, o selo segue só com o número
+			fmt.Fprint(w, `{"data":{"repository":{"pullRequests":{"nodes":[]}}}}`)
+		case r.URL.Query().Get("state") == "closed":
+			merged := openPRJSON(8, "feat/velha", "o/r", "main", false)
+			merged["merged_at"] = "2026-11-09T10:00:00Z"
+			json.NewEncoder(w).Encode([]map[string]any{merged}) //nolint:errcheck
+		default:
+			json.NewEncoder(w).Encode([]map[string]any{openPRJSON(7, "feat/x", "o/r", "main", false)}) //nolint:errcheck
+		}
 	}))
 	defer srv.Close()
 	old := githubAPIBase
@@ -148,8 +158,12 @@ func TestRotasDePRAceitamBranchPedidaESemCheckout(t *testing.T) {
 	var got struct {
 		PRs []OpenPR `json:"prs"`
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.PRs) != 1 || got.PRs[0].Branch != "feat/x" || got.PRs[0].Number != 7 {
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.PRs) != 2 || got.PRs[0].Branch != "feat/x" || got.PRs[0].Number != 7 || got.PRs[0].State != "open" {
 		t.Errorf("ListOpenPRs: %d %s", w.Code, w.Body.String())
+	}
+	// os fechados/mergeados vêm depois dos abertos
+	if len(got.PRs) == 2 && (got.PRs[1].Number != 8 || got.PRs[1].State != "merged") {
+		t.Errorf("segundo PR deveria ser o mergeado #8: %+v", got.PRs[1])
 	}
 }
 
