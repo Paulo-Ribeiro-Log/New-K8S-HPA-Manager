@@ -1,4 +1,4 @@
-const e=`## Para que serve
+const o=`## Para que serve
 
 Um editor de código no navegador, com **Git completo**, **terminal** e **integração com o Kubernetes**. Serve para editar manifestos, charts, Terraform e código em repositórios do **GitHub** (clonados no servidor) ou em uma **pasta da máquina do servidor**, e aplicar manifestos direto em um cluster.
 
@@ -50,6 +50,8 @@ Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** 
 Esta barra **não faz merge**: só revisa.
 
 **Diff e plan de qualquer branch com PR aberto.** No painel **Branches**, toda branch (a atual, as locais e as remotas) que tem um **Pull Request aberto, ainda não mergeado**, mostra o selo **PR #n** (clique para abrir no GitHub; PR em rascunho vem marcado) e dois ícones: **Diff** (o diff do PR) e **Plan** (os plans e outputs do PR, com as mesmas fontes do View Plan). Eles abrem a **branch do PR escolhido, sem precisar trocar de branch** nem baixá-la: é só leitura do GitHub. O selo some quando o PR é mergeado ou fechado. PRs vindos de **forks** não aparecem. Use o botão de atualizar do painel (**Fetch**) para reconsultar os PRs.
+
+**Cor do selo = status do PR no GitHub.** 🔴 vermelho: conflito com o destino ou checks falhando; 🟠 laranja: alterações solicitadas; ⚪ cinza: rascunho; 🟡 âmbar: checks em andamento; 🟢 verde: aprovado ou checks ok; 🔵 azul: aberto, sem checks nem revisão. Quando vários valem, vence o primeiro da lista. O tooltip lista cada item (rascunho, checks, revisão, conflito). Se o GitHub não devolver o status (token sem acesso ao GraphQL), o selo aparece azul só com o número. Se a busca de PRs falhar, uma faixa âmbar no painel mostra o motivo.
 
 No modal **Criar Pull Request**, a **branch de origem** (azul) e o **destino** (verde, onde será mergeada) aparecem em blocos separados, com uma frase explicando o merge. Abaixo, o editor simula o merge e mostra se **pode ser mergeado**: verde (sem conflitos), amarelo (destino avançou, nada a mergear ou não deu para simular) ou vermelho (**conflitos**, com os arquivos). A simulação é local, usa \`origin/<destino>\` (faça **Fetch** para ficar em dia) e não altera seus arquivos.
 
@@ -105,4 +107,4 @@ Há suporte a **autocompletar, hover, ir para a definição e diagnósticos** pa
 ## Veja também
 
 [Helm](ajuda:helm), [Deployments](ajuda:deployments).
-`;export{e as default};
+`;export{o as default};

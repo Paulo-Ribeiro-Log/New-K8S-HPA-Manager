@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { prBadge, prToneClass } from "@/lib/prBadge";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
@@ -2123,12 +2124,13 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
   const prControls = (branch: string) => {
     const pr = openPRs?.get(branch.replace(/^origin\//, ""));
     if (!pr) return null;
+    const badge = prBadge(pr);
     return (
       <div className="flex items-center gap-0.5 flex-shrink-0">
         <a href={pr.url} target="_blank" rel="noreferrer"
-          className="text-[10px] px-1 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-          title={`PR #${pr.number}${pr.draft ? " (rascunho)" : ""} aberto: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}\n(clique para abrir no GitHub)`}>
-          PR #{pr.number}{pr.draft ? " · rascunho" : ""}
+          className={`text-[10px] px-1 rounded border ${prToneClass(badge.tone)}`}
+          title={`PR #${pr.number}: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}${badge.details.length ? `\n${badge.details.join(" · ")}` : ""}\n(clique para abrir no GitHub)`}>
+          PR #{pr.number}{badge.label ? ` · ${badge.label}` : ""}
         </a>
         <button className="p-0.5 rounded hover:bg-muted" title={`Ver o diff do PR #${pr.number} (somente leitura)`}
           onClick={() => onViewPRDiff?.(pr.branch, pr.number)}>
