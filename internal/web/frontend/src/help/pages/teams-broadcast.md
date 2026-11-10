@@ -44,3 +44,7 @@ Exige o **login do Teams** no servidor (a sessão do Chrome). **Escanear chats, 
 ## Veja também
 
 [GitHub Releases](ajuda:github-releases), [Certificados](ajuda:certificates).
+
+## Sem modo gráfico no WSL
+
+Se o servidor roda no WSL sem WSLg, o robô do Teams não tem display e aparece um aviso no topo da aba com o botão **Ver tutorial de instalação**: passo a passo para ativar o WSLg, com comandos copiáveis e o botão **Testar de novo**. Links abertos pelo sistema continuam indo para o navegador do Windows.

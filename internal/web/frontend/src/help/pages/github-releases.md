@@ -38,6 +38,7 @@ Consultar e comparar não exige o grupo SRE; as rotas usam o **seu token do GitH
 - **Erros de SAML** do GitHub indicam que o token precisa ser **autorizado para a organização** (SSO). Autorize o token e tente de novo.
 - **O diff do GitHub é limitado**: comparações muito grandes podem vir truncadas.
 - **O lote é local**: ele não é compartilhado com outros usuários nem entre navegadores.
+- **Servidor no WSL sem modo gráfico (WSLg):** o login do ServiceNow e do Teams precisa de um Chrome com display. Sem ele aparece um aviso com o botão **Ver tutorial de instalação** (passo a passo com comandos copiáveis e **Testar de novo**). Enquanto isso, links abertos pelo servidor (inclusive o `az login`) vão para o navegador padrão do Windows; `K8S_HPA_BROWSER=windows|linux|auto` força a escolha, e `new-k8s-hpa diagnose-display` mostra o diagnóstico.
 - **A extração via navegador pode travar por vários minutos** no login do Azure AD; **Cancelar** interrompe de verdade.
 
 ## Veja também

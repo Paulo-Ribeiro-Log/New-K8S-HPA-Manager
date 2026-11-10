@@ -38,6 +38,7 @@ O cabeçalho da barra lateral mostra se o **motor de monitoramento** está ativo
 - **Gráficos vazios** quase sempre querem dizer que o Prometheus não respondeu (rede, VPN) ou que o HPA é novo e ainda não tem histórico.
 - **A lista é local:** limpar os dados do navegador esvazia os HPAs monitorados.
 - O número de réplicas e o uso vêm de **amostras do Prometheus**; um pico muito curto pode não aparecer no período escolhido.
+- **Clusters que migraram para o Grafana Cloud:** não têm mais Prometheus próprio. A leitura passa por um proxy local do servidor, configurado em `~/.k8s-hpa-manager/grafana-cloud.json` (`url`, `username`, token de leitura `metrics:read` em `token` ou `tokenEnv`, e a lista `clusters`). O proxy filtra tudo pelo rótulo `cluster` do cluster atual, então um cluster nunca vê as séries de outro. Sem o arquivo, sem token ou com o cluster fora da lista, valem os caminhos de sempre (Prometheus do cluster); com o token ausente, o erro cita `grafana-cloud.json`. Se o rótulo no Grafana for diferente do nome do cluster, use `clusterLabels`.
 - Para investigar a causa de um pico, cruze com [Events](ajuda:events) e [Pods](ajuda:pods).
 
 ## Veja também

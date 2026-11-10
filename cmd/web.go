@@ -1,15 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
+	"k8s-hpa-manager/internal/displayenv"
 	"k8s-hpa-manager/internal/web"
 
 	"github.com/spf13/cobra"
@@ -187,26 +188,31 @@ func cleanupStaleWebLogs() {
 	}
 }
 
-// openBrowser opens the default browser at the given URL
+// openBrowser abre o navegador na URL. No WSL SEM modo gráfico (WSLg), abre o navegador padrão do
+// Windows; com display, o do Linux (K8S_HPA_BROWSER=windows|linux força um dos dois). Ver internal/displayenv.
 func openBrowser(url string) error {
-	var cmd string
-	var args []string
-
-	switch runtime.GOOS {
-	case "linux":
-		cmd = "xdg-open"
-		args = []string{url}
-	case "darwin":
-		cmd = "open"
-		args = []string{url}
-	case "windows":
-		cmd = "cmd"
-		args = []string{"/c", "start", url}
-	default:
-		return fmt.Errorf("unsupported platform")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	via, err := displayenv.NewOpener().OpenURL(ctx, url)
+	if err != nil {
+		return err
 	}
+	fmt.Printf("   (aberto por: %s)\n", via)
+	return nil
+}
 
-	return exec.Command(cmd, args...).Start()
+// prepareDisplayEnv roda antes de subir o servidor: se o WSLg responde mas o processo não herdou
+// DISPLAY (sessão sem perfil de login), define a variável — o Chrome do robô do Teams precisa dela —
+// e mostra em uma linha o que a máquina consegue fazer com navegador.
+func prepareDisplayEnv() {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	p := displayenv.DefaultProbe()
+	if d := displayenv.EnsureDisplayEnv(ctx, p, os.Setenv); d != "" {
+		fmt.Printf("🖥️  WSLg respondendo: DISPLAY=%s definido para este processo\n", d)
+	}
+	r := displayenv.Detect(ctx, p)
+	fmt.Printf("🖥️  Ambiente gráfico: %s\n", r.Summary)
 }
 
 var webCmd = &cobra.Command{
@@ -251,6 +257,8 @@ API Endpoints:
   PUT  /api/v1/hpas/:cluster/:ns/:name  - Update HPA
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		prepareDisplayEnv()
+
 		// Se não for foreground, executar em background
 		if !foreground {
 			return runInBackground()

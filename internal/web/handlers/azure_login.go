@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"k8s-hpa-manager/internal/displayenv"
 )
 
 // Login silencioso do Azure CLI: refaz o `az login` no tenant da subscription atual e volta a
@@ -67,7 +69,10 @@ func (h *AzureSessionHandler) Login(c *gin.Context) {
 	// login_experience_v2=off desliga o seletor de subscription do `az login`.
 	loginCtx, cancel := context.WithTimeout(c.Request.Context(), azureLoginTimeout)
 	defer cancel()
-	if _, err := h.run(loginCtx, []string{"AZURE_CORE_LOGIN_EXPERIENCE_V2=off"}, "login", "--tenant", acc.TenantID, "-o", "none"); err != nil {
+	// No WSL sem modo gráfico, o `az login` não tem navegador para abrir: aponta o BROWSER (que o Python
+	// respeita) para o navegador padrão do Windows. Com display, nada muda.
+	loginEnv := append([]string{"AZURE_CORE_LOGIN_EXPERIENCE_V2=off"}, displayenv.AzLoginEnv(loginCtx, displayenv.DefaultProbe(), strings.ToLower(os.Getenv(displayenv.EnvBrowser)))...)
+	if _, err := h.run(loginCtx, loginEnv, "login", "--tenant", acc.TenantID, "-o", "none"); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "az login falhou: " + err.Error()})
 		return
 	}

@@ -896,6 +896,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/volumes/storage-azure", nodePoolHandler.GetVolumeAzureDetails)                    // detalhes do storage na Azure (GET no ARM, a pedido)
 	// Busca por nome de storage (conta, disco, container, file share) na(s) subscription(s) dos clusters —
 	// plano B de quando o nome não aparece em nenhum volume/dependência. Só leitura (GET no ARM), a pedido.
+	// Teste do ambiente gráfico (WSLg) e do navegador do Windows (só leitura)
+	api.GET("/system/display", handlers.NewSystemDisplayHandler().GetDisplay)
 	azureStorageSearch := handlers.NewAzureStorageSearchHandler(s.kubeManager)
 	api.GET("/azure/storage-search", rbacMiddleware.RequireSREGroup(), azureStorageSearch.Search)
 	api.GET("/azure/storage-account/contents", rbacMiddleware.RequireSREGroup(), azureStorageSearch.AccountContents) // containers e file shares de UMA conta já achada (só leitura)

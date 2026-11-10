@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { GraphicalModeNotice } from "@/components/GraphicalModeNotice";
 import {
   Dialog,
   DialogContent,
@@ -267,6 +268,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
             Gerencie sua sessao de autenticacao Azure AD para extrair dados do ServiceNow
           </DialogDescription>
         </DialogHeader>
+        <GraphicalModeNotice className="rounded-md" />
 
         <div className="space-y-4 py-2">
           {isLoading ? (
