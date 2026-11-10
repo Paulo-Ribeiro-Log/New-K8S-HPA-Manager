@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // fakeARM responde as listagens do ARM de forma estável (roteando pela URL).
@@ -225,5 +229,129 @@ func TestRespostaDaBuscaNuncaTemSlicesNulos(t *testing.T) {
 		if strings.Contains(string(b), bad) {
 			t.Errorf("JSON com %s: %s", bad, b)
 		}
+	}
+}
+
+func TestSelectSubscriptions(t *testing.T) {
+	subB := "bbbbbbbb-0000-0000-0000-000000000002"
+	subs := []SubscriptionInfo{{ID: subA, Name: "A"}, {ID: subB, Name: "B"}}
+	got, err := selectSubscriptions(subs, strings.ToUpper(subB)) // sem diferenciar caixa
+	if err != nil || len(got) != 1 || got[0].Name != "B" {
+		t.Fatalf("escolha de uma: %+v err=%v", got, err)
+	}
+	if got, err = selectSubscriptions(subs, subA+","+subB); err != nil || len(got) != 2 {
+		t.Errorf("duas: %+v err=%v", got, err)
+	}
+	for name, csv := range map[string]string{
+		"fora do escopo": "cccccccc-0000-0000-0000-000000000003",
+		"não é UUID":     "../etc",
+		"vazio":          " , ",
+	} {
+		if _, err := selectSubscriptions(subs, csv); err == nil {
+			t.Errorf("%s deveria ser recusado", name)
+		}
+	}
+}
+
+func TestBuscaProfundaDeUmaSubscriptionNaoRelistaDiscos(t *testing.T) {
+	// sem rota de discos: se a busca tentasse listá-los, o fake devolveria "rota inesperada" e viraria aviso
+	defer fakeARM(t, map[string]string{
+		"Microsoft.Storage/storageAccounts?api-version": `{"value":[` + acctJSON("stdados", "rg-d", "StorageV2") + `]}`,
+		"stdados/blobServices/default/containers":       `{"value":[{"name":"backup-retira"}]}`,
+		"stdados/fileServices/default/shares":           `{"value":[]}`,
+	})()
+	subs := []SubscriptionInfo{{ID: subA, Name: "A", DisksListed: 42}}
+	res := searchSubscriptionsOpts(context.Background(), subs, "retira", true, searchOpts{SkipDisks: true, DeepCap: storageSearchDeepCapOne})
+	if len(res.Warnings) != 0 || len(res.Results) != 1 || res.Results[0].Name != "backup-retira" || res.Results[0].Account != "stdados" {
+		t.Fatalf("resultado: %+v avisos=%v", res.Results, res.Warnings)
+	}
+	if res.Subscriptions[0].DisksListed != 42 {
+		t.Errorf("não relistou os discos: o número anterior deve ficar: %+v", res.Subscriptions[0])
+	}
+}
+
+func TestBuscaProfundaAvisaQuandoLimitaAsContas(t *testing.T) {
+	var accts []string
+	for i := 0; i < 5; i++ {
+		accts = append(accts, acctJSON(fmt.Sprintf("st%02d", i), "rg", "StorageV2"))
+	}
+	defer fakeARM(t, map[string]string{
+		"Microsoft.Storage/storageAccounts?api-version": `{"value":[` + strings.Join(accts, ",") + `]}`,
+		"blobServices/default/containers":               `{"value":[]}`,
+		"fileServices/default/shares":                   `{"value":[]}`,
+	})()
+	res := searchSubscriptionsOpts(context.Background(), []SubscriptionInfo{{ID: subA, Name: "PRD"}}, "x", true, searchOpts{SkipDisks: true, DeepCap: 3})
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "PRD") || !strings.Contains(res.Warnings[0], "3 primeiras de 5") {
+		t.Errorf("aviso de limite: %v", res.Warnings)
+	}
+}
+
+func TestLerConteudoDaConta(t *testing.T) {
+	defer fakeARM(t, map[string]string{
+		"strretirafnc/blobServices/default/containers": `{"value":[
+			{"name":"admin-importacao-entrada","properties":{"publicAccess":"None","leaseState":"Available","lastModifiedTime":"2026-11-01T10:00:00Z"}},
+			{"name":"retencao","properties":{"publicAccess":"Blob","immutabilityPolicy":{"immutabilityPeriodSinceCreationInDays":30}}}]}`,
+		"strretirafnc/fileServices/default/shares": `{"value":[{"name":"compartilhado","properties":{"accessTier":"Hot","enabledProtocols":"SMB","shareQuota":100}}]}`,
+	})()
+	out := readAccountContents(context.Background(), subA, "rg-retira-fnc-prd", "strretirafnc")
+	if len(out.Warnings) != 0 || len(out.Containers) != 2 || len(out.Shares) != 1 {
+		t.Fatalf("conteúdo: %+v", out)
+	}
+	if c := out.Containers[0]; c.Name != "admin-importacao-entrada" || c.PublicAccess != "None" || c.LeaseState != "Available" || c.Immutable {
+		t.Errorf("container 1: %+v", c)
+	}
+	if c := out.Containers[1]; c.PublicAccess != "Blob" || !c.Immutable {
+		t.Errorf("container com acesso público e imutabilidade: %+v", c)
+	}
+	if s := out.Shares[0]; s.Name != "compartilhado" || s.Tier != "Hot" || s.Protocol != "SMB" || s.QuotaGB != "100" {
+		t.Errorf("share: %+v", s)
+	}
+}
+
+func TestLerConteudoDaContaComFalhaParcial(t *testing.T) {
+	// conta sem file shares (BlobStorage): um erro de um dos lados vira aviso e o outro lado continua
+	defer fakeARM(t, map[string]string{
+		"blobServices/default/containers": `{"value":[{"name":"a"}]}`,
+		"fileServices/default/shares":     "ERR",
+	})()
+	out := readAccountContents(context.Background(), subA, "rg", "stfoo")
+	if len(out.Containers) != 1 || len(out.Shares) != 0 || len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "File shares") {
+		t.Errorf("falha parcial: %+v", out)
+	}
+}
+
+func TestRotaDoConteudoDaContaValidaOsParametros(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	defer fakeARM(t, map[string]string{})() // qualquer chamada ao ARM vira erro: a validação tem que barrar antes
+	h := &AzureStorageSearchHandler{}
+	r := gin.New()
+	r.GET("/c", h.AccountContents)
+	for name, qs := range map[string]string{
+		"sem nada":            "",
+		"subscription ruim":   "subscription=x&resource_group=rg&account=stfoo",
+		"resource group ruim": "subscription=" + subA + "&resource_group=a%2Fb&account=stfoo",
+		"conta com maiúscula": "subscription=" + subA + "&resource_group=rg&account=StFoo",
+		"conta curta demais":  "subscription=" + subA + "&resource_group=rg&account=ab",
+		"injeção na conta":    "subscription=" + subA + "&resource_group=rg&account=st..%2F..%2Fx",
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/c?"+qs, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: esperava 400, veio %d %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestBuscaProfundaAvisaQuandoOTempoAcaba(t *testing.T) {
+	defer fakeARM(t, map[string]string{
+		"Microsoft.Storage/storageAccounts?api-version": `{"value":[` + acctJSON("st01", "rg", "StorageV2") + `,` + acctJSON("st02", "rg", "StorageV2") + `]}`,
+		"blobServices/default/containers":               `{"value":[]}`,
+		"fileServices/default/shares":                   `{"value":[]}`,
+	})()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // o prazo já acabou
+	res := searchSubscriptionsOpts(ctx, []SubscriptionInfo{{ID: subA, Name: "PRD"}}, "x", true, searchOpts{SkipDisks: true})
+	if !strings.Contains(strings.Join(res.Warnings, "|"), "o tempo da varredura de containers acabou") || !strings.Contains(strings.Join(res.Warnings, "|"), "PRD") {
+		t.Errorf("deveria avisar que o resultado é parcial: %v", res.Warnings)
 	}
 }
