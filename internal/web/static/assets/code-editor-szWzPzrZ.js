@@ -1,4 +1,4 @@
-const a=`## Para que serve
+const e=`## Para que serve
 
 Um editor de código no navegador, com **Git completo**, **terminal** e **integração com o Kubernetes**. Serve para editar manifestos, charts, Terraform e código em repositórios do **GitHub** (clonados no servidor) ou em uma **pasta da máquina do servidor**, e aplicar manifestos direto em um cluster.
 
@@ -37,6 +37,19 @@ Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** 
 **Criar Pull Request** abre o PR do branch atual. **View Plan** mostra os **plans e outputs do PR** (Atlantis, comentários, checks e jobs de plan/diff do GitHub Actions). O botão fica **desabilitado** quando o branch não tem PR, ou quando o PR não tem plan nem output.
 
 **Diff PR** (botão ao lado de View Plan) abre o **diff do Pull Request** da branch atual, somente leitura: os arquivos alterados à esquerda e o patch do arquivo selecionado à direita (linhas adicionadas em verde, removidas em vermelho). Tem **Copiar link** e **Abrir no GitHub**. Fica desabilitado quando a branch não tem PR. Arquivo binário ou grande demais não vem com patch do GitHub — use **Abrir no GitHub**.
+
+**Aprovar o PR pelo diff.** No modal do **Diff PR**, a barra **Revisão do PR** (embaixo) mostra quem já revisou (**aprovou**, **pediu alterações**, **comentou**; revisão feita num commit antigo vem marcada). Ao abri-la, escolha **Comentar**, **Aprovar** ou **Solicitar alterações**, escreva o texto (obrigatório, exceto para aprovar) e envie. Pontos de segurança:
+
+- A revisão é enviada ao **GitHub em nome do seu usuário** (o PAT do perfil ativo), e a tela diz como quem e para qual commit.
+- Ela fica presa ao **commit que este diff mostra**. Se o PR recebeu commits novos depois que você abriu o diff, o envio é **recusado** e a tela oferece **Recarregar**: não se aprova código que não foi visto.
+- **Aprovar** e **Solicitar alterações** pedem **confirmação**.
+- Você **não pode aprovar o próprio PR** (regra do GitHub): nesse caso só dá para comentar, e a tela explica. PR **fechado ou mergeado** não recebe revisão.
+- O PAT precisa da permissão **Pull requests: Read and write** (fine-grained) ou o escopo \`repo\` (clássico); sem ela, o erro orienta a corrigir o token.
+- No Change History fica \`code_editor_pr_review\` com o PR, o tipo de revisão e o commit, **sem o texto do comentário**.
+
+Esta barra **não faz merge**: só revisa.
+
+**Diff e plan de qualquer branch com PR aberto.** No painel **Branches**, toda branch (a atual, as locais e as remotas) que tem um **Pull Request aberto, ainda não mergeado**, mostra o selo **PR #n** (clique para abrir no GitHub; PR em rascunho vem marcado) e dois ícones: **Diff** (o diff do PR) e **Plan** (os plans e outputs do PR, com as mesmas fontes do View Plan). Eles abrem a **branch do PR escolhido, sem precisar trocar de branch** nem baixá-la: é só leitura do GitHub. O selo some quando o PR é mergeado ou fechado. PRs vindos de **forks** não aparecem. Use o botão de atualizar do painel (**Fetch**) para reconsultar os PRs.
 
 No modal **Criar Pull Request**, a **branch de origem** (azul) e o **destino** (verde, onde será mergeada) aparecem em blocos separados, com uma frase explicando o merge. Abaixo, o editor simula o merge e mostra se **pode ser mergeado**: verde (sem conflitos), amarelo (destino avançou, nada a mergear ou não deu para simular) ou vermelho (**conflitos**, com os arquivos). A simulação é local, usa \`origin/<destino>\` (faça **Fetch** para ficar em dia) e não altera seus arquivos.
 
@@ -92,4 +105,4 @@ Há suporte a **autocompletar, hover, ir para a definição e diagnósticos** pa
 ## Veja também
 
 [Helm](ajuda:helm), [Deployments](ajuda:deployments).
-`;export{a as default};
+`;export{e as default};

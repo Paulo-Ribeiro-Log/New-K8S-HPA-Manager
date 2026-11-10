@@ -79,25 +79,24 @@ type planTarget struct {
 	owner, repo, branch, token string
 }
 
-// resolvePlanTarget valida o repo e acha owner/repo, branch atual e PAT. Em falha, já responde
-// ao cliente e devolve ok=false.
-func (h *CodeEditorHandler) resolvePlanTarget(c *gin.Context) (planTarget, bool) {
+// repoAccess é o que as rotas de PR precisam do repositório local: owner/repo e o PAT.
+type repoAccess struct {
+	owner, repo, token string
+}
+
+// resolveRepoAccess valida o repo e acha owner/repo e o PAT. Em falha, já responde ao cliente e
+// devolve ok=false.
+func (h *CodeEditorHandler) resolveRepoAccess(c *gin.Context) (repoAccess, bool) {
 	dir := filepath.Join(h.reposBase, c.Param("id"))
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "repositório não encontrado"})
-		return planTarget{}, false
+		return repoAccess{}, false
 	}
 	owner, repo := ownerRepo(dir)
 	if owner == "" || repo == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "não foi possível determinar owner/repo do repositório"})
-		return planTarget{}, false
+		return repoAccess{}, false
 	}
-	branch := currentBranch(dir)
-	if branch == "" || branch == "HEAD" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "repositório não está numa branch (HEAD destacado)"})
-		return planTarget{}, false
-	}
-
 	token := h.resolveProfileToken(c, c.Query("profile_id"))
 	if token == "" {
 		token = h.resolveActiveProfileToken(c)
@@ -107,9 +106,41 @@ func (h *CodeEditorHandler) resolvePlanTarget(c *gin.Context) (planTarget, bool)
 	}
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PAT GitHub não configurado — configure em GitHub Releases → perfil"})
+		return repoAccess{}, false
+	}
+	return repoAccess{owner: owner, repo: repo, token: token}, true
+}
+
+var prBranchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+
+// validPRBranch aceita só nomes de branch comuns (letras, números, . _ - /): o nome vai para a
+// consulta ao GitHub e nunca para um comando.
+func validPRBranch(b string) bool {
+	return prBranchRe.MatchString(b) && !strings.Contains(b, "..") && !strings.HasSuffix(b, "/") && !strings.HasSuffix(b, ".lock")
+}
+
+// resolvePlanTarget acha repo, branch e PAT. A branch é a pedida em ?branch= (qualquer branch com PR,
+// sem precisar de checkout) ou, sem ela, a branch atual do repositório local. Em falha, já responde
+// ao cliente e devolve ok=false.
+func (h *CodeEditorHandler) resolvePlanTarget(c *gin.Context) (planTarget, bool) {
+	acc, ok := h.resolveRepoAccess(c)
+	if !ok {
 		return planTarget{}, false
 	}
-	return planTarget{owner: owner, repo: repo, branch: branch, token: token}, true
+	branch := strings.TrimSpace(c.Query("branch"))
+	if branch != "" {
+		if !validPRBranch(branch) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "nome de branch inválido"})
+			return planTarget{}, false
+		}
+	} else {
+		branch = currentBranch(filepath.Join(h.reposBase, c.Param("id")))
+		if branch == "" || branch == "HEAD" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "repositório não está numa branch (HEAD destacado)"})
+			return planTarget{}, false
+		}
+	}
+	return planTarget{owner: acc.owner, repo: acc.repo, branch: branch, token: acc.token}, true
 }
 
 // pickPR escolhe o PR pedido (?pr=<n>) ou, sem ele, o primeiro da lista (aberto mais recente).

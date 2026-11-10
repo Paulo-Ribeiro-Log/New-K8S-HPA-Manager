@@ -108,6 +108,7 @@ import {
   type CodeEditorFileNode,
   type CodeEditorGitStatus,
   type CodeEditorBranches,
+  type CodeEditorOpenPR,
   type CodeEditorLogEntry,
   type CodeEditorGrepMatch,
   type CodeEditorBlameLine,
@@ -2085,11 +2086,15 @@ interface BranchesPanelProps {
   onMerge: () => void;
   onBranchDiff: () => void;
   profileId?: string;
+  /** PRs abertos (criados e não mergeados) por branch de origem: mostra o selo e os botões Diff/Plan. */
+  openPRs?: Map<string, CodeEditorOpenPR>;
+  onViewPRDiff?: (branch: string, prNumber: number) => void;
+  onViewPRPlan?: (branch: string, prNumber: number) => void;
   /** Depois de renomear/apagar: recarrega status e branches e mostra o resultado. */
   onChanged: (message: string) => void | Promise<void>;
 }
 
-function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, onChanged }: BranchesPanelProps) {
+function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, openPRs, onViewPRDiff, onViewPRPlan, onChanged }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
   const [manage, setManage] = useState<{ kind: "rename" | "delete"; branch: string; hasLocal: boolean } | null>(null);
@@ -2110,6 +2115,30 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
 
   const q = filter.toLowerCase();
   const matchBranch = (b: string) => !q || b.toLowerCase().includes(q);
+
+  // Selo "PR #n" e botões Diff/Plan da branch que tem PR aberto: dá para ver o diff e o plan/output
+  // sem trocar de branch (somente leitura).
+  const prControls = (branch: string) => {
+    const pr = openPRs?.get(branch.replace(/^origin\//, ""));
+    if (!pr) return null;
+    return (
+      <div className="flex items-center gap-0.5 flex-shrink-0">
+        <a href={pr.url} target="_blank" rel="noreferrer"
+          className="text-[10px] px-1 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+          title={`PR #${pr.number}${pr.draft ? " (rascunho)" : ""} aberto: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}\n(clique para abrir no GitHub)`}>
+          PR #{pr.number}{pr.draft ? " · rascunho" : ""}
+        </a>
+        <button className="p-0.5 rounded hover:bg-muted" title={`Ver o diff do PR #${pr.number} (somente leitura)`}
+          onClick={() => onViewPRDiff?.(pr.branch, pr.number)}>
+          <GitPullRequest className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+        </button>
+        <button className="p-0.5 rounded hover:bg-muted" title={`Ver o plan/output do PR #${pr.number} (somente leitura)`}
+          onClick={() => onViewPRPlan?.(pr.branch, pr.number)}>
+          <FileDiff className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -2156,6 +2185,7 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
               <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-primary/10 border border-primary/20">
                 <GitBranch className="w-3 h-3 text-primary flex-shrink-0" />
                 <span className="text-xs font-medium text-primary truncate flex-1">{branches.current}</span>
+                {prControls(branches.current)}
                 <button title="Renomear branch" className="p-0.5 rounded hover:bg-muted"
                   onClick={() => setManage({ kind: "rename", branch: branches.current, hasLocal: true })}>
                   <Pencil className="w-3 h-3 text-muted-foreground hover:text-foreground" />
@@ -2178,6 +2208,7 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
                         ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
                         : <ArrowRightLeft className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
                     </button>
+                    {prControls(b)}
                     <div className="hidden group-hover:flex gap-0.5 pr-1 flex-shrink-0">
                       <button title="Renomear branch" className="p-0.5 rounded hover:bg-muted"
                         onClick={() => setManage({ kind: "rename", branch: b, hasLocal: true })}>
@@ -2212,6 +2243,7 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
                           ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
                           : <Download className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100" />}
                       </button>
+                      {prControls(b)}
                       <button title="Apagar do origin" className="hidden group-hover:block p-0.5 mr-1 rounded hover:bg-muted flex-shrink-0"
                         onClick={() => setManage({ kind: "delete", branch: b.replace(/^origin\//, ""), hasLocal: false })}>
                         <Trash2 className="w-3 h-3 text-red-400/70 hover:text-red-400" />
@@ -2445,7 +2477,9 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showViewPlan, setShowViewPlan] = useState(false);
   // Diff do PR; prNumber só vem do PR recém-criado (senão usa o PR da branch atual)
-  const [prDiff, setPrDiff] = useState<{ prNumber?: number } | null>(null);
+  const [prDiff, setPrDiff] = useState<{ prNumber?: number; branch?: string } | null>(null);
+  // Branch cujo plan/output o modal mostra; sem ela, a branch atual (botão da barra).
+  const [viewPlanBranch, setViewPlanBranch] = useState<string | undefined>(undefined);
   // View Plan só faz sentido com algo para mostrar: consulta barata (PR, comentários e check runs)
   // que habilita o botão. Em erro (GitHub fora do ar, PAT ausente) o botão continua clicável e o
   // modal mostra o erro — só desabilita quando se sabe que não há plan nem output.
@@ -2460,6 +2494,16 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     refetchOnWindowFocus: true,
     retry: false,
   });
+  // PRs abertos do repositório por branch: o painel de branches mostra o selo e os botões Diff/Plan.
+  const { data: openPRsData } = useQuery({
+    queryKey: ["code-editor-open-prs", selectedRepo?.id, activeProfileId()],
+    queryFn: () => apiClient.codeEditorOpenPRs(selectedRepo!.id, activeProfileId()),
+    enabled: !!selectedRepo,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+  const openPRsByBranch = useMemo(() => new Map((openPRsData?.prs ?? []).map((p) => [p.branch, p])), [openPRsData]);
   const planButton = planAvail
     ? planAvail.available
       ? { disabled: false, title: viewPlanSummary(planAvail) }
@@ -4134,7 +4178,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
               <Button variant="ghost" size="sm" className="h-6 text-xs gap-1"
                 title={planButton.title}
                 disabled={planButton.disabled}
-                onClick={() => setShowViewPlan(true)}>
+                onClick={() => { setViewPlanBranch(undefined); setShowViewPlan(true); }}>
                 <FileDiff className="w-3 h-3" />View Plan
               </Button>
             )}
@@ -4457,13 +4501,19 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
               <BranchesPanel
                 repoId={selectedRepo?.id ?? ""}
                 branches={selectedRepo ? branches : null}
-                onRefresh={() => { if (selectedRepo) refreshManual("branches", () => loadBranches(selectedRepo.id, true)); }}
+                onRefresh={() => {
+                  if (selectedRepo) refreshManual("branches", () => loadBranches(selectedRepo.id, true));
+                  queryClient.invalidateQueries({ queryKey: ["code-editor-open-prs"] });
+                }}
                 refreshing={!!refreshing.branches}
                 onCheckout={handleCheckout}
                 onCreateBranch={() => setShowBranch(true)}
                 onMerge={() => setShowMerge(true)}
                 onBranchDiff={() => setShowBranchDiff(true)}
                 profileId={activeProfileId()}
+                openPRs={openPRsByBranch}
+                onViewPRDiff={(branch, prNumber) => setPrDiff({ branch, prNumber })}
+                onViewPRPlan={(branch) => { setViewPlanBranch(branch); setShowViewPlan(true); }}
                 onChanged={async (m) => {
                   if (!selectedRepo) return;
                   await Promise.all([loadStatus(selectedRepo.id), loadBranches(selectedRepo.id), loadLog(selectedRepo.id)]);
@@ -5888,6 +5938,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           repoId={selectedRepo.id}
           profileId={activeProfileId()}
           prNumber={prDiff.prNumber}
+          branch={prDiff.branch}
           onClose={() => setPrDiff(null)}
         />
       )}
@@ -5897,7 +5948,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
         <ViewPlanModal
           repoId={selectedRepo.id}
           profileId={activeProfileId()}
-          onClose={() => setShowViewPlan(false)}
+          branch={viewPlanBranch}
+          onClose={() => { setShowViewPlan(false); setViewPlanBranch(undefined); }}
         />
       )}
 

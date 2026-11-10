@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor — Diff e Plan de qualquer branch com PR aberto (Novembro 2026) Revisão do PR no modal do Diff: `GET /code-editor/repos/:id/pr/reviews` (revisões vigentes por revisor, autor, viewer e se pode aprovar) e `POST .../pr/review` (`code_editor_pr_review.go`: APPROVE/REQUEST_CHANGES/COMMENT em nome do PAT do perfil), com `head_sha` obrigatório (o commit visto no diff; 409 se o PR andou), recusa de PR fechado/mergeado e de aprovar o próprio PR, e Change History sem o texto do comentário. Não faz merge.
+
+O Diff PR e o View Plan só valiam para a branch atual (o backend usava `currentBranch`). Agora `?branch=` nas rotas `pr/diff`, `pr/plan` e `pr/plan/available` (`resolvePlanTarget` aceita a branch pedida, validada por `validPRBranch`; `resolveRepoAccess` separa owner/repo/PAT) e uma rota nova, `GET /code-editor/repos/:id/pr/open` (`code_editor_pr_open.go`), lista os PRs abertos do repositório (até 500, sem forks) numa só consulta. No painel Branches (atual, locais e remotas), a branch com PR aberto mostra o selo "PR #n" (rascunho marcado) e os ícones Diff e Plan, que abrem os modais existentes para aquela branch, sem checkout. Só leitura.
+
 ### Dependencies — abrir o recurso listado ao clicar (Novembro 2026)
 
 A coluna Fonte (registro e busca reversa) vira link (`SourceCell`, `dependencyTargets` em `DependenciesTab.tsx`): configmap/secret abrem as abas ConfigMaps/Secrets, env abre Deployments e pvc abre o modal Volumes; se a linha traz o deployment, ele ganha um segundo link. `Index.navigateToDependency` troca o cluster (`handleClusterChange` agora devolve se deu certo e a navegação para se falhar), define o namespace da aba e manda um `focusRequest` (nome + nonce) que ConfigMapsTab/SecretsTab/DeploymentsTab aplicam na busca; o modal de Volumes aceita `initialQuery`. Também na busca em Secrets e ConfigMaps (`SecretDataResultsTable`, prop `onNavigate`): `secret: <nome>` / `configmap: <nome>` abrem a aba do recurso. Só frontend.
