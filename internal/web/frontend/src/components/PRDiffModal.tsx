@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Copy, ExternalLink, FileDiff, GitPullRequest, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, FileDiff, GitPullRequest, Loader2, MessageSquare, RefreshCw, XCircle } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { apiClient, type CodeEditorPRDiffResponse } from "@/lib/api/client";
+import { apiClient, type CodeEditorPRDiffResponse, type CodeEditorPRReviews, type CodeEditorReviewEvent } from "@/lib/api/client";
 
 // Diff do PR da branch atual (somente leitura): arquivos alterados à esquerda e o patch do
 // arquivo selecionado à direita, como na aba "Files changed" do GitHub.
@@ -10,8 +11,10 @@ import { apiClient, type CodeEditorPRDiffResponse } from "@/lib/api/client";
 interface PRDiffModalProps {
   repoId: string;
   profileId?: string;
-  /** Número do PR; sem ele, usa o PR aberto mais recente da branch atual. */
+  /** Número do PR; sem ele, usa o PR aberto mais recente da branch (a atual, se `branch` não vier). */
   prNumber?: number;
+  /** Branch com PR (não precisa ser a atual); sem ela, a branch atual do repositório. */
+  branch?: string;
   onClose: () => void;
 }
 
@@ -22,6 +25,20 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   renamed: { label: "R", cls: "text-sky-400" },
 };
 
+// Como cada estado de revisão aparece na lista de revisores.
+const REVIEW_STATE: Record<string, { label: string; cls: string }> = {
+  APPROVED: { label: "aprovou", cls: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" },
+  CHANGES_REQUESTED: { label: "pediu alterações", cls: "text-red-400 border-red-500/40 bg-red-500/10" },
+  COMMENTED: { label: "comentou", cls: "text-muted-foreground border-border/60 bg-muted/30" },
+  DISMISSED: { label: "revisão descartada", cls: "text-amber-300 border-amber-500/40 bg-amber-500/10" },
+};
+
+const EVENT_CHOICES: { id: CodeEditorReviewEvent; label: string; hint: string }[] = [
+  { id: "COMMENT", label: "Comentar", hint: "só deixa um comentário, sem aprovar nem bloquear" },
+  { id: "APPROVE", label: "Aprovar", hint: "aprova este commit do PR" },
+  { id: "REQUEST_CHANGES", label: "Solicitar alterações", hint: "bloqueia o merge até as alterações (exige um texto)" },
+];
+
 function lineClass(line: string): string {
   if (line.startsWith("@@")) return "text-sky-300 bg-sky-500/10";
   if (line.startsWith("+")) return "text-emerald-300 bg-emerald-500/10";
@@ -29,24 +46,81 @@ function lineClass(line: string): string {
   return "text-zinc-300";
 }
 
-export function PRDiffModal({ repoId, profileId, prNumber, onClose }: PRDiffModalProps) {
+export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PRDiffModalProps) {
   const [data, setData] = useState<CodeEditorPRDiffResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [idx, setIdx] = useState(0);
   const [copied, setCopied] = useState(false);
+  // Revisão do PR (aprovar / pedir alterações / comentar), enviada ao GitHub em nome do PAT do perfil.
+  const [rev, setRev] = useState<CodeEditorPRReviews | null>(null);
+  const [revError, setRevError] = useState("");
+  const [revOpen, setRevOpen] = useState(false);
+  const [event, setEvent] = useState<CodeEditorReviewEvent>("COMMENT");
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0); // recarrega o diff e as revisões
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
     apiClient
-      .codeEditorGetPRDiff(repoId, prNumber, profileId)
+      .codeEditorGetPRDiff(repoId, prNumber, profileId, branch)
       .then((r) => { if (!cancelled) { setData(r); setIdx(0); } })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erro ao buscar o diff do PR"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [repoId, prNumber, profileId]);
+  }, [repoId, prNumber, profileId, branch, reloadKey]);
+
+  // Revisões do PR: quem aprovou/pediu alterações, o autor e se este usuário pode aprovar.
+  const prNum = data?.pr.number;
+  useEffect(() => {
+    if (!prNum) return;
+    let cancelled = false;
+    setRevError("");
+    apiClient
+      .codeEditorPRReviews(repoId, prNum, profileId, branch)
+      .then((r) => { if (!cancelled) setRev(r); })
+      .catch((e) => { if (!cancelled) { setRev(null); setRevError(e instanceof Error ? e.message : "Erro ao buscar as revisões"); } });
+    return () => { cancelled = true; };
+  }, [repoId, prNum, profileId, branch, reloadKey]);
+
+  const reviewedSha = data?.pr.head_sha ?? "";
+  // O PR andou depois que o diff foi carregado: o que se vê não é mais o que seria aprovado.
+  const diffOutdated = !!rev && !!reviewedSha && rev.pr.head_sha !== reviewedSha;
+  const choiceBlocked = (ev: CodeEditorReviewEvent): string => {
+    if (!rev) return "revisões não carregadas";
+    if (!rev.can_comment) return rev.approve_block_reason ?? "o PR não recebe revisão";
+    if (ev !== "COMMENT" && !rev.can_approve) return rev.approve_block_reason ?? "";
+    return "";
+  };
+  const needsText = event !== "APPROVE";
+  const blocked = choiceBlocked(event);
+  const canSend = !sending && !blocked && !diffOutdated && !!reviewedSha && (!needsText || text.trim() !== "");
+
+  async function sendReview() {
+    if (!data || !canSend) return;
+    const what = event === "APPROVE" ? "Aprovar" : event === "REQUEST_CHANGES" ? "Solicitar alterações em" : "Comentar em";
+    if (event !== "COMMENT" && !window.confirm(
+      `${what} o PR #${data.pr.number} "${data.pr.title}"?\n\nA revisão é enviada ao GitHub em nome de ${rev?.viewer || "seu usuário do GitHub"}, para o commit ${reviewedSha.slice(0, 7)} (o que você viu neste diff).`,
+    )) return;
+    setSending(true);
+    setSendError("");
+    try {
+      await apiClient.codeEditorSubmitPRReview(repoId, { pr: data.pr.number, event, body: text.trim() || undefined, head_sha: reviewedSha }, profileId, branch);
+      toast.success(event === "APPROVE" ? `PR #${data.pr.number} aprovado` : event === "REQUEST_CHANGES" ? `Alterações solicitadas no PR #${data.pr.number}` : "Comentário enviado");
+      setText("");
+      setEvent("COMMENT");
+      const fresh = await apiClient.codeEditorPRReviews(repoId, data.pr.number, profileId, branch);
+      setRev(fresh);
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : "Erro ao enviar a revisão");
+    } finally {
+      setSending(false);
+    }
+  }
 
   const files = data?.files ?? [];
   const file = files[idx];
@@ -147,6 +221,106 @@ export function PRDiffModal({ repoId, profileId, prNumber, onClose }: PRDiffModa
             </>
           )}
         </div>
+
+        {data && (
+          <div className="flex-shrink-0 border border-border/40 rounded">
+            <button
+              type="button"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/40"
+              onClick={() => setRevOpen((o) => !o)}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span className="font-medium">Revisão do PR</span>
+              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                {rev?.reviews.map((r) => {
+                  const st = REVIEW_STATE[r.state] ?? REVIEW_STATE.COMMENTED;
+                  return (
+                    <span key={r.user} className={`px-1.5 py-0.5 rounded border text-[10px] ${st.cls}`}
+                      title={r.stale ? "Feita num commit anterior ao atual do PR" : `Em ${new Date(r.submitted_at).toLocaleString("pt-BR")}`}>
+                      {r.user} {st.label}{r.stale ? " (commit antigo)" : ""}
+                    </span>
+                  );
+                })}
+                {rev && rev.reviews.length === 0 && <span className="text-muted-foreground">ninguém revisou ainda</span>}
+                {revError && <span className="text-red-400 truncate" title={revError}>revisões indisponíveis</span>}
+              </div>
+              <div className="flex-1" />
+              {revOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+
+            {revOpen && (
+              <div className="border-t border-border/40 p-3 space-y-2 text-xs max-h-[38vh] overflow-y-auto">
+                {revError && <div className="text-red-400 whitespace-pre-wrap break-words">{revError}</div>}
+
+                {diffOutdated && (
+                  <div className="flex items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-amber-300">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="flex-1">O PR recebeu commits novos depois que este diff foi carregado. Recarregue o diff e revise o que mudou antes de enviar a revisão.</span>
+                    <Button size="sm" variant="outline" className="h-6 text-xs gap-1" onClick={() => setReloadKey((k) => k + 1)}>
+                      <RefreshCw className="w-3 h-3" />Recarregar
+                    </Button>
+                  </div>
+                )}
+
+                {rev && !rev.can_approve && rev.approve_block_reason && (
+                  <div className="flex items-start gap-2 text-muted-foreground">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                    <span>{rev.approve_block_reason}.</span>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {EVENT_CHOICES.map((c) => {
+                    const why = choiceBlocked(c.id);
+                    const active = event === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        disabled={!!why}
+                        title={why || c.hint}
+                        onClick={() => { setEvent(c.id); setSendError(""); }}
+                        className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs disabled:opacity-40 disabled:cursor-not-allowed ${
+                          active
+                            ? c.id === "APPROVE" ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
+                              : c.id === "REQUEST_CHANGES" ? "border-red-500 bg-red-500/15 text-red-300"
+                              : "border-primary bg-primary/10 text-foreground"
+                            : "border-border/60 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {c.id === "APPROVE" ? <CheckCircle2 className="w-3 h-3" /> : c.id === "REQUEST_CHANGES" ? <XCircle className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
+                        {c.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={3}
+                  placeholder={needsText ? "Escreva o comentário (obrigatório)…" : "Comentário opcional junto da aprovação…"}
+                  className="w-full rounded border border-border/60 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+
+                {sendError && <div className="text-red-400 whitespace-pre-wrap break-words">{sendError}</div>}
+
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">
+                    Será enviada ao GitHub {rev?.viewer ? <>como <b>{rev.viewer}</b></> : "em nome do seu usuário"}, para o commit{" "}
+                    <span className="font-mono">{reviewedSha ? reviewedSha.slice(0, 7) : "?"}</span> (o que este diff mostra).
+                  </span>
+                  <div className="flex-1" />
+                  <Button size="sm" className="h-7 text-xs gap-1" disabled={!canSend} onClick={sendReview}
+                    title={blocked || (diffOutdated ? "Recarregue o diff primeiro" : needsText && text.trim() === "" ? "Escreva o comentário" : "")}>
+                    {sending && <Loader2 className="w-3 h-3 animate-spin" />}
+                    {event === "APPROVE" ? "Aprovar PR" : event === "REQUEST_CHANGES" ? "Solicitar alterações" : "Enviar comentário"}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

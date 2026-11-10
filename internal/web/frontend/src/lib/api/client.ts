@@ -5926,9 +5926,10 @@ class APIClient {
 
   // View Plan: plans/outputs do PR da branch atual — Atlantis, comentários, checks e jobs do
   // Actions (somente leitura)
-  async codeEditorGetPRPlan(id: string, pr?: number, profileId?: string): Promise<CodeEditorPRPlanResponse> {
+  async codeEditorGetPRPlan(id: string, pr?: number, profileId?: string, branch?: string): Promise<CodeEditorPRPlanResponse> {
     const params = new URLSearchParams();
     if (pr) params.set("pr", String(pr));
+    if (branch) params.set("branch", branch); // qualquer branch com PR, sem checkout; sem ela, a atual
     if (profileId) params.set("profile_id", profileId);
     const qs = params.toString();
     return this.request(`/code-editor/repos/${id}/pr/plan${qs ? `?${qs}` : ""}`);
@@ -5948,12 +5949,43 @@ class APIClient {
   }
 
   // Arquivos e patches do PR da branch atual (somente leitura)
-  async codeEditorGetPRDiff(id: string, pr?: number, profileId?: string): Promise<CodeEditorPRDiffResponse> {
+  async codeEditorGetPRDiff(id: string, pr?: number, profileId?: string, branch?: string): Promise<CodeEditorPRDiffResponse> {
     const params = new URLSearchParams();
     if (pr) params.set("pr", String(pr));
+    if (branch) params.set("branch", branch);
     if (profileId) params.set("profile_id", profileId);
     const qs = params.toString();
     return this.request(`/code-editor/repos/${id}/pr/diff${qs ? `?${qs}` : ""}`);
+  }
+
+  // Revisões do PR (só leitura): quem aprovou/pediu alterações, o autor, quem está logado e se dá para aprovar.
+  async codeEditorPRReviews(id: string, pr?: number, profileId?: string, branch?: string): Promise<CodeEditorPRReviews> {
+    const params = new URLSearchParams();
+    if (pr) params.set("pr", String(pr));
+    if (branch) params.set("branch", branch);
+    if (profileId) params.set("profile_id", profileId);
+    return this.request(`/code-editor/repos/${id}/pr/reviews?${params.toString()}`);
+  }
+
+  // Envia a revisão ao GitHub EM NOME do PAT do perfil. head_sha é o commit que foi visto no diff: se o PR
+  // recebeu commits novos, o servidor recusa (409).
+  async codeEditorSubmitPRReview(
+    id: string,
+    payload: { pr: number; event: CodeEditorReviewEvent; body?: string; head_sha: string },
+    profileId?: string,
+    branch?: string,
+  ): Promise<{ review: { id: number; state: string; url: string } }> {
+    const params = new URLSearchParams();
+    if (branch) params.set("branch", branch);
+    if (profileId) params.set("profile_id", profileId);
+    return this.request(`/code-editor/repos/${id}/pr/review?${params.toString()}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  // PRs abertos (criados e ainda não mergeados) do repositório, por branch de origem — o painel de
+  // branches usa para mostrar Diff e Plan de qualquer branch com PR, sem checkout.
+  async codeEditorOpenPRs(id: string, profileId?: string): Promise<{ prs: CodeEditorOpenPR[] }> {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    return this.request(`/code-editor/repos/${id}/pr/open${qs}`);
   }
 
   // Há plan/output para mostrar? (consulta barata, sem baixar logs) — habilita o botão View Plan
@@ -6294,6 +6326,36 @@ export interface VolumesResponse {
     idle_tracking?: boolean;
     usage_known: number; usage_critical: number; usage_warning: number; usage_oversized: number;
     cost_brl_month: number; cost_idle_brl_month: number; cost_effective: number; cost_estimate: number; cost_none: number; pvcs: number; pvs: number; capacity_bytes: number; with_issues: number; orphan_pvs: number; unused_pvcs: number; no_owner: number; nfs: number };
+}
+
+export type CodeEditorReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+export interface CodeEditorReviewSummary {
+  user: string;
+  state: "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED" | "COMMENTED";
+  submitted_at: string;
+  commit_id: string;
+  stale: boolean; // feita num commit anterior ao atual do PR
+}
+
+export interface CodeEditorPRReviews {
+  pr: { number: number; title: string; state: string; draft: boolean; url: string; author: string; base: string; head_sha: string };
+  viewer: string;
+  reviews: CodeEditorReviewSummary[];
+  can_comment: boolean;
+  can_approve: boolean;
+  approve_block_reason?: string;
+}
+
+export interface CodeEditorOpenPR {
+  branch: string;
+  number: number;
+  title: string;
+  url: string;
+  base: string;
+  draft: boolean;
+  author?: string;
+  updated_at: string;
 }
 
 export interface CodeEditorPlanAvailability {

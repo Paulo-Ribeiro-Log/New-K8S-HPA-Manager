@@ -20,6 +20,8 @@ const SOURCE_LABEL: Record<CodeEditorPlanSourceKind, string> = {
 interface ViewPlanModalProps {
   repoId: string;
   profileId?: string;
+  /** Branch com PR (não precisa ser a atual); sem ela, a branch atual do repositório. */
+  branch?: string;
   onClose: () => void;
 }
 
@@ -66,7 +68,7 @@ function SummaryBadge({ summary, error }: { summary: string; error: boolean }) {
   );
 }
 
-export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps) {
+export function ViewPlanModal({ repoId, profileId, branch, onClose }: ViewPlanModalProps) {
   const [data, setData] = useState<CodeEditorPRPlanResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -105,7 +107,7 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
   async function load(pr?: number) {
     setLoading(true); setError("");
     try {
-      const r = await apiClient.codeEditorGetPRPlan(repoId, pr, profileId);
+      const r = await apiClient.codeEditorGetPRPlan(repoId, pr, profileId, branch);
       setData(r);
       setSourceIdx(0);
       setProjectIdx(0);
@@ -117,7 +119,7 @@ export function ViewPlanModal({ repoId, profileId, onClose }: ViewPlanModalProps
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(prNumber); }, [repoId, prNumber]);
+  useEffect(() => { load(prNumber); }, [repoId, prNumber, branch]);
 
   const sources = data?.sources ?? [];
   const source = sources[sourceIdx];
