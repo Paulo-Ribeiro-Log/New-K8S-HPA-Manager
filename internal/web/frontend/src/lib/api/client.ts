@@ -6380,6 +6380,10 @@ export interface CodeEditorOpenPR {
   draft: boolean;
   author?: string;
   updated_at: string;
+  /** Status no GitHub; ausentes quando não deu para consultar. */
+  checks?: "success" | "failure" | "pending" | "none";
+  review?: "approved" | "changes_requested" | "review_required" | "none";
+  mergeable?: "ok" | "conflict" | "unknown";
 }
 
 export interface CodeEditorPlanAvailability {

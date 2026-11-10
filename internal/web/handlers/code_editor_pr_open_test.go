@@ -152,3 +152,46 @@ func TestRotasDePRAceitamBranchPedidaESemCheckout(t *testing.T) {
 		t.Errorf("ListOpenPRs: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestEnrichOpenPRsPreencheStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" || r.Method != http.MethodPost {
+			t.Errorf("requisição inesperada: %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"pullRequests":{"nodes":[
+		 {"number":1,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}},
+		 {"number":2,"mergeable":"CONFLICTING","reviewDecision":"CHANGES_REQUESTED","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}},
+		 {"number":3,"mergeable":"UNKNOWN","reviewDecision":null,"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}]}}}}`)
+	}))
+	defer srv.Close()
+	old := githubAPIBase
+	githubAPIBase = srv.URL
+	defer func() { githubAPIBase = old }()
+
+	prs := []OpenPR{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 9}}
+	enrichOpenPRs(context.Background(), "tok", "o", "r", prs)
+	want := []OpenPR{
+		{Number: 1, Checks: "success", Review: "approved", Mergeable: "ok"},
+		{Number: 2, Checks: "failure", Review: "changes_requested", Mergeable: "conflict"},
+		{Number: 3, Checks: "none", Review: "none", Mergeable: "unknown"},
+		{Number: 9}, // fora da resposta: fica sem status
+	}
+	for i := range want {
+		if prs[i] != want[i] {
+			t.Errorf("PR %d: %+v, esperava %+v", want[i].Number, prs[i], want[i])
+		}
+	}
+}
+
+func TestEnrichOpenPRsFalhaNaoQuebra(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
+	defer srv.Close()
+	old := githubAPIBase
+	githubAPIBase = srv.URL
+	defer func() { githubAPIBase = old }()
+	prs := []OpenPR{{Number: 1}}
+	enrichOpenPRs(context.Background(), "tok", "o", "r", prs)
+	if prs[0].Checks != "" || prs[0].Review != "" {
+		t.Errorf("sem acesso ao GraphQL o PR deveria ficar sem status: %+v", prs[0])
+	}
+}

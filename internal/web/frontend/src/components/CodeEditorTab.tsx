@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { prBadge, prToneClass } from "@/lib/prBadge";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
@@ -2088,13 +2089,15 @@ interface BranchesPanelProps {
   profileId?: string;
   /** PRs abertos (criados e não mergeados) por branch de origem: mostra o selo e os botões Diff/Plan. */
   openPRs?: Map<string, CodeEditorOpenPR>;
+  /** Falha ao buscar os PRs abertos (sem isso os selos somem em silêncio). */
+  openPRsError?: string;
   onViewPRDiff?: (branch: string, prNumber: number) => void;
   onViewPRPlan?: (branch: string, prNumber: number) => void;
   /** Depois de renomear/apagar: recarrega status e branches e mostra o resultado. */
   onChanged: (message: string) => void | Promise<void>;
 }
 
-function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, openPRs, onViewPRDiff, onViewPRPlan, onChanged }: BranchesPanelProps) {
+function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, openPRs, openPRsError, onViewPRDiff, onViewPRPlan, onChanged }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
   const [manage, setManage] = useState<{ kind: "rename" | "delete"; branch: string; hasLocal: boolean } | null>(null);
@@ -2121,12 +2124,13 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
   const prControls = (branch: string) => {
     const pr = openPRs?.get(branch.replace(/^origin\//, ""));
     if (!pr) return null;
+    const badge = prBadge(pr);
     return (
       <div className="flex items-center gap-0.5 flex-shrink-0">
         <a href={pr.url} target="_blank" rel="noreferrer"
-          className="text-[10px] px-1 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-          title={`PR #${pr.number}${pr.draft ? " (rascunho)" : ""} aberto: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}\n(clique para abrir no GitHub)`}>
-          PR #{pr.number}{pr.draft ? " · rascunho" : ""}
+          className={`text-[10px] px-1 rounded border ${prToneClass(badge.tone)}`}
+          title={`PR #${pr.number}: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}${badge.details.length ? `\n${badge.details.join(" · ")}` : ""}\n(clique para abrir no GitHub)`}>
+          PR #{pr.number}
         </a>
         <button className="p-0.5 rounded hover:bg-muted" title={`Ver o diff do PR #${pr.number} (somente leitura)`}
           onClick={() => onViewPRDiff?.(pr.branch, pr.number)}>
@@ -2160,6 +2164,11 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
           </Button>
         </div>
       </div>
+      {openPRsError && (
+        <div className="px-2 py-1 text-[10px] text-amber-400 bg-amber-500/10 border-b border-amber-500/20 flex-shrink-0" title={openPRsError}>
+          Não consegui buscar os PRs abertos: {openPRsError}
+        </div>
+      )}
       <div className="px-2 py-1.5 border-b border-border/20 flex-shrink-0">
         <div className="relative">
           <Search className="w-3 h-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -2495,7 +2504,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     retry: false,
   });
   // PRs abertos do repositório por branch: o painel de branches mostra o selo e os botões Diff/Plan.
-  const { data: openPRsData } = useQuery({
+  const { data: openPRsData, error: openPRsError } = useQuery({
     queryKey: ["code-editor-open-prs", selectedRepo?.id, activeProfileId()],
     queryFn: () => apiClient.codeEditorOpenPRs(selectedRepo!.id, activeProfileId()),
     enabled: !!selectedRepo,
@@ -4512,6 +4521,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                 onBranchDiff={() => setShowBranchDiff(true)}
                 profileId={activeProfileId()}
                 openPRs={openPRsByBranch}
+                openPRsError={openPRsError ? ((openPRsError as Error).message || "erro desconhecido") : undefined}
                 onViewPRDiff={(branch, prNumber) => setPrDiff({ branch, prNumber })}
                 onViewPRPlan={(branch) => { setViewPlanBranch(branch); setShowViewPlan(true); }}
                 onChanged={async (m) => {
