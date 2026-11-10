@@ -6005,6 +6005,17 @@ class APIClient {
     return this.request(`/code-editor/repos/${id}/pr/review?${params.toString()}`, { method: "POST", body: JSON.stringify(payload) });
   }
 
+  // Mergeia o PR no GitHub (em nome do PAT do perfil). head_sha = o commit visto no diff: se o PR
+  // recebeu commits novos, o servidor recusa (409). Apagar a branch é melhor esforço (branch_error).
+  async codeEditorMergePR(
+    id: string,
+    payload: { pr: number; head_sha: string; method: "merge" | "squash" | "rebase"; delete_branch: boolean },
+    profileId?: string,
+  ): Promise<{ merged: boolean; sha: string; branch_deleted: boolean; branch_error?: string }> {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    return this.request(`/code-editor/repos/${id}/pr/merge${qs}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
   // Fecha ou reabre o PR no GitHub (grava em nome do PAT do perfil). PR mergeado o servidor recusa (409).
   async codeEditorSetPRState(id: string, payload: { pr: number; state: "closed" | "open" }, profileId?: string): Promise<{ state: string }> {
     const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
@@ -6253,6 +6264,8 @@ export interface CodeEditorPRMergeStatus {
   mergeable: boolean | null;
   mergeable_state: string; // clean | dirty | blocked | behind | unstable | draft | unknown
   draft: boolean;
+  /** Por que não dá para mergear agora; ausente = pode. */
+  merge_block_reason?: string;
 }
 
 export interface CodeEditorPRDiffFile {

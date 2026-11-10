@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor: merge do PR no modal do diff (Novembro 2026)
+
+O patch do modal do Diff do PR ganhou a numeração das linhas (antiga e nova, lida dos cabeçalhos `@@`; `lib/diffLines.ts`). `POST /code-editor/repos/:id/pr/merge` mergeia o PR no GitHub (merge commit por padrão, squash ou rebase; apagar a branch de origem opcional). Só o modal do Diff do PR tem o botão (não o card do selo): o merge é irreversível e precisa do diff à vista. O servidor recusa PR rascunho/fechado/mergeado, com conflito, checks falhando ou bloqueado pela proteção da branch (`mergeBlockReason`, também devolvido em `GET /pr/status`), e commit diferente do visto no diff (`head_sha`, também enviado como `sha` ao GitHub). A branch só é apagada se for deste repositório e não a de destino; falha ao apagar não desfaz o merge. Entra no Change History (`code_editor_pr_merge`).
+
 ### Code Editor: selo do PR no padrão do GitHub, com status e Fechar/Reabrir (Novembro 2026)
 
 `GET /code-editor/repos/:id/pr/open` traz `state` (open/closed/merged), `checks`, `review` e `mergeable` de cada PR (uma consulta GraphQL, melhor esforço) e, depois dos abertos, os 100 fechados/mergeados mais recentes. A cor do selo é o estado, como no GitHub (verde aberto, cinza rascunho, roxo mergeado, vermelho fechado; fechado e mergeado esmaecidos, sem Diff/Plan); checks, revisão e conflito viram ícones ao lado (lógica em `lib/prBadge.ts`). O card ao passar o mouse traz Fechar/Reabrir (`POST /pr/state`, grava no GitHub e no Change History; mergeado não muda). A falha da busca de PRs agora aparece numa faixa no painel de branches em vez de sumir com os selos.

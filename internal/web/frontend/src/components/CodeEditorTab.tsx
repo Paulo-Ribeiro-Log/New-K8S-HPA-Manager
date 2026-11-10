@@ -6032,6 +6032,11 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
           prNumber={prDiff.prNumber}
           branch={prDiff.branch}
           onClose={() => setPrDiff(null)}
+          onMerged={() => {
+            queryClient.invalidateQueries({ queryKey: ["code-editor-open-prs"] });
+            queryClient.invalidateQueries({ queryKey: ["code-editor-plan-available"] });
+            if (selectedRepo) refreshManual("branches", () => loadBranches(selectedRepo.id, true));
+          }}
         />
       )}
 

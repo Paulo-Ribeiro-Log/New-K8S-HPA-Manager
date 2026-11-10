@@ -2102,6 +2102,7 @@ func (s *Server) setupRoutes() {
 		codeEditor.GET("/repos/:id/pr/plan/available", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRPlanAvailability)                     // habilita/desabilita o botão View Plan
 		codeEditor.GET("/repos/:id/pr/open", rbacMiddleware.InjectUserEmail(), codeEditorHandler.ListOpenPRs)                                         // PRs abertos por branch (Diff/Plan de qualquer branch com PR, sem checkout)
 		codeEditor.GET("/repos/:id/pr/reviews", rbacMiddleware.InjectUserEmail(), codeEditorHandler.GetPRReviews)                                     // revisões do PR, autor e se dá para aprovar (somente leitura)
+		codeEditor.POST("/repos/:id/pr/merge", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), codeEditorHandler.MergePR)         // mergear o PR no GitHub (exige o commit visto no diff)
 		codeEditor.POST("/repos/:id/pr/state", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), codeEditorHandler.SetPRState)      // fechar/reabrir o PR no GitHub
 		codeEditor.POST("/repos/:id/pr/review", rbacMiddleware.RequireSREGroup(), rbacMiddleware.InjectUserEmail(), codeEditorHandler.SubmitPRReview) // aprovar / pedir alterações / comentar (grava no GitHub em nome do PAT do perfil)
 		// LSP

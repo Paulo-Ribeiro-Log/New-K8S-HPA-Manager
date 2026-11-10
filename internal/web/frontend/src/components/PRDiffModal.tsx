@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, FileDiff, GitPullRequest, Loader2, MessageSquare, RefreshCw, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, FileDiff, GitMerge, GitPullRequest, Loader2, MessageSquare, RefreshCw, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { apiClient, type CodeEditorPRDiffResponse, type CodeEditorPRReviews, type CodeEditorReviewEvent } from "@/lib/api/client";
+import { parsePatch, type DiffLine } from "@/lib/diffLines";
+import { apiClient, type CodeEditorPRDiffResponse, type CodeEditorPRMergeStatus, type CodeEditorPRReviews, type CodeEditorReviewEvent } from "@/lib/api/client";
 
 // Diff do PR da branch atual (somente leitura): arquivos alterados à esquerda e o patch do
 // arquivo selecionado à direita, como na aba "Files changed" do GitHub.
@@ -16,6 +17,8 @@ interface PRDiffModalProps {
   /** Branch com PR (não precisa ser a atual); sem ela, a branch atual do repositório. */
   branch?: string;
   onClose: () => void;
+  /** Chamado depois de um merge feito aqui (o painel de branches atualiza os selos). */
+  onMerged?: () => void;
 }
 
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
@@ -39,14 +42,14 @@ const EVENT_CHOICES: { id: CodeEditorReviewEvent; label: string; hint: string }[
   { id: "REQUEST_CHANGES", label: "Solicitar alterações", hint: "bloqueia o merge até as alterações (exige um texto)" },
 ];
 
-function lineClass(line: string): string {
-  if (line.startsWith("@@")) return "text-sky-300 bg-sky-500/10";
-  if (line.startsWith("+")) return "text-emerald-300 bg-emerald-500/10";
-  if (line.startsWith("-")) return "text-red-300 bg-red-500/10";
+function lineClass(kind: DiffLine["kind"]): string {
+  if (kind === "hunk") return "text-sky-300 bg-sky-500/10";
+  if (kind === "add") return "text-emerald-300 bg-emerald-500/10";
+  if (kind === "del") return "text-red-300 bg-red-500/10";
   return "text-zinc-300";
 }
 
-export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PRDiffModalProps) {
+export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose, onMerged }: PRDiffModalProps) {
   const [data, setData] = useState<CodeEditorPRDiffResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -61,6 +64,15 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const [reloadKey, setReloadKey] = useState(0); // recarrega o diff e as revisões
+  // Merge do PR: estado no GitHub, método e se apaga a branch depois.
+  const [mstat, setMstat] = useState<CodeEditorPRMergeStatus | null>(null);
+  const [mstatError, setMstatError] = useState("");
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [method, setMethod] = useState<"merge" | "squash" | "rebase">("merge");
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeError, setMergeError] = useState("");
+  const [mergedNow, setMergedNow] = useState<{ branchDeleted: boolean; branchError?: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +99,17 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
     return () => { cancelled = true; };
   }, [repoId, prNum, profileId, branch, reloadKey]);
 
+  useEffect(() => {
+    if (!prNum) return;
+    let cancelled = false;
+    setMstatError("");
+    apiClient
+      .codeEditorPRMergeStatus(repoId, prNum, profileId)
+      .then((r) => { if (!cancelled) setMstat(r); })
+      .catch((e) => { if (!cancelled) { setMstat(null); setMstatError(e instanceof Error ? e.message : "Erro ao consultar o merge"); } });
+    return () => { cancelled = true; };
+  }, [repoId, prNum, profileId, reloadKey]);
+
   const reviewedSha = data?.pr.head_sha ?? "";
   // O PR andou depois que o diff foi carregado: o que se vê não é mais o que seria aprovado.
   const diffOutdated = !!rev && !!reviewedSha && rev.pr.head_sha !== reviewedSha;
@@ -99,6 +122,30 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
   const needsText = event !== "APPROVE";
   const blocked = choiceBlocked(event);
   const canSend = !sending && !blocked && !diffOutdated && !!reviewedSha && (!needsText || text.trim() !== "");
+
+  const mergeBlocked = mergedNow ? "o PR já foi mergeado" : mstatError ? "estado do merge indisponível" : !mstat ? "consultando o estado do PR…" : mstat.merge_block_reason ?? "";
+  const canMerge = !merging && !mergeBlocked && !diffOutdated && !!reviewedSha;
+
+  async function doMerge() {
+    if (!data || !canMerge) return;
+    const label = method === "merge" ? "merge commit" : method === "squash" ? "squash" : "rebase";
+    if (!window.confirm(
+      `Mergear o PR #${data.pr.number} "${data.pr.title}" em ${data.pr.base} (${label})?\n\nO merge é feito no GitHub em nome de ${rev?.viewer || "seu usuário do GitHub"}, com o commit ${reviewedSha.slice(0, 7)} (o que você viu neste diff)${deleteBranch ? " e a branch de origem será apagada depois" : ""}. Não dá para desfazer por aqui.`,
+    )) return;
+    setMerging(true);
+    setMergeError("");
+    try {
+      const r = await apiClient.codeEditorMergePR(repoId, { pr: data.pr.number, head_sha: reviewedSha, method, delete_branch: deleteBranch }, profileId);
+      setMergedNow({ branchDeleted: r.branch_deleted, branchError: r.branch_error });
+      toast.success(`PR #${data.pr.number} mergeado${r.branch_deleted ? " e branch apagada" : ""}`);
+      if (r.branch_error) toast.warning(`Merge feito, mas a branch não foi apagada: ${r.branch_error}`);
+      onMerged?.();
+    } catch (e) {
+      setMergeError(e instanceof Error ? e.message : "Erro ao mergear o PR");
+    } finally {
+      setMerging(false);
+    }
+  }
 
   async function sendReview() {
     if (!data || !canSend) return;
@@ -124,7 +171,7 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
 
   const files = data?.files ?? [];
   const file = files[idx];
-  const lines = useMemo(() => (file?.patch ? file.patch.split("\n") : []), [file]);
+  const lines = useMemo(() => parsePatch(file?.patch ?? ""), [file]);
   const totals = useMemo(
     () => files.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 }),
     [files],
@@ -212,7 +259,11 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
                   ) : (
                     <pre className="font-mono text-[12.5px] leading-[1.45] py-1 min-w-max">
                       {lines.map((line, i) => (
-                        <div key={i} className={`whitespace-pre px-3 ${lineClass(line)}`}>{line || " "}</div>
+                        <div key={i} className={`flex whitespace-pre ${lineClass(line.kind)}`}>
+                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500" aria-hidden>{line.oldNo ?? ""}</span>
+                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500 border-r border-zinc-700/60" aria-hidden>{line.newNo ?? ""}</span>
+                          <span className="px-3">{line.text || " "}</span>
+                        </div>
                       ))}
                     </pre>
                   )}
@@ -317,6 +368,84 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose }: PR
                     {event === "APPROVE" ? "Aprovar PR" : event === "REQUEST_CHANGES" ? "Solicitar alterações" : "Enviar comentário"}
                   </Button>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {data && (
+          <div className="flex-shrink-0 border border-border/40 rounded">
+            <button type="button" className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/40" onClick={() => setMergeOpen((o) => !o)}>
+              <GitMerge className="w-3.5 h-3.5" />
+              <span className="font-medium">Merge do PR</span>
+              {mergedNow ? (
+                <span className="px-1.5 py-0.5 rounded border text-[10px] text-purple-300 border-purple-500/40 bg-purple-500/10">mergeado</span>
+              ) : mergeBlocked ? (
+                <span className="text-muted-foreground truncate" title={mergeBlocked}>{mergeBlocked}</span>
+              ) : (
+                <span className="px-1.5 py-0.5 rounded border text-[10px] text-emerald-300 border-emerald-500/40 bg-emerald-500/10">pronto para mergear</span>
+              )}
+              <div className="flex-1" />
+              {mergeOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+            {mergeOpen && (
+              <div className="border-t border-border/40 p-3 space-y-2 text-xs">
+                {mergedNow ? (
+                  <div className="text-purple-300">
+                    PR #{data.pr.number} mergeado em {data.pr.base}.
+                    {mergedNow.branchDeleted && " A branch de origem foi apagada."}
+                    {mergedNow.branchError && <span className="text-amber-300"> A branch não foi apagada: {mergedNow.branchError}</span>}
+                  </div>
+                ) : (
+                  <>
+                    {mergeBlocked && (
+                      <div className="flex items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-amber-300">
+                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span className="flex-1">{diffOutdated ? "O PR recebeu commits novos depois que este diff foi carregado: recarregue e revise antes de mergear." : mergeBlocked}</span>
+                        <Button size="sm" variant="outline" className="h-6 text-xs gap-1" onClick={() => setReloadKey((k) => k + 1)}>
+                          <RefreshCw className="w-3 h-3" />Atualizar
+                        </Button>
+                      </div>
+                    )}
+                    {!mergeBlocked && diffOutdated && (
+                      <div className="flex items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-amber-300">
+                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span className="flex-1">O PR recebeu commits novos depois que este diff foi carregado: recarregue e revise antes de mergear.</span>
+                        <Button size="sm" variant="outline" className="h-6 text-xs gap-1" onClick={() => setReloadKey((k) => k + 1)}>
+                          <RefreshCw className="w-3 h-3" />Recarregar
+                        </Button>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <label className="flex items-center gap-1.5">
+                        Método
+                        <select value={method} onChange={(e) => setMethod(e.target.value as "merge" | "squash" | "rebase")}
+                          className="rounded border border-border/60 bg-background px-1.5 py-1 text-xs">
+                          <option value="merge">Merge commit</option>
+                          <option value="squash">Squash</option>
+                          <option value="rebase">Rebase</option>
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} />
+                        Apagar a branch de origem depois
+                      </label>
+                    </div>
+                    {mergeError && <div className="text-red-400 whitespace-pre-wrap break-words">{mergeError}</div>}
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">
+                        Será mergeado no GitHub {rev?.viewer ? <>como <b>{rev.viewer}</b></> : "em nome do seu usuário"}, com o commit{" "}
+                        <span className="font-mono">{reviewedSha ? reviewedSha.slice(0, 7) : "?"}</span> (o que este diff mostra).
+                      </span>
+                      <div className="flex-1" />
+                      <Button size="sm" className="h-7 text-xs gap-1" disabled={!canMerge} onClick={doMerge}
+                        title={mergeBlocked || (diffOutdated ? "Recarregue o diff primeiro" : "")}>
+                        {merging ? <Loader2 className="w-3 h-3 animate-spin" /> : <GitMerge className="w-3 h-3" />}
+                        Mergear PR
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

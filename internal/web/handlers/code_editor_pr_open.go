@@ -263,3 +263,110 @@ func (h *CodeEditorHandler) SetPRState(c *gin.Context) {
 	logOperation(c, h.historyTracker, "code_editor_pr_state", resource, "", map[string]interface{}{"state": cur}, after, start, nil)
 	c.JSON(http.StatusOK, gin.H{"state": out.State})
 }
+
+type mergePRRequest struct {
+	PR           int    `json:"pr"`
+	HeadSHA      string `json:"head_sha"`      // o commit que o usuário viu no diff
+	Method       string `json:"method"`        // merge (padrão) | squash | rebase
+	DeleteBranch bool   `json:"delete_branch"` // apaga a branch de origem depois do merge
+}
+
+// MergePR — POST /api/v1/code-editor/repos/:id/pr/merge?profile_id=<id>
+// Body: { "pr", "head_sha", "method", "delete_branch" }. Mergeia o PR no GitHub em nome do PAT do perfil.
+// Recusa se o PR não estiver pronto (conflito, checks, rascunho, fechado) ou tiver recebido commits
+// depois que o usuário viu o diff. Apagar a branch é melhor esforço: o merge já valeu.
+func (h *CodeEditorHandler) MergePR(c *gin.Context) {
+	var req mergePRRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Method == "" {
+		req.Method = "merge"
+	}
+	switch {
+	case req.PR <= 0:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pr é obrigatório"})
+		return
+	case req.HeadSHA == "":
+		c.JSON(http.StatusBadRequest, gin.H{"error": "head_sha é obrigatório: o merge precisa apontar o commit que foi visto no diff"})
+		return
+	case req.Method != "merge" && req.Method != "squash" && req.Method != "rebase":
+		c.JSON(http.StatusBadRequest, gin.H{"error": "method deve ser merge, squash ou rebase"})
+		return
+	}
+	acc, ok := h.resolveRepoAccess(c)
+	if !ok {
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	resource := fmt.Sprintf("%s/%s#%d", acc.owner, acc.repo, req.PR)
+	after := map[string]interface{}{"repo_id": c.Param("id"), "number": req.PR, "method": req.Method, "delete_branch": req.DeleteBranch, "head_sha": req.HeadSHA}
+	fail := func(status int, msg string) {
+		logOperation(c, h.historyTracker, "code_editor_pr_merge", resource, "", nil, after, start, fmt.Errorf("%s", msg))
+		c.JSON(status, gin.H{"error": msg})
+	}
+
+	pr, err := getPRDetail(ctx, acc.token, acc.owner, acc.repo, req.PR)
+	if err != nil {
+		fail(http.StatusBadGateway, err.Error())
+		return
+	}
+	st, err := fetchPRMergeStatus(ctx, acc.token, acc.owner, acc.repo, req.PR)
+	if err != nil {
+		fail(http.StatusBadGateway, err.Error())
+		return
+	}
+	if why := st.MergeBlockReason; why != "" {
+		fail(http.StatusConflict, "não dá para mergear: "+why)
+		return
+	}
+	if !strings.EqualFold(pr.Head.SHA, req.HeadSHA) {
+		fail(http.StatusConflict, fmt.Sprintf("o PR recebeu novos commits desde que você abriu o diff (agora em %s, você viu %s): reabra o diff, revise o que mudou e tente de novo", short(pr.Head.SHA), short(req.HeadSHA)))
+		return
+	}
+
+	var out struct {
+		SHA     string `json:"sha"`
+		Merged  bool   `json:"merged"`
+		Message string `json:"message"`
+	}
+	u := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", githubAPIBase, acc.owner, acc.repo, req.PR)
+	if err := githubSendJSON(ctx, http.MethodPut, acc.token, u, map[string]string{"merge_method": req.Method, "sha": req.HeadSHA}, &out); err != nil {
+		msg := err.Error()
+		status := http.StatusBadGateway
+		if ge, ok := err.(*ghAPIError); ok {
+			status = ge.Status
+			if status == http.StatusForbidden && strings.Contains(msg, "Resource not accessible") {
+				msg = "O PAT deste perfil não tem permissão para mergear PRs (precisa de 'Pull requests: Read and write' e 'Contents: Read and write'). " + msg
+			}
+			if status < 400 || status > 599 {
+				status = http.StatusBadGateway
+			}
+		}
+		fail(status, msg)
+		return
+	}
+	after["merge_sha"] = out.SHA
+
+	resp := gin.H{"merged": out.Merged, "sha": out.SHA, "branch_deleted": false}
+	if req.DeleteBranch {
+		// Só apaga a branch do próprio repositório e nunca a de destino.
+		sameRepo := pr.Head.Repo != nil && strings.EqualFold(pr.Head.Repo.FullName, acc.owner+"/"+acc.repo)
+		if sameRepo && pr.Head.Ref != "" && pr.Head.Ref != pr.Base.Ref && validPRBranch(pr.Head.Ref) {
+			du := fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", githubAPIBase, acc.owner, acc.repo, pr.Head.Ref)
+			if derr := githubSendJSON(ctx, http.MethodDelete, acc.token, du, nil, nil); derr != nil {
+				resp["branch_error"] = derr.Error()
+			} else {
+				resp["branch_deleted"] = true
+			}
+		} else {
+			resp["branch_error"] = "a branch de origem não é deste repositório (ou é a de destino): não foi apagada"
+		}
+		after["branch_deleted"] = resp["branch_deleted"]
+	}
+	logOperation(c, h.historyTracker, "code_editor_pr_merge", resource, "", map[string]interface{}{"state": "open"}, after, start, nil)
+	c.JSON(http.StatusOK, resp)
+}
