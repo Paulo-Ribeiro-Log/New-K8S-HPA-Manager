@@ -2130,7 +2130,7 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
         <a href={pr.url} target="_blank" rel="noreferrer"
           className={`text-[10px] px-1 rounded border ${prToneClass(badge.tone)}`}
           title={`PR #${pr.number}: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}${badge.details.length ? `\n${badge.details.join(" · ")}` : ""}\n(clique para abrir no GitHub)`}>
-          PR #{pr.number}{badge.label ? ` · ${badge.label}` : ""}
+          PR #{pr.number}
         </a>
         <button className="p-0.5 rounded hover:bg-muted" title={`Ver o diff do PR #${pr.number} (somente leitura)`}
           onClick={() => onViewPRDiff?.(pr.branch, pr.number)}>
