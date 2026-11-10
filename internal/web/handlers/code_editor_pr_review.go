@@ -79,8 +79,13 @@ func (e *ghAPIError) Error() string { return e.Message }
 
 // githubPostJSON faz um POST autenticado na API do GitHub e devolve a resposta decodificada em out.
 func githubPostJSON(ctx context.Context, token, apiURL string, payload, out any) error {
+	return githubSendJSON(ctx, http.MethodPost, token, apiURL, payload, out)
+}
+
+// githubSendJSON é o githubPostJSON com o método à escolha (POST, PATCH).
+func githubSendJSON(ctx context.Context, method, token, apiURL string, payload, out any) error {
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, method, apiURL, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}

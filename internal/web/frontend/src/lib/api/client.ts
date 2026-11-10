@@ -6005,6 +6005,12 @@ class APIClient {
     return this.request(`/code-editor/repos/${id}/pr/review?${params.toString()}`, { method: "POST", body: JSON.stringify(payload) });
   }
 
+  // Fecha ou reabre o PR no GitHub (grava em nome do PAT do perfil). PR mergeado o servidor recusa (409).
+  async codeEditorSetPRState(id: string, payload: { pr: number; state: "closed" | "open" }, profileId?: string): Promise<{ state: string }> {
+    const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
+    return this.request(`/code-editor/repos/${id}/pr/state${qs}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
   // PRs abertos (criados e ainda não mergeados) do repositório, por branch de origem — o painel de
   // branches usa para mostrar Diff e Plan de qualquer branch com PR, sem checkout.
   async codeEditorOpenPRs(id: string, profileId?: string): Promise<{ prs: CodeEditorOpenPR[] }> {
@@ -6373,6 +6379,8 @@ export interface CodeEditorPRReviews {
 
 export interface CodeEditorOpenPR {
   branch: string;
+  /** open | closed | merged (os fechados vêm depois dos abertos). */
+  state?: "open" | "closed" | "merged";
   number: number;
   title: string;
   url: string;
