@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s-hpa-manager/internal/buildinfo"
 	"k8s-hpa-manager/internal/updater"
 
 	"github.com/spf13/cobra"
@@ -14,7 +15,23 @@ var versionCmd = &cobra.Command{
 	Short: "Exibir versão da aplicação",
 	Long:  `Exibe a versão atual do k8s-hpa-manager e verifica se há updates disponíveis.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("k8s-hpa-manager versão %s\n\n", updater.Version)
+		fmt.Printf("k8s-hpa-manager versão %s\n", updater.Version)
+		bi := buildinfo.Get()
+		if bi.CommitShort != "" {
+			dirty := ""
+			if bi.Dirty {
+				dirty = " (com mudanças sem commit)"
+			}
+			fmt.Printf("build: commit %s%s", bi.CommitShort, dirty)
+			if bi.CommitTime != "" {
+				fmt.Printf(" de %s", bi.CommitTime)
+			}
+			fmt.Println()
+		}
+		if bi.BuiltAt != "" {
+			fmt.Printf("binário gerado em %s\n", bi.BuiltAt)
+		}
+		fmt.Println()
 
 		// Se versão é "dev", não verificar updates
 		if updater.Version == "dev" {

@@ -167,6 +167,8 @@ import type {
   AzureStorageSearchResult,
   AzureAccountContents,
 } from "./types";
+import type { ServerBuild } from "@/lib/buildInfo";
+import { normalizeEndpoint } from "@/lib/api/endpoint";
 
 import type {
   AnalyzeRequest,
@@ -328,6 +330,9 @@ class APIClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
+    // O API_BASE_URL já é acrescentado abaixo: "/api/v1/x" viraria "/api/v1/api/v1/x" (404 silencioso).
+    endpoint = normalizeEndpoint(endpoint);
+
     // Auto-refresh: renova proativamente quando falta < 1h para expirar
     // ou quando já expirou (backend aceita grace period de 24h no refresh)
     if (this.isTokenExpired() || this.isTokenNearExpiry()) {
@@ -5479,6 +5484,14 @@ class APIClient {
     if (opts?.disks === false) p.set("disks", "false"); // não relistar discos
     const res = await this.request<{ success: boolean; data: AzureStorageSearchResult }>(`/azure/storage-search?${p.toString()}`);
     return res.data;
+  }
+
+  // Qual build do servidor está rodando (GET /health, sem auth, fora do /api/v1). O frontend compara o
+  // `frontend_bundle` com o JS que o navegador carregou para avisar quando a página é de um build anterior.
+  async getBuildInfo(): Promise<{ status: string; version: string; build?: ServerBuild }> {
+    const res = await fetch("/health", { cache: "no-store" });
+    if (!res.ok) throw new Error(`health respondeu ${res.status}`);
+    return res.json();
   }
 
   // Containers e file shares de UMA conta de armazenamento já achada (só leitura): olha só para ela, sem refazer

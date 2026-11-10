@@ -55,6 +55,7 @@ import { Badge } from "@/components/ui/badge";
 import { GENERAL_NOTES_CLUSTER, GENERAL_NOTES_TAB, useNotes } from "@/hooks/useNotes";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
+import { StaleFrontendBanner } from "@/components/StaleFrontendBanner";
 import { AzureSessionBanner } from "@/components/AzureSessionBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
 import { PrometheusHealthAlerts } from "@/components/PrometheusHealthAlerts";
@@ -67,7 +68,8 @@ import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import { HelmTab } from "@/components/HelmTab";
 import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
-import { DependenciesTab, type DependencyNavTarget } from "@/components/DependenciesTab";
+import { DependenciesTab } from "@/components/DependenciesTab";
+import type { DependencyNavTarget } from "@/lib/dependencyNav";
 import CertificatesTab from "@/components/CertificatesTab";
 import AccessCheckTab from "@/components/AccessCheckTab";
 import LatencyTestTab from "@/components/LatencyTestTab";
@@ -1806,6 +1808,9 @@ const Index = ({ onLogout }: IndexProps) => {
       {selectedCluster && (
         <PrometheusHealthAlerts cluster={selectedCluster} onOpenPrometheus={() => handleTabChange("prometheus")} />
       )}
+
+      {/* Esta página é de um build anterior ao que o servidor embute */}
+      <StaleFrontendBanner />
 
       {/* Sessão do Azure CLI do servidor expirada (uso prolongado) */}
       <AzureSessionBanner />

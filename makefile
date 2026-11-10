@@ -120,6 +120,13 @@ web-typecheck:
 	@echo "Type-checking frontend..."
 	@cd internal/web/frontend && npx tsc --noEmit -p tsconfig.app.json
 
+# Testes da lógica pura do frontend (Vitest, sem navegador): mesclagem da busca na subscription,
+# destino dos links de Dependencies, destinatários do Teams, trava do /api/v1 duplicado, build id.
+.PHONY: web-test
+web-test:
+	@echo "Testing frontend..."
+	@cd internal/web/frontend && npm test
+
 .PHONY: web-lint
 web-lint:
 	@echo "Linting frontend..."

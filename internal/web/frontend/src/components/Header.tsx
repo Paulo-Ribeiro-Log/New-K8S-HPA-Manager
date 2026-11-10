@@ -26,6 +26,7 @@ import {
 import { CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
 import { NotificationBell } from "@/components/NotificationBell";
 import { HelpButton } from "@/components/help/HelpButton";
+import { BuildBadge } from "@/components/BuildBadge";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
 import { AlertsDialog } from "@/components/AlertsDialog";
 import { UserProfileMenu } from "@/components/UserProfileMenu";
@@ -408,6 +409,9 @@ export const Header = ({
             <History className="w-4 h-4" />
           </Button>
         )}
+
+        {/* Qual build do servidor está no ar (commit) e se esta página é de um build anterior */}
+        <BuildBadge />
 
         {/* Notification Bell */}
         <HelpButton />
