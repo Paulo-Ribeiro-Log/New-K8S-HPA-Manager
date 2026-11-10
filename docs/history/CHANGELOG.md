@@ -5,7 +5,7 @@
 
 ### Code Editor: merge do PR no modal do diff (Novembro 2026)
 
-`POST /code-editor/repos/:id/pr/merge` mergeia o PR no GitHub (merge commit por padrão, squash ou rebase; apagar a branch de origem opcional). Só o modal do Diff do PR tem o botão (não o card do selo): o merge é irreversível e precisa do diff à vista. O servidor recusa PR rascunho/fechado/mergeado, com conflito, checks falhando ou bloqueado pela proteção da branch (`mergeBlockReason`, também devolvido em `GET /pr/status`), e commit diferente do visto no diff (`head_sha`, também enviado como `sha` ao GitHub). A branch só é apagada se for deste repositório e não a de destino; falha ao apagar não desfaz o merge. Entra no Change History (`code_editor_pr_merge`).
+O patch do modal do Diff do PR ganhou a numeração das linhas (antiga e nova, lida dos cabeçalhos `@@`; `lib/diffLines.ts`). `POST /code-editor/repos/:id/pr/merge` mergeia o PR no GitHub (merge commit por padrão, squash ou rebase; apagar a branch de origem opcional). Só o modal do Diff do PR tem o botão (não o card do selo): o merge é irreversível e precisa do diff à vista. O servidor recusa PR rascunho/fechado/mergeado, com conflito, checks falhando ou bloqueado pela proteção da branch (`mergeBlockReason`, também devolvido em `GET /pr/status`), e commit diferente do visto no diff (`head_sha`, também enviado como `sha` ao GitHub). A branch só é apagada se for deste repositório e não a de destino; falha ao apagar não desfaz o merge. Entra no Change History (`code_editor_pr_merge`).
 
 ### Code Editor: selo do PR no padrão do GitHub, com status e Fechar/Reabrir (Novembro 2026)
 

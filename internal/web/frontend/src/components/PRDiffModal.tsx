@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, 
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { parsePatch, type DiffLine } from "@/lib/diffLines";
 import { apiClient, type CodeEditorPRDiffResponse, type CodeEditorPRMergeStatus, type CodeEditorPRReviews, type CodeEditorReviewEvent } from "@/lib/api/client";
 
 // Diff do PR da branch atual (somente leitura): arquivos alterados à esquerda e o patch do
@@ -41,10 +42,10 @@ const EVENT_CHOICES: { id: CodeEditorReviewEvent; label: string; hint: string }[
   { id: "REQUEST_CHANGES", label: "Solicitar alterações", hint: "bloqueia o merge até as alterações (exige um texto)" },
 ];
 
-function lineClass(line: string): string {
-  if (line.startsWith("@@")) return "text-sky-300 bg-sky-500/10";
-  if (line.startsWith("+")) return "text-emerald-300 bg-emerald-500/10";
-  if (line.startsWith("-")) return "text-red-300 bg-red-500/10";
+function lineClass(kind: DiffLine["kind"]): string {
+  if (kind === "hunk") return "text-sky-300 bg-sky-500/10";
+  if (kind === "add") return "text-emerald-300 bg-emerald-500/10";
+  if (kind === "del") return "text-red-300 bg-red-500/10";
   return "text-zinc-300";
 }
 
@@ -170,7 +171,7 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose, onMe
 
   const files = data?.files ?? [];
   const file = files[idx];
-  const lines = useMemo(() => (file?.patch ? file.patch.split("\n") : []), [file]);
+  const lines = useMemo(() => parsePatch(file?.patch ?? ""), [file]);
   const totals = useMemo(
     () => files.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 }),
     [files],
@@ -258,7 +259,11 @@ export function PRDiffModal({ repoId, profileId, prNumber, branch, onClose, onMe
                   ) : (
                     <pre className="font-mono text-[12.5px] leading-[1.45] py-1 min-w-max">
                       {lines.map((line, i) => (
-                        <div key={i} className={`whitespace-pre px-3 ${lineClass(line)}`}>{line || " "}</div>
+                        <div key={i} className={`flex whitespace-pre ${lineClass(line.kind)}`}>
+                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500" aria-hidden>{line.oldNo ?? ""}</span>
+                          <span className="w-12 flex-shrink-0 select-none pr-2 text-right text-zinc-500 border-r border-zinc-700/60" aria-hidden>{line.newNo ?? ""}</span>
+                          <span className="px-3">{line.text || " "}</span>
+                        </div>
                       ))}
                     </pre>
                   )}
