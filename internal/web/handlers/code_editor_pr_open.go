@@ -16,6 +16,7 @@ import (
 // OpenPR é um PR aberto cuja branch de origem está no próprio repositório.
 type OpenPR struct {
 	Branch    string `json:"branch"`
+	State     string `json:"state"` // open | closed | merged
 	Number    int    `json:"number"`
 	Title     string `json:"title"`
 	URL       string `json:"url"`
@@ -30,20 +31,22 @@ type OpenPR struct {
 	Mergeable string `json:"mergeable,omitempty"`
 }
 
-const openPRsMaxPages = 5 // até 500 PRs abertos
+const openPRsMaxPages = 5  // até 500 PRs abertos
+const closedPRsLimit = 100 // só os 100 fechados mexidos há menos tempo: o selo cinza é para branches ainda existentes
 
-// listOpenPRs lista os PRs abertos (paginando). PRs de forks ficam de fora: a branch deles não
-// existe neste repositório, e o nome poderia colidir com uma branch daqui.
-func listOpenPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, error) {
+// listPRs lista PRs no estado pedido (open|closed), paginando até maxPages. PRs de forks ficam de fora:
+// a branch deles não existe neste repositório, e o nome poderia colidir com uma branch daqui.
+func listPRs(ctx context.Context, token, owner, repo, state string, maxPages int) ([]OpenPR, error) {
 	var out []OpenPR
 	full := owner + "/" + repo
-	for page := 1; page <= openPRsMaxPages; page++ {
+	for page := 1; page <= maxPages; page++ {
 		var batch []struct {
 			Number    int    `json:"number"`
 			Title     string `json:"title"`
 			HTMLURL   string `json:"html_url"`
 			Draft     bool   `json:"draft"`
 			UpdatedAt string `json:"updated_at"`
+			MergedAt  string `json:"merged_at"`
 			User      struct {
 				Login string `json:"login"`
 			} `json:"user"`
@@ -57,7 +60,7 @@ func listOpenPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, erro
 				} `json:"repo"`
 			} `json:"head"`
 		}
-		u := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&sort=updated&direction=desc&per_page=100&page=%d", githubAPIBase, owner, repo, page)
+		u := fmt.Sprintf("%s/repos/%s/%s/pulls?state=%s&sort=updated&direction=desc&per_page=100&page=%d", githubAPIBase, owner, repo, state, page)
 		if err := githubGetJSON(ctx, token, u, &batch); err != nil {
 			return nil, err
 		}
@@ -65,7 +68,11 @@ func listOpenPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, erro
 			if p.Head.Repo == nil || !strings.EqualFold(p.Head.Repo.FullName, full) {
 				continue // fork (ou repositório de origem apagado)
 			}
-			out = append(out, OpenPR{Branch: p.Head.Ref, Number: p.Number, Title: p.Title, URL: p.HTMLURL,
+			st := state
+			if p.MergedAt != "" {
+				st = "merged"
+			}
+			out = append(out, OpenPR{Branch: p.Head.Ref, State: st, Number: p.Number, Title: p.Title, URL: p.HTMLURL,
 				Base: p.Base.Ref, Draft: p.Draft, Author: p.User.Login, UpdatedAt: p.UpdatedAt})
 		}
 		if len(batch) < 100 {
@@ -75,8 +82,23 @@ func listOpenPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, erro
 	return out, nil
 }
 
+// listOpenPRs lista os PRs abertos.
+func listOpenPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, error) {
+	return listPRs(ctx, token, owner, repo, "open", openPRsMaxPages)
+}
+
+// listClosedPRs lista os PRs fechados (inclui os mergeados, com State "merged") mais recentes.
+func listClosedPRs(ctx context.Context, token, owner, repo string) ([]OpenPR, error) {
+	prs, err := listPRs(ctx, token, owner, repo, "closed", 1)
+	if len(prs) > closedPRsLimit {
+		prs = prs[:closedPRsLimit]
+	}
+	return prs, err
+}
+
 // ListOpenPRs — GET /api/v1/code-editor/repos/:id/pr/open?profile_id=<id>
-// Só leitura. Devolve os PRs abertos do repositório, com a branch de origem de cada um.
+// Só leitura. Devolve os PRs abertos do repositório (depois os fechados/mergeados mais recentes),
+// com a branch de origem e o state de cada um.
 func (h *CodeEditorHandler) ListOpenPRs(c *gin.Context) {
 	acc, ok := h.resolveRepoAccess(c)
 	if !ok {
@@ -90,6 +112,11 @@ func (h *CodeEditorHandler) ListOpenPRs(c *gin.Context) {
 		return
 	}
 	enrichOpenPRs(ctx, acc.token, acc.owner, acc.repo, prs) // melhor esforço: sem status, o selo segue só com o número
+	// Fechados/mergeados vêm depois dos abertos (o cliente fica com o primeiro de cada branch). Melhor
+	// esforço: se falhar, os abertos continuam valendo.
+	if closed, cerr := listClosedPRs(ctx, acc.token, acc.owner, acc.repo); cerr == nil {
+		prs = append(prs, closed...)
+	}
 	if prs == nil {
 		prs = []OpenPR{}
 	}
@@ -165,4 +192,74 @@ func checksFromRollup(state string) string {
 		return "pending"
 	}
 	return "none"
+}
+
+type setPRStateRequest struct {
+	PR    int    `json:"pr"`
+	State string `json:"state"` // closed | open
+}
+
+// SetPRState — POST /api/v1/code-editor/repos/:id/pr/state?profile_id=<id>
+// Body: { "pr", "state": "closed"|"open" }. Fecha ou reabre o PR no GitHub, em nome do PAT do perfil.
+// PR já mergeado não reabre.
+func (h *CodeEditorHandler) SetPRState(c *gin.Context) {
+	var req setPRStateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.PR <= 0 || (req.State != "closed" && req.State != "open") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pr é obrigatório e state deve ser closed ou open"})
+		return
+	}
+	acc, ok := h.resolveRepoAccess(c)
+	if !ok {
+		return
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	resource := fmt.Sprintf("%s/%s#%d", acc.owner, acc.repo, req.PR)
+	after := map[string]interface{}{"repo_id": c.Param("id"), "number": req.PR, "state": req.State}
+	fail := func(status int, msg string) {
+		logOperation(c, h.historyTracker, "code_editor_pr_state", resource, "", nil, after, start, fmt.Errorf("%s", msg))
+		c.JSON(status, gin.H{"error": msg})
+	}
+
+	pr, err := getPRDetail(ctx, acc.token, acc.owner, acc.repo, req.PR)
+	if err != nil {
+		fail(http.StatusBadGateway, err.Error())
+		return
+	}
+	cur := prState(pr)
+	switch {
+	case cur == "merged":
+		fail(http.StatusConflict, "o PR já foi mergeado: não dá para fechar nem reabrir")
+		return
+	case cur == req.State:
+		c.JSON(http.StatusOK, gin.H{"state": cur}) // já está como pedido
+		return
+	}
+	var out struct {
+		State string `json:"state"`
+	}
+	u := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", githubAPIBase, acc.owner, acc.repo, req.PR)
+	if err := githubSendJSON(ctx, http.MethodPatch, acc.token, u, map[string]string{"state": req.State}, &out); err != nil {
+		msg := err.Error()
+		status := http.StatusBadGateway
+		if ge, ok := err.(*ghAPIError); ok {
+			status = ge.Status
+			if status == http.StatusForbidden && strings.Contains(msg, "Resource not accessible") {
+				msg = "O PAT deste perfil não tem permissão para fechar/reabrir PRs (precisa de 'Pull requests: Read and write'). " + msg
+			}
+			if status < 400 || status > 599 {
+				status = http.StatusBadGateway
+			}
+		}
+		fail(status, msg)
+		return
+	}
+	after["before_state"] = cur
+	logOperation(c, h.historyTracker, "code_editor_pr_state", resource, "", map[string]interface{}{"state": cur}, after, start, nil)
+	c.JSON(http.StatusOK, gin.H{"state": out.State})
 }

@@ -3,9 +3,9 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
-### Code Editor: selo do PR reflete o status no GitHub (Novembro 2026)
+### Code Editor: selo do PR no padrão do GitHub, com status e Fechar/Reabrir (Novembro 2026)
 
-`GET /code-editor/repos/:id/pr/open` passa a trazer `checks`, `review` e `mergeable` de cada PR (uma consulta GraphQL só, melhor esforço). O selo muda de cor: vermelho (conflito/checks falhando), laranja (alterações pedidas), cinza (rascunho), âmbar (checks rodando), verde (aprovado/checks ok), azul (só aberto); lógica em `lib/prBadge.ts`. A falha da busca de PRs agora aparece numa faixa no painel de branches em vez de sumir com os selos.
+`GET /code-editor/repos/:id/pr/open` traz `state` (open/closed/merged), `checks`, `review` e `mergeable` de cada PR (uma consulta GraphQL, melhor esforço) e, depois dos abertos, os 100 fechados/mergeados mais recentes. A cor do selo é o estado, como no GitHub (verde aberto, cinza rascunho, roxo mergeado, vermelho fechado; fechado e mergeado esmaecidos, sem Diff/Plan); checks, revisão e conflito viram ícones ao lado (lógica em `lib/prBadge.ts`). O card ao passar o mouse traz Fechar/Reabrir (`POST /pr/state`, grava no GitHub e no Change History; mergeado não muda). A falha da busca de PRs agora aparece numa faixa no painel de branches em vez de sumir com os selos.
 
 ### WSL: teste de modo gráfico e navegador padrão do Windows (Novembro 2026)
 

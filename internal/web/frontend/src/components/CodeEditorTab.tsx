@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { prBadge, prToneClass } from "@/lib/prBadge";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { prBadge, prToneClass, type PRBadge } from "@/lib/prBadge";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
@@ -77,8 +78,14 @@ import {
   MessageSquareCode,
   PanelLeftClose,
   FileDiff,
+  Check,
+  CheckCheck,
+  CircleDot,
+  MessageSquareWarning,
+  TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import { setCommentFileName, BLOCK_COMMENT_ACTION_ID } from "@/lib/codeComments";
 import { CodeEditorOpenFolderDialog } from "@/components/CodeEditorOpenFolderDialog";
 import { attachTerminalClipboard, decodeTerminalOutput, encodeTerminalInput } from "@/lib/xtermShared";
@@ -2097,6 +2104,75 @@ interface BranchesPanelProps {
   onChanged: (message: string) => void | Promise<void>;
 }
 
+// Selo "PR #n" com um card ao passar o mouse: status, link e, se o PR não foi mergeado, Fechar/Reabrir.
+function PRBadgeCard({ pr, badge, repoId, profileId }: { pr: CodeEditorOpenPR; badge: PRBadge; repoId: string; profileId?: string }) {
+  const queryClient = useQueryClient();
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const isOpen = !pr.state || pr.state === "open";
+  const canToggle = pr.state !== "merged";
+
+  async function setState(state: "closed" | "open") {
+    setBusy(true);
+    try {
+      await apiClient.codeEditorSetPRState(repoId, { pr: pr.number, state }, profileId);
+      toast.success(state === "closed" ? `PR #${pr.number} fechado` : `PR #${pr.number} reaberto`);
+      queryClient.invalidateQueries({ queryKey: ["code-editor-open-prs"] });
+      queryClient.invalidateQueries({ queryKey: ["code-editor-plan-available"] });
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao alterar o PR");
+    } finally {
+      setBusy(false);
+      setConfirmClose(false);
+    }
+  }
+
+  return (
+    <HoverCard openDelay={200} closeDelay={150} onOpenChange={(o) => { if (!o) setConfirmClose(false); }}>
+      <span className="inline-flex items-center gap-0.5">
+      <HoverCardTrigger asChild>
+        <a href={pr.url} target="_blank" rel="noreferrer" className={`text-[10px] px-1 rounded border ${prToneClass(badge)}`}>
+          PR #{pr.number}
+        </a>
+      </HoverCardTrigger>
+      {badge.indicators.checks === "success" && <Check className="w-3 h-3 text-emerald-400" aria-label="Checks passaram" />}
+      {badge.indicators.checks === "failure" && <X className="w-3 h-3 text-red-400" aria-label="Checks falhando" />}
+      {badge.indicators.checks === "pending" && <CircleDot className="w-3 h-3 text-amber-400" aria-label="Checks em andamento" />}
+      {badge.indicators.review === "approved" && <CheckCheck className="w-3 h-3 text-emerald-400" aria-label="Aprovado" />}
+      {badge.indicators.review === "changes_requested" && <MessageSquareWarning className="w-3 h-3 text-orange-400" aria-label="Alterações solicitadas" />}
+      {badge.indicators.conflict && <TriangleAlert className="w-3 h-3 text-red-400" aria-label="Conflito" />}
+      </span>
+      <HoverCardContent className="w-72 text-xs space-y-2" side="right">
+        <div>
+          <div className="font-medium break-words">PR #{pr.number}: {pr.title}</div>
+          <div className="text-muted-foreground">→ {pr.base}{pr.author ? ` · por ${pr.author}` : ""}</div>
+        </div>
+        {badge.details.length > 0 && (
+          <ul className="list-disc pl-4 text-muted-foreground">
+            {badge.details.map((d) => <li key={d}>{d}</li>)}
+          </ul>
+        )}
+        <div className="flex items-center gap-2 pt-1">
+          <a href={pr.url} target="_blank" rel="noreferrer" className="underline text-muted-foreground hover:text-foreground">Abrir no GitHub</a>
+          {canToggle && !isOpen && (
+            <Button size="sm" variant="outline" className="h-6 px-2 text-xs ml-auto" disabled={busy} onClick={() => setState("open")}>
+              {busy ? "Reabrindo…" : "Reabrir PR"}
+            </Button>
+          )}
+          {canToggle && isOpen && !confirmClose && (
+            <Button size="sm" variant="outline" className="h-6 px-2 text-xs ml-auto" onClick={() => setConfirmClose(true)}>Fechar PR</Button>
+          )}
+          {canToggle && isOpen && confirmClose && (
+            <Button size="sm" variant="destructive" className="h-6 px-2 text-xs ml-auto" disabled={busy} onClick={() => setState("closed")}>
+              {busy ? "Fechando…" : "Confirmar: fechar sem merge"}
+            </Button>
+          )}
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
 function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, onCreateBranch, onMerge, onBranchDiff, profileId, openPRs, openPRsError, onViewPRDiff, onViewPRPlan, onChanged }: BranchesPanelProps) {
   const [checkingOut, setCheckingOut] = useState("");
   const [filter, setFilter] = useState("");
@@ -2125,13 +2201,12 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
     const pr = openPRs?.get(branch.replace(/^origin\//, ""));
     if (!pr) return null;
     const badge = prBadge(pr);
+    const isOpen = !pr.state || pr.state === "open";
     return (
       <div className="flex items-center gap-0.5 flex-shrink-0">
-        <a href={pr.url} target="_blank" rel="noreferrer"
-          className={`text-[10px] px-1 rounded border ${prToneClass(badge.tone)}`}
-          title={`PR #${pr.number}: ${pr.title}\n→ ${pr.base}${pr.author ? `\npor ${pr.author}` : ""}${badge.details.length ? `\n${badge.details.join(" · ")}` : ""}\n(clique para abrir no GitHub)`}>
-          PR #{pr.number}
-        </a>
+        <PRBadgeCard pr={pr} badge={badge} repoId={repoId} profileId={profileId} />
+        {isOpen && (
+          <>
         <button className="p-0.5 rounded hover:bg-muted" title={`Ver o diff do PR #${pr.number} (somente leitura)`}
           onClick={() => onViewPRDiff?.(pr.branch, pr.number)}>
           <GitPullRequest className="w-3 h-3 text-muted-foreground hover:text-foreground" />
@@ -2140,6 +2215,8 @@ function BranchesPanel({ repoId, branches, onRefresh, refreshing, onCheckout, on
           onClick={() => onViewPRPlan?.(pr.branch, pr.number)}>
           <FileDiff className="w-3 h-3 text-muted-foreground hover:text-foreground" />
         </button>
+          </>
+        )}
       </div>
     );
   };
@@ -2512,7 +2589,12 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     refetchOnWindowFocus: true,
     retry: false,
   });
-  const openPRsByBranch = useMemo(() => new Map((openPRsData?.prs ?? []).map((p) => [p.branch, p])), [openPRsData]);
+  // Os abertos vêm primeiro: numa branch com PR aberto e outros já fechados, vale o aberto.
+  const openPRsByBranch = useMemo(() => {
+    const m = new Map<string, CodeEditorOpenPR>();
+    for (const p of openPRsData?.prs ?? []) if (!m.has(p.branch)) m.set(p.branch, p);
+    return m;
+  }, [openPRsData]);
   const planButton = planAvail
     ? planAvail.available
       ? { disabled: false, title: viewPlanSummary(planAvail) }
