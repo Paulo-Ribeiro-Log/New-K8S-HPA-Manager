@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
@@ -607,8 +608,8 @@ function ReportExportBar({ result }: { result: ReportResult }) {
         <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
           <Copy className="h-3.5 w-3.5" />Copiar Markdown
         </Button>
-        <Button size="sm" variant={showMd ? "default" : "outline"} className="h-7 text-xs gap-1" onClick={() => setShowMd((v) => !v)}>
-          <FileText className="h-3.5 w-3.5" />{showMd ? "Ocultar código" : "Ver código Markdown"}
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => setShowMd(true)}>
+          <FileText className="h-3.5 w-3.5" />Ver código Markdown
         </Button>
         <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
           <FileDown className="h-3.5 w-3.5" />.md
@@ -631,17 +632,25 @@ function ReportExportBar({ result }: { result: ReportResult }) {
           {pdfBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}PDF
         </Button>
       </div>
-      {showMd && (
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-muted-foreground">Código Markdown (uma tabela por cluster). Selecione e copie, ou use o botão.</span>
-            <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
-              <Copy className="h-3 w-3" />Copiar
+      <Dialog open={showMd} onOpenChange={setShowMd}>
+        <DialogContent className="max-w-4xl max-h-[88vh] flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>Código Markdown do relatório</DialogTitle>
+            <DialogDescription>
+              Uma tabela por cluster, pronta para colar em um relatório feito à mão. Selecione um trecho ou use os botões.
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="flex-1 min-h-0 overflow-auto rounded border border-border bg-muted/30 p-3 text-[11px] leading-snug whitespace-pre">{md}</pre>
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" className="gap-1" onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
+              <FileDown className="h-3.5 w-3.5" />Baixar .md
+            </Button>
+            <Button size="sm" className="gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
+              <Copy className="h-3.5 w-3.5" />Copiar
             </Button>
           </div>
-          <pre className="max-h-80 overflow-auto rounded border border-border bg-muted/30 p-2 text-[11px] leading-snug whitespace-pre select-all">{md}</pre>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

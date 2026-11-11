@@ -40,7 +40,7 @@ Selos: 🔴 P99 acima de 1 s (só quando o P99 foi coletado) ou qualquer 5xx; �
 
 Depois da coleta, a barra **Exportar** gera o relatório **no seu navegador** (nada é enviado a lugar nenhum):
 
-- **Copiar Markdown** e **Ver código Markdown**: o código fica à vista (selecionável) para colar em um relatório feito à mão. Sai uma **tabela por cluster**, com as mesmas colunas da tela, os selos 🔴/⚠️, a legenda e a seção de observações (erros de coleta). **.md** baixa o arquivo.
+- **Copiar Markdown** e **Ver código Markdown**: o código abre num **modal** (selecionável, com **Copiar** e **Baixar .md**) para colar em um relatório feito à mão. Sai uma **tabela por cluster**, com as mesmas colunas da tela, os selos 🔴/⚠️, a legenda e a seção de observações (erros de coleta). **.md** baixa o arquivo.
 - **CSV**: um registro por aplicação, com números crus (ponto decimal, sem separador de milhar; **sem dado = célula vazia, nunca zero**) e os percentis escolhidos. O separador padrão é **`;`** (abre certo no Excel em português); escolha **`,`** para o formato internacional. O arquivo é UTF-8 e textos que começariam com `=`, `+`, `-` ou `@` recebem um apóstrofo, para o Excel nunca os tratar como fórmula.
 - **PDF**: A4 em paisagem, uma tabela por cluster, com **fundo vermelho** (P99 acima de 1 s ou 5xx) e **amarelo** (4xx) no lugar dos emojis, legenda e observações.
 
