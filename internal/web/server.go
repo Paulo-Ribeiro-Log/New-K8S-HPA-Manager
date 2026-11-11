@@ -2175,6 +2175,15 @@ func (s *Server) setupRoutes() {
 		})
 	}
 
+	// Relatório de métricas por aplicação (Dynatrace + Prometheus, somente leitura): job em memória
+	monitoringReports := handlers.NewMonitoringReportHandler(s.aiTokensStore)
+	monitoringReportsGroup := api.Group("/monitoring/reports", rbacMiddleware.InjectUserEmail())
+	{
+		monitoringReportsGroup.POST("", monitoringReports.Start)
+		monitoringReportsGroup.GET("/:id", monitoringReports.Get)
+		monitoringReportsGroup.DELETE("/:id", monitoringReports.Cancel)
+	}
+
 	// Rotas V2 (diretas)
 	monitoringV2 := api.Group("/monitoring/v2")
 	{

@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Monitoramento: backend do relatório de métricas por aplicação (Novembro 2026)
+
+`internal/monitoring/report` + `POST/GET/DELETE /api/v1/monitoring/reports`: relatório por Deployment numa janela de tempo escolhida (de 5 min a 400 dias), com requisições, Max RPS, P99 de pico, 4xx/5xx (Dynatrace) e CPU/Mem em % do request e do limit (Prometheus). O Deployment é resolvido pelo process group do Dynatrace (nome `<tecnologia> - <deployment> - <namespace>`), nunca pelo nome do serviço; soma só os pontos de entrada; Max RPS é o pico da série somada; o P99 de pico ignora serviços com menos de 1% do tráfego. A resolução vem da retenção da fonte pela idade da janela e o relatório avisa "pico aproximado" quando fica grossa. Falha numa fonte não derruba a linha. Plano e achados da sondagem: `MONITORING-REPORT-PLAN.md`. Ainda sem tela (fase 3) e sem a coluna de node pool.
+
 ### Code Editor: merge do PR no modal do diff (Novembro 2026)
 
 O patch do modal do Diff do PR ganhou uma coluna de numeração (vermelho = número antigo, verde e contexto = número novo, lido dos cabeçalhos `@@`; `lib/diffLines.ts`). `POST /code-editor/repos/:id/pr/merge` mergeia o PR no GitHub (merge commit por padrão, squash ou rebase; apagar a branch de origem opcional). Só o modal do Diff do PR tem o botão (não o card do selo): o merge é irreversível e precisa do diff à vista. O servidor recusa PR rascunho/fechado/mergeado, com conflito, checks falhando ou bloqueado pela proteção da branch (`mergeBlockReason`, também devolvido em `GET /pr/status`), e commit diferente do visto no diff (`head_sha`, também enviado como `sha` ao GitHub). A branch só é apagada se for deste repositório e não a de destino; falha ao apagar não desfaz o merge. Entra no Change History (`code_editor_pr_merge`).
