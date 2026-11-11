@@ -86,6 +86,7 @@ import { NodesTab } from "@/components/NodesTab";
 import { DynatraceCoverageTab } from "@/components/DynatraceCoverageTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
 import { TeamsBroadcastTab } from "@/components/TeamsBroadcastTab";
+import { MetricsReportTab } from "@/components/MetricsReportTab";
 import { CodeEditorTab } from "@/components/CodeEditorTab";
 import { ResourceCompareModal } from "@/components/ResourceCompareModal";
 import type { CompareInitial } from "@/components/ResourceCompareModal";
@@ -1646,6 +1647,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="FinOps Tab">
             <FinOpsTab selectedCluster={selectedCluster} journeys={headerJourneys} />
+          </ErrorBoundary>
+        );
+
+      case "metrics-report":
+        return (
+          <ErrorBoundary componentName="Metrics Report Tab">
+            <MetricsReportTab />
           </ErrorBoundary>
         );
 

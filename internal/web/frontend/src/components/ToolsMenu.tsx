@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   BarChart3,
+  FileBarChart,
   Network,
   Activity,
   FileCode,
@@ -44,6 +45,7 @@ interface ToolsTab {
 
 const toolsTabs: ToolsTab[] = [
   { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
+  { id: "metrics-report", label: "Relatório de Métricas", icon: FileBarChart },
   { id: "servicemesh", label: "Service Mesh", icon: Network },
   { id: "healthcheck", label: "Health Checking", icon: Activity },
   { id: "nexus-values", label: "Nexus Values", icon: FileCode },

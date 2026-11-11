@@ -1,6 +1,6 @@
 # Plano: relatório de métricas na aba Monitoramento
 
-Status: **fase 2 (backend de coleta e cálculo) implementada**; falta a coluna de node pool, a interface (fase 3) e exportar/salvar/comparar (fase 4). Atualizar a tabela de fases conforme o trabalho avançar.
+Status: **fase 2 (backend) implementada e validada; fase 3, etapa 1 (aba com seleção, janela, coleta e tabela) implementada, com alvos escolhidos direto nos clusters (cartões com cluster HLG/PRD, namespaces e deployments, e o botão + para outro alvo; sem depender da lista de HPAs monitorados)**; faltam a exportação (CSV, Markdown com o código para copiar e PDF), a coluna de node pool e salvar/comparar eventos. Atualizar a tabela de fases conforme o trabalho avançar.
 
 ## 1. Objetivo
 
@@ -147,6 +147,10 @@ Suposições assumidas (ajustáveis): janela máxima 400 dias; CPU/Mem nos dois 
 - **Causa do `frete-b2c` (informada pelo usuário):** a entidade no Dynatrace se chama **`Frete.WebApi.dll frete-b*c-*`** (processo .NET). O nome não segue `<tecnologia> - <deployment> - <namespace>` e o `2` aparece como curinga `*`. **Correção:** a resolução agora tem 3 etapas — (1) nome do process group, (2) **metadados Kubernetes dos processos do cluster** (`KUBERNETES_NAMESPACE` + `KUBERNETES_BASE_POD_NAME`, cacheado 10 min por cluster; nome do cluster normalizado sem `-admin`), (3) **tags** do processo (sugestão do usuário) — e o `*` do Dynatrace casa com uma sequência de dígitos (`frete-b*c` = `frete-b2c`). Cada resolução registra em nota como foi feita; a de tag avisa que pode agrupar mais de um Deployment. Se nada casa, o erro lista os process groups parecidos e os Deployments com processo monitorado no namespace. **A revalidar** contra o cluster real.
 - **Validado (4ª execução, 11/11 09:24→15:24Z, cluster `akspriv-oferta-prd-admin`):** os 3 Deployments resolvem e trazem Dynatrace + Prometheus sem erros. `frete-b2c` resolveu pelos **metadados Kubernetes** (`Frete.WebApi`, serviço único; o `CUSTOM_SERVICE` do driver MongoDB foi ignorado): 709.077 req, 52,9 RPS, P99 pico 2,126 s, 4xx 27.900, 5xx 135; CPU 8,9% do request / 4,9% do limit, memória 52% / 29,3%. `frete-hub` (2.187.668 req, 158,7 RPS, P99 1,501 s) e `frete-envvias` (180.634 req, 31,9 RPS, P99 0,2 s) seguem iguais, resolvidos pelo nome do process group.
 - O `-admin` do nome do contexto não é a causa do 422: a consulta chegou ao Prometheus e executou.
+
+## 7.4 Percentis escolhidos pelo operador
+
+Os percentis de latência são **P50, P95 e P99, escolhidos na tela** (padrão: só P99). O pedido leva `percentiles: [50, 95, 99]` (vazio = `[99]`; fora desse conjunto, 400) e o resultado devolve quais foram coletados. Só os escolhidos geram consulta ao Dynatrace (`percentile(50|95|99)`, resolução de no mínimo 5 min, µs → ms) e aparecem na tabela; o valor de cada um é o **pico na janela**, sem serviços com menos de 1% das requisições. O selo 🔴 por latência continua sendo só do P99 (> 1 s).
 
 ## 8. Decisões pendentes
 
