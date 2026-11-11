@@ -21,6 +21,8 @@ const (
 	selRequests = `builtin:service.requestCount.total:splitBy("dt.entity.service"):sum`
 	sel4xx      = `builtin:service.errors.fourxx.count:splitBy("dt.entity.service"):sum`
 	sel5xx      = `builtin:service.errors.fivexx.count:splitBy("dt.entity.service"):sum`
+	selP50      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(50)`
+	selP95      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(95)`
 	selP99      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(99)`
 )
 
@@ -29,8 +31,8 @@ func toSeries(n dynatrace.NullableSeries) Series { return Series{Times: n.Times,
 func emptySeries() Series { return Series{Values: []float64{math.NaN()}, Times: []int64{0}} }
 
 // DynatraceTraffic coleta o tráfego de um Deployment: resolve os serviços de entrada pelo process
-// group e lê requisições, 4xx, 5xx (na resolução do Plan) e P99 (resolução de no mínimo 5 min).
-func DynatraceTraffic(api DynatraceAPI, floor float64) func(ctx context.Context, it Item, w Window, plan Plan) (*Traffic, error) {
+// group e lê requisições, 4xx, 5xx (na resolução do Plan) e P50, P95 e P99 (resolução de no mínimo 5 min).
+func DynatraceTraffic(api DynatraceAPI, floor float64, percentiles []int) func(ctx context.Context, it Item, w Window, plan Plan) (*Traffic, error) {
 	return func(ctx context.Context, it Item, w Window, plan Plan) (*Traffic, error) {
 		svcs, notes, err := api.ResolveEntryServices(ctx, it.Cluster, it.Namespace, it.Workload)
 		if err != nil {
@@ -55,7 +57,17 @@ func DynatraceTraffic(api DynatraceAPI, floor float64) func(ctx context.Context,
 			"req": {selRequests, plan.DTResolution, 1},
 			"4xx": {sel4xx, plan.DTResolution, 1},
 			"5xx": {sel5xx, plan.DTResolution, 1},
-			"p99": {selP99, plan.P99Resolution, 0.001}, // microssegundos -> ms
+		}
+		// só os percentis escolhidos (microssegundos -> ms; resolução de no mínimo 5 min)
+		for _, p := range percentiles {
+			switch p {
+			case 50:
+				jobs["p50"] = job{selP50, plan.P99Resolution, 0.001}
+			case 95:
+				jobs["p95"] = job{selP95, plan.P99Resolution, 0.001}
+			case 99:
+				jobs["p99"] = job{selP99, plan.P99Resolution, 0.001}
+			}
 		}
 		var (
 			mu   sync.Mutex
@@ -92,19 +104,31 @@ func DynatraceTraffic(api DynatraceAPI, floor float64) func(ctx context.Context,
 		var st []ServiceTraffic
 		for _, s := range svcs {
 			st = append(st, ServiceTraffic{ID: s.ID, Name: s.Name, Type: s.Type,
-				Requests: pick("req", s.ID), Err4xx: pick("4xx", s.ID), Err5xx: pick("5xx", s.ID), P99Ms: pick("p99", s.ID)})
+				Requests: pick("req", s.ID), Err4xx: pick("4xx", s.ID), Err5xx: pick("5xx", s.ID),
+				P50Ms: pick("p50", s.ID), P95Ms: pick("p95", s.ID), P99Ms: pick("p99", s.ID)})
 		}
 		tr := AggregateTraffic(st, plan.DTRes.Seconds(), floor)
 		tr.PeakApprox = plan.PeakApprox
 		tr.Resolution = plan.DTResolution
 		tr.Notes = append(tr.Notes, notes...)
 		tr.Notes = append(tr.Notes, plan.Notes...)
-		if tr.P99PeakMs != nil {
-			tr.Notes = append(tr.Notes, fmt.Sprintf("P99 de pico considera só serviços com ≥ %.0f%% das requisições (resolução %s)", floor*100, plan.P99Resolution))
+		if len(percentiles) > 0 && (tr.P50PeakMs != nil || tr.P95PeakMs != nil || tr.P99PeakMs != nil) {
+			tr.Notes = append(tr.Notes, fmt.Sprintf("percentis de pico (P%s) consideram só serviços com ≥ %.0f%% das requisições (resolução %s)", joinInts(percentiles, "/P"), floor*100, plan.P99Resolution))
 		}
 		for key, e := range errs {
 			tr.Notes = append(tr.Notes, fmt.Sprintf("%s indisponível: %v", key, e))
 		}
 		return &tr, nil
 	}
+}
+
+func joinInts(in []int, sep string) string {
+	out := ""
+	for i, v := range in {
+		if i > 0 {
+			out += sep
+		}
+		out += fmt.Sprint(v)
+	}
+	return out
 }

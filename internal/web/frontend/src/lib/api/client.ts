@@ -2,6 +2,7 @@
    rota tipa o seu retorno pelo parâmetro genérico; `any` só aparece como padrão desse genérico e em corpos livres */
 // API Client - connects to Go backend
 
+import type { ReportItem, ReportJob, ReportPlanResponse } from "@/lib/metricsReport";
 import type {
   Cluster,
   ClusterInfo,
@@ -6014,6 +6015,26 @@ class APIClient {
   ): Promise<{ merged: boolean; sha: string; branch_deleted: boolean; branch_error?: string }> {
     const qs = profileId ? `?profile_id=${encodeURIComponent(profileId)}` : "";
     return this.request(`/code-editor/repos/${id}/pr/merge${qs}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  // ─── Relatório de métricas por aplicação (somente leitura) ───────────────────────────────────────
+  // Resolução e avisos de uma janela (RFC 3339), sem consultar nenhuma fonte; 400 se a janela é inválida.
+  async metricsReportPlan(start: string, end: string): Promise<ReportPlanResponse> {
+    const qs = new URLSearchParams({ start, end }).toString();
+    return this.request(`/monitoring/reports/plan?${qs}`);
+  }
+
+  // Inicia a coleta (job em memória no servidor) e devolve o id; o andamento vem de metricsReportJob.
+  async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[] }): Promise<{ id: string; total: number }> {
+    return this.request("/monitoring/reports", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async metricsReportJob(id: string): Promise<ReportJob> {
+    return this.request(`/monitoring/reports/${encodeURIComponent(id)}`);
+  }
+
+  async cancelMetricsReport(id: string): Promise<{ id: string; state: string }> {
+    return this.request(`/monitoring/reports/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   // Fecha ou reabre o PR no GitHub (grava em nome do PAT do perfil). PR mergeado o servidor recusa (409).

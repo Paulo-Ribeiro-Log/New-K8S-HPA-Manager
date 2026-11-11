@@ -376,6 +376,14 @@ export const HELP_ENTRIES: HelpEntry[] = [
     keywords: ["github", "releases", "tag", "chg", "servicenow", "comparar", "commits", "versão em produção", "scan", "lote", "mudança"],
   },
   {
+    id: "metrics-report",
+    title: "Relatório de Métricas",
+    group: "Ferramentas",
+    impact: "leitura",
+    summary: "Relatório por aplicação numa janela de tempo: requisições, RPS, P99, erros 4xx/5xx, CPU e memória dos deployments que você escolher em qualquer cluster.",
+    keywords: ["relatório", "métricas", "rps", "p99", "latência", "erros", "4xx", "5xx", "cpu", "memória", "dynatrace", "prometheus", "stress test", "janela", "período", "deployments"],
+  },
+  {
     id: "teams-broadcast",
     title: "Teams Broadcast",
     group: "Ferramentas",

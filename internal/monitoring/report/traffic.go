@@ -18,7 +18,9 @@ type ServiceTraffic struct {
 	Requests       Series // contagem por intervalo (resolução do Plan)
 	Err4xx         Series
 	Err5xx         Series
-	P99Ms          Series // P99 em ms (já convertido de microssegundos)
+	P50Ms          Series // P50 em ms (já convertido de microssegundos)
+	P95Ms          Series
+	P99Ms          Series
 }
 
 // Traffic é o resultado agregado de uma aplicação. Ponteiro nulo = "sem dado".
@@ -26,6 +28,8 @@ type Traffic struct {
 	Source     string   `json:"source"` // "dynatrace"
 	Requests   *float64 `json:"requests"`
 	MaxRPS     *float64 `json:"max_rps"`
+	P50PeakMs  *float64 `json:"p50_peak_ms"`
+	P95PeakMs  *float64 `json:"p95_peak_ms"`
 	P99PeakMs  *float64 `json:"p99_peak_ms"`
 	P99Service string   `json:"p99_service,omitempty"` // serviço que gerou o pico de P99
 	Err4xx     *float64 `json:"err_4xx"`
@@ -91,7 +95,8 @@ func sumByTime(all []Series) (times []int64, sums []float64) {
 // AggregateTraffic junta os serviços de entrada de uma aplicação:
 //   - requisições, 4xx e 5xx: soma de todos os serviços (são pontos de entrada disjuntos);
 //   - Max RPS: pico da série SOMADA dividido pelo intervalo (nunca soma de picos);
-//   - P99 de pico: máximo entre os serviços com fatia >= floor das requisições (mostra qual serviço).
+//   - P50, P95 e P99 de pico: máximo entre os serviços com fatia >= floor das requisições (o P99 mostra
+//     qual serviço gerou o pico).
 //
 // resSec é a resolução do tráfego em segundos (converte contagem por intervalo em RPS).
 func AggregateTraffic(svcs []ServiceTraffic, resSec float64, floor float64) Traffic {
@@ -130,20 +135,28 @@ func AggregateTraffic(svcs []ServiceTraffic, resSec float64, floor float64) Traf
 		t.MaxRPS = f(peak / resSec)
 	}
 
-	// P99: só serviços com fatia relevante do tráfego
+	// P50, P95 e P99: pico da janela, só entre serviços com fatia relevante do tráfego
 	if t.Requests != nil && *t.Requests > 0 {
-		best, bestName, found := 0.0, "", false
-		for _, s := range svcs {
-			r, ok := s.Requests.sum()
-			if !ok || r/(*t.Requests) < floor {
-				continue
+		peak := func(pick func(ServiceTraffic) Series) (best float64, name string, found bool) {
+			for _, s := range svcs {
+				r, ok := s.Requests.sum()
+				if !ok || r/(*t.Requests) < floor {
+					continue
+				}
+				if m, ok := pick(s).max(); ok && (!found || m > best) {
+					best, name, found = m, s.Name, true
+				}
 			}
-			if m, ok := s.P99Ms.max(); ok && (!found || m > best) {
-				best, bestName, found = m, s.Name, true
-			}
+			return
 		}
-		if found {
-			t.P99PeakMs, t.P99Service = f(best), bestName
+		if v, _, ok := peak(func(s ServiceTraffic) Series { return s.P50Ms }); ok {
+			t.P50PeakMs = f(v)
+		}
+		if v, _, ok := peak(func(s ServiceTraffic) Series { return s.P95Ms }); ok {
+			t.P95PeakMs = f(v)
+		}
+		if v, name, ok := peak(func(s ServiceTraffic) Series { return s.P99Ms }); ok {
+			t.P99PeakMs, t.P99Service = f(v), name
 		}
 	}
 	return t

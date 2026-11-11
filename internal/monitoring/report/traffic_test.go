@@ -21,16 +21,16 @@ func fretehub() []ServiceTraffic {
 	return []ServiceTraffic{
 		{Name: "FreteController", Type: "WEB_SERVICE",
 			Requests: serie(60000, 120000, 15960), Err4xx: serie(6000, 12000, 1590), Err5xx: serie(0, 40, 9),
-			P99Ms: serie(300, 1495.46, 200)},
+			P50Ms: serie(20, 45, 18), P95Ms: serie(200, 820, 150), P99Ms: serie(300, 1495.46, 200)},
 		{Name: "CotacaoController", Type: "WEB_SERVICE",
 			Requests: serie(1000, 2000, 1160), Err4xx: serie(50, 100, 69), Err5xx: serie(0, 0, 0),
-			P99Ms: serie(100, 211.96, 90)},
+			P50Ms: serie(10, 30, 9), P95Ms: serie(80, 150, 70), P99Ms: serie(100, 211.96, 90)},
 		{Name: "frete-hub-*", Type: "WEB_REQUEST_SERVICE",
 			Requests: serie(800, 1000, 556), Err4xx: serie(799, 1000, 555), Err5xx: serie(0, 0, 0),
-			P99Ms: serie(20, 30.4, 10)},
+			P50Ms: serie(2, 3, 1), P95Ms: serie(15, 25, 8), P99Ms: serie(20, 30.4, 10)},
 		{Name: "OpenApiWebMvcResource", Type: "WEB_SERVICE",
 			Requests: serie(1, nan, nan), Err4xx: serie(0, nan, nan), Err5xx: serie(0, nan, nan),
-			P99Ms: serie(3038.1, nan, nan)}, // 1 requisição: P99 de 3 s é ruído
+			P50Ms: serie(2000, nan, nan), P95Ms: serie(2900, nan, nan), P99Ms: serie(3038.1, nan, nan)}, // 1 requisição: percentis de 3 s são ruído
 	}
 }
 
@@ -76,10 +76,27 @@ func TestAggregateTrafficP99IgnoraServicoComPoucoTrafego(t *testing.T) {
 	}
 }
 
+func TestAggregateTrafficP50P95IgnoramServicoComPoucoTrafego(t *testing.T) {
+	tr := AggregateTraffic(fretehub(), 60, DefaultP99Floor)
+	// pico entre os serviços relevantes: FreteController manda em todos (45, 820, 1495.46)
+	if tr.P50PeakMs == nil || *tr.P50PeakMs != 45 || tr.P95PeakMs == nil || *tr.P95PeakMs != 820 {
+		t.Errorf("P50/P95 de pico: %v %v", tr.P50PeakMs, tr.P95PeakMs)
+	}
+	// sem o piso, o ruído do serviço de 1 requisição domina também P50 e P95
+	tr0 := AggregateTraffic(fretehub(), 60, 0)
+	if *tr0.P50PeakMs != 2000 || *tr0.P95PeakMs != 2900 {
+		t.Errorf("sem piso: %v %v", *tr0.P50PeakMs, *tr0.P95PeakMs)
+	}
+	// a ordem dos percentis se mantém: P50 <= P95 <= P99
+	if !(*tr.P50PeakMs <= *tr.P95PeakMs && *tr.P95PeakMs <= *tr.P99PeakMs) {
+		t.Errorf("P50 <= P95 <= P99 violado: %v %v %v", *tr.P50PeakMs, *tr.P95PeakMs, *tr.P99PeakMs)
+	}
+}
+
 func TestAggregateTrafficSemDadoNaoViraZero(t *testing.T) {
 	vazio := ServiceTraffic{Name: "x", Requests: serie(nan, nan), Err4xx: serie(nan), Err5xx: serie(nan), P99Ms: serie(nan)}
 	tr := AggregateTraffic([]ServiceTraffic{vazio}, 60, DefaultP99Floor)
-	if tr.Requests != nil || tr.MaxRPS != nil || tr.P99PeakMs != nil || tr.Err4xx != nil || tr.Err5xx != nil {
+	if tr.Requests != nil || tr.MaxRPS != nil || tr.P99PeakMs != nil || tr.P50PeakMs != nil || tr.P95PeakMs != nil || tr.Err4xx != nil || tr.Err5xx != nil {
 		t.Errorf("sem dado deve ser nulo, nunca zero: %+v", tr)
 	}
 	// zero real é diferente de sem dado
@@ -88,7 +105,7 @@ func TestAggregateTrafficSemDadoNaoViraZero(t *testing.T) {
 	if tr.Requests == nil || *tr.Requests != 0 || tr.MaxRPS == nil || *tr.MaxRPS != 0 {
 		t.Errorf("zero real deve aparecer como 0: %+v", tr)
 	}
-	if tr.P99PeakMs != nil {
-		t.Errorf("sem tráfego não há P99 de pico: %v", *tr.P99PeakMs)
+	if tr.P99PeakMs != nil || tr.P50PeakMs != nil || tr.P95PeakMs != nil {
+		t.Errorf("sem tráfego não há percentil de pico: %v %v %v", tr.P50PeakMs, tr.P95PeakMs, tr.P99PeakMs)
 	}
 }

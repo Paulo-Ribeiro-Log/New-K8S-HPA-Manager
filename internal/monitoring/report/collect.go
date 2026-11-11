@@ -63,6 +63,7 @@ type Row struct {
 type Result struct {
 	Window      Window    `json:"window"`
 	Plan        Plan      `json:"plan"`
+	Percentiles []int     `json:"percentiles"` // os percentis coletados (50, 95 e/ou 99)
 	Warnings    []string  `json:"warnings,omitempty"`
 	Rows        []Row     `json:"rows"`
 	GeneratedAt time.Time `json:"generated_at"`
@@ -73,6 +74,9 @@ type Request struct {
 	Items      []Item
 	Window     Window
 	Thresholds *Thresholds
+	// Percentiles de latência a coletar (50, 95 e/ou 99); vazio = só P99. O que não for escolhido não é
+	// consultado nem aparece no relatório.
+	Percentiles []int
 }
 
 // Deps são as fontes de dados (injetadas: nos testes, falsas).
@@ -109,10 +113,11 @@ func (r Request) validate() error {
 
 // Prepared é o pedido já validado: janela normalizada, resolução escolhida e limites dos selos.
 type Prepared struct {
-	Window     Window
-	Warnings   []string
-	Plan       Plan
-	Thresholds Thresholds
+	Window      Window
+	Warnings    []string
+	Plan        Plan
+	Thresholds  Thresholds
+	Percentiles []int
 }
 
 func (c *Collector) now() time.Time {
@@ -122,16 +127,26 @@ func (c *Collector) now() time.Time {
 	return time.Now()
 }
 
+// PrepareWindow valida só a janela e escolhe a resolução (a tela usa para mostrar o plano antes de
+// coletar).
+func (c *Collector) PrepareWindow(w Window) (Window, []string, Plan, error) {
+	nw, warns, err := w.Normalize(c.now())
+	if err != nil {
+		return Window{}, nil, Plan{}, err
+	}
+	plan, err := PlanFor(nw, c.now(), nil)
+	if err != nil {
+		return Window{}, nil, Plan{}, err
+	}
+	return nw, warns, plan, nil
+}
+
 // Prepare valida o pedido (itens, janela, retenção) sem fazer nenhuma consulta.
 func (c *Collector) Prepare(req Request) (Prepared, error) {
 	if err := req.validate(); err != nil {
 		return Prepared{}, err
 	}
-	w, warns, err := req.Window.Normalize(c.now())
-	if err != nil {
-		return Prepared{}, err
-	}
-	plan, err := PlanFor(w, c.now(), nil)
+	w, warns, plan, err := c.PrepareWindow(req.Window)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -139,7 +154,11 @@ func (c *Collector) Prepare(req Request) (Prepared, error) {
 	if req.Thresholds != nil {
 		th = *req.Thresholds
 	}
-	return Prepared{Window: w, Warnings: warns, Plan: plan, Thresholds: th}, nil
+	pcts, err := NormalizePercentiles(req.Percentiles)
+	if err != nil {
+		return Prepared{}, err
+	}
+	return Prepared{Window: w, Warnings: warns, Plan: plan, Thresholds: th, Percentiles: pcts}, nil
 }
 
 // Run coleta o relatório. onProgress (opcional) é chamado a cada item concluído. Itens com falha
@@ -188,7 +207,7 @@ func (c *Collector) Run(ctx context.Context, req Request, onProgress func(done, 
 		}(i, it)
 	}
 	wg.Wait()
-	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, GeneratedAt: c.now().UTC()}, nil
+	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, Percentiles: pre.Percentiles, GeneratedAt: c.now().UTC()}, nil
 }
 
 func (c *Collector) collectItem(ctx context.Context, it Item, w Window, plan Plan, th Thresholds, timeout time.Duration) Row {

@@ -2179,6 +2179,7 @@ func (s *Server) setupRoutes() {
 	monitoringReports := handlers.NewMonitoringReportHandler(s.aiTokensStore)
 	monitoringReportsGroup := api.Group("/monitoring/reports", rbacMiddleware.InjectUserEmail())
 	{
+		monitoringReportsGroup.GET("/plan", monitoringReports.PlanWindow) // resolução e avisos da janela, sem coletar
 		monitoringReportsGroup.POST("", monitoringReports.Start)
 		monitoringReportsGroup.GET("/:id", monitoringReports.Get)
 		monitoringReportsGroup.DELETE("/:id", monitoringReports.Cancel)

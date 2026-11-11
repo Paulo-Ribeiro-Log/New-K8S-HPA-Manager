@@ -68,6 +68,8 @@ type startReportRequest struct {
 	Start      time.Time          `json:"start"` // RFC 3339, com offset (ex.: 2026-10-01T23:00:00-03:00)
 	End        time.Time          `json:"end"`
 	Thresholds *report.Thresholds `json:"thresholds,omitempty"`
+	// Percentiles de latência a coletar: 50, 95 e/ou 99 (vazio = só P99).
+	Percentiles []int `json:"percentiles,omitempty"`
 }
 
 func newJobID() string {
@@ -107,10 +109,15 @@ func (h *MonitoringReportHandler) Start(c *gin.Context) {
 		return
 	}
 	user := c.GetString("user_email")
-	col := &report.Collector{Deps: h.deps(user)}
+	pcts, perr := report.NormalizePercentiles(req.Percentiles)
+	if perr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+		return
+	}
+	col := &report.Collector{Deps: h.deps(user, pcts)}
 
 	// valida antes de abrir o job: erro de pedido volta na hora, com 400
-	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds}
+	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds, Percentiles: pcts}
 	if _, err := col.Prepare(creq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -147,6 +154,24 @@ func (h *MonitoringReportHandler) Start(c *gin.Context) {
 		}
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"id": job.ID, "total": job.Total})
+}
+
+// PlanWindow — GET /api/v1/monitoring/reports/plan?start=<RFC3339>&end=<RFC3339>
+// Valida a janela e devolve a resolução que será usada (e os avisos), sem consultar nenhuma fonte.
+// A tela mostra isso antes de coletar, sem duplicar a regra de retenção no frontend.
+func (h *MonitoringReportHandler) PlanWindow(c *gin.Context) {
+	start, err1 := time.Parse(time.RFC3339, c.Query("start"))
+	end, err2 := time.Parse(time.RFC3339, c.Query("end"))
+	if err1 != nil || err2 != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "start e end são obrigatórios, em RFC 3339 (ex.: 2026-10-01T23:00:00-03:00)"})
+		return
+	}
+	w, warns, plan, err := (&report.Collector{}).PrepareWindow(report.Window{Start: start, End: end})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"window": w, "warnings": warns, "plan": plan, "duration_seconds": int64(w.Duration().Seconds())})
 }
 
 // Get — GET /api/v1/monitoring/reports/:id
@@ -189,7 +214,7 @@ func (h *MonitoringReportHandler) find(c *gin.Context) (*reportJob, bool) {
 }
 
 // deps monta as fontes de dados, com um cliente por cluster dentro do relatório.
-func (h *MonitoringReportHandler) deps(user string) report.Deps {
+func (h *MonitoringReportHandler) deps(user string, pcts []int) report.Deps {
 	var (
 		mu    sync.Mutex
 		dts   = map[string]dtEntry{}
@@ -221,7 +246,7 @@ func (h *MonitoringReportHandler) deps(user string) report.Deps {
 			if err != nil {
 				return nil, fmt.Errorf("Dynatrace: %w", err)
 			}
-			return report.DynatraceTraffic(api, report.DefaultP99Floor)(ctx, it, w, plan)
+			return report.DynatraceTraffic(api, report.DefaultP99Floor, pcts)(ctx, it, w, plan)
 		},
 		Usage: func(ctx context.Context, it report.Item, w report.Window, plan report.Plan) (*report.Usage, error) {
 			q, err := prom(it.Cluster)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,33 @@ import (
 	"k8s-hpa-manager/internal/monitoring/report"
 )
 
-type fakeDTAPI struct{ noPG bool }
+type fakeDTAPI struct {
+	noPG bool
+	log  *selLog // registra as consultas de série (opcional)
+}
+
+// selLog guarda os metricSelector pedidos ao fake do Dynatrace (seguro para uso concorrente).
+type selLog struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (l *selLog) add(sel string) {
+	l.mu.Lock()
+	l.list = append(l.list, sel)
+	l.mu.Unlock()
+}
+
+func (l *selLog) has(part string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, s := range l.list {
+		if strings.Contains(s, part) {
+			return true
+		}
+	}
+	return false
+}
 
 func (f fakeDTAPI) ResolveEntryServices(_ context.Context, cluster, ns, wl string) ([]dynatrace.ServiceRef, []string, error) {
 	if f.noPG {
@@ -29,10 +56,17 @@ func (f fakeDTAPI) ResolveEntryServices(_ context.Context, cluster, ns, wl strin
 }
 
 func (f fakeDTAPI) QueryServiceSeries(_ context.Context, sel string, _ []string, _, _ time.Time, _ string, _ float64) (map[string]dynatrace.NullableSeries, error) {
-	// o cliente real já devolve os valores na escala final (P99 em ms)
+	if f.log != nil {
+		f.log.add(sel)
+	}
+	// o cliente real já devolve os valores na escala final (percentis em ms)
 	v := 600.0 // requisições por intervalo
 	switch {
-	case strings.Contains(sel, "response.time"):
+	case strings.Contains(sel, "percentile(50)"):
+		v = 120
+	case strings.Contains(sel, "percentile(95)"):
+		v = 900
+	case strings.Contains(sel, "response.time"): // percentile(99)
 		v = 1500
 	case strings.Contains(sel, "fourxx"):
 		v = 10
@@ -61,6 +95,7 @@ func montaRelatorios(t *testing.T, dt report.DynatraceAPI, dtErr error) (*gin.En
 	h.newPrometheus = func(string) (report.RangeQuerier, error) { return fakePromQ{}, nil }
 	r := gin.New()
 	g := r.Group("/reports", func(c *gin.Context) { c.Set("user_email", c.GetHeader("X-User")) })
+	g.GET("/plan", h.PlanWindow)
 	g.POST("", h.Start)
 	g.GET("/:id", h.Get)
 	g.DELETE("/:id", h.Cancel)
@@ -82,9 +117,10 @@ func chamar(r *gin.Engine, method, path, user string, body any) *httptest.Respon
 func pedido() map[string]any {
 	now := time.Now().UTC()
 	return map[string]any{
-		"items": []map[string]string{{"cluster": "c1", "namespace": "calculo-de-fretes-prd", "workload": "frete-hub"}},
-		"start": now.Add(-6 * time.Hour).Format(time.RFC3339),
-		"end":   now.Add(-time.Hour).Format(time.RFC3339),
+		"percentiles": []int{50, 95, 99},
+		"items":       []map[string]string{{"cluster": "c1", "namespace": "calculo-de-fretes-prd", "workload": "frete-hub"}},
+		"start":       now.Add(-6 * time.Hour).Format(time.RFC3339),
+		"end":         now.Add(-time.Hour).Format(time.RFC3339),
 	}
 }
 
@@ -119,7 +155,8 @@ func TestRelatorioDeMetricas(t *testing.T) {
 		t.Fatalf("job: %+v", j)
 	}
 	row := j.Result.Rows[0]
-	if row.Traffic == nil || row.Traffic.P99PeakMs == nil || *row.Traffic.P99PeakMs != 1500 || row.Flags.P99 != "red" ||
+	if row.Traffic == nil || row.Traffic.P99PeakMs == nil || *row.Traffic.P99PeakMs != 1500 || row.Traffic.P50PeakMs == nil || *row.Traffic.P50PeakMs != 120 ||
+		row.Traffic.P95PeakMs == nil || *row.Traffic.P95PeakMs != 900 || row.Flags.P99 != "red" ||
 		row.Flags.Err4 != "warn" || row.Flags.Err5 != "" || *row.Traffic.Err4xx != 10 || *row.Traffic.Requests != 600 {
 		t.Errorf("tráfego/selo: %+v flags=%+v", row.Traffic, row.Flags)
 	}
@@ -193,5 +230,96 @@ func TestRelatorioSweepRemoveVelhosETravaOTeto(t *testing.T) {
 	h.mu.Unlock()
 	if velho || !novo {
 		t.Errorf("sweep: velho=%v novo=%v", velho, novo)
+	}
+}
+
+func TestRelatorioPlanoDaJanela(t *testing.T) {
+	r, _ := montaRelatorios(t, fakeDTAPI{}, nil)
+	now := time.Now().UTC()
+	get := func(start, end time.Time) *httptest.ResponseRecorder {
+		return chamar(r, http.MethodGet, "/reports/plan?start="+start.Format(time.RFC3339)+"&end="+end.Format(time.RFC3339), "ana@x", nil)
+	}
+	// janela recente: 1 min, sem aviso de pico aproximado
+	w := get(now.Add(-6*time.Hour), now.Add(-time.Hour))
+	var out struct {
+		Plan            report.Plan `json:"plan"`
+		DurationSeconds int64       `json:"duration_seconds"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Plan.DTResolution != "1m" || out.Plan.PeakApprox || out.DurationSeconds != 5*3600 {
+		t.Errorf("janela recente: %d %s", w.Code, w.Body.String())
+	}
+	// janela de meses atrás: resolução de 1 h e pico aproximado
+	w = get(now.Add(-120*24*time.Hour), now.Add(-120*24*time.Hour+3*time.Hour))
+	out = struct {
+		Plan            report.Plan `json:"plan"`
+		DurationSeconds int64       `json:"duration_seconds"`
+	}{}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Plan.DTResolution != "1h" || !out.Plan.PeakApprox {
+		t.Errorf("janela antiga: %d %s", w.Code, w.Body.String())
+	}
+	// inválidas: 400
+	if w := get(now.Add(-time.Hour), now.Add(-2*time.Hour)); w.Code != http.StatusBadRequest {
+		t.Errorf("fim antes do início: %d", w.Code)
+	}
+	if w := get(now.Add(-500*24*time.Hour), now.Add(-499*24*time.Hour)); w.Code != http.StatusBadRequest {
+		t.Errorf("além da retenção: %d", w.Code)
+	}
+	if w := chamar(r, http.MethodGet, "/reports/plan?start=ontem", "ana@x", nil); w.Code != http.StatusBadRequest {
+		t.Errorf("datas inválidas: %d", w.Code)
+	}
+}
+
+func TestRelatorioPercentisEscolhidos(t *testing.T) {
+	roda := func(t *testing.T, pcts any) (reportJob, *selLog, *httptest.ResponseRecorder) {
+		t.Helper()
+		log := &selLog{}
+		r, _ := montaRelatorios(t, fakeDTAPI{log: log}, nil)
+		body := pedido()
+		if pcts == nil {
+			delete(body, "percentiles")
+		} else {
+			body["percentiles"] = pcts
+		}
+		w := chamar(r, http.MethodPost, "/reports", "ana@x", body)
+		if w.Code != http.StatusAccepted {
+			return reportJob{}, log, w
+		}
+		var created struct{ ID string }
+		_ = json.Unmarshal(w.Body.Bytes(), &created)
+		return esperar(t, r, created.ID, "ana@x"), log, w
+	}
+
+	// sem escolha: só P99 (o comportamento de antes); P50 e P95 nem são consultados
+	j, log, _ := roda(t, nil)
+	tr := j.Result.Rows[0].Traffic
+	if tr == nil || tr.P99PeakMs == nil || tr.P50PeakMs != nil || tr.P95PeakMs != nil {
+		t.Fatalf("padrão deveria ser só P99: %+v", tr)
+	}
+	if log.has("percentile(50)") || log.has("percentile(95)") || !log.has("percentile(99)") {
+		t.Errorf("consultas inesperadas: %v", log.list)
+	}
+	if len(j.Result.Percentiles) != 1 || j.Result.Percentiles[0] != 99 {
+		t.Errorf("o resultado deve dizer quais percentis foram coletados: %v", j.Result.Percentiles)
+	}
+
+	// P50 e P95 (sem P99): P99 não é consultado, não aparece e não gera selo
+	j, log, _ = roda(t, []int{95, 50})
+	tr = j.Result.Rows[0].Traffic
+	if tr.P50PeakMs == nil || *tr.P50PeakMs != 120 || tr.P95PeakMs == nil || *tr.P95PeakMs != 900 || tr.P99PeakMs != nil {
+		t.Errorf("P50/P95 escolhidos: %+v", tr)
+	}
+	if log.has("percentile(99)") {
+		t.Errorf("P99 não foi escolhido e não deve ser consultado: %v", log.list)
+	}
+	if j.Result.Rows[0].Flags.P99 != "" {
+		t.Errorf("sem P99 não há selo de P99: %+v", j.Result.Rows[0].Flags)
+	}
+	if got := j.Result.Percentiles; len(got) != 2 || got[0] != 50 || got[1] != 95 {
+		t.Errorf("percentis do resultado (ordenados): %v", got)
+	}
+
+	// percentil que não existe: 400, sem abrir job
+	if _, _, w := roda(t, []int{90}); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "percentil 90") {
+		t.Errorf("percentil inválido: %d %s", w.Code, w.Body.String())
 	}
 }
