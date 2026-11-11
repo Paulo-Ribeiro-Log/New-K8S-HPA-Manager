@@ -18,6 +18,14 @@ type RangeQuerier interface {
 	QueryRange(ctx context.Context, query string, start, end time.Time, step time.Duration) (*promclient.QueryRangeResult, error)
 }
 
+// rangeResult é o resultado de uma consulta de intervalo do Prometheus.
+type rangeResult = promclient.QueryRangeResult
+
+// queryRange executa uma consulta de intervalo na janela.
+func queryRange(ctx context.Context, q RangeQuerier, query string, w Window, step time.Duration) (*rangeResult, error) {
+	return q.QueryRange(ctx, query, w.Start, w.End, step)
+}
+
 // Pct são estatísticas de uma série de percentual na janela.
 type Pct struct {
 	Max float64 `json:"max"`

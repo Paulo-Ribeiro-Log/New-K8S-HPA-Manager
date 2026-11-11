@@ -1,6 +1,6 @@
 # Plano: relatório de métricas na aba Monitoramento
 
-Status: **fase 2 (backend) implementada e validada; fase 3, etapa 1 (aba com seleção, janela, coleta e tabela) implementada, com alvos escolhidos direto nos clusters (cartões com cluster HLG/PRD, namespaces e deployments, e o botão + para outro alvo; sem depender da lista de HPAs monitorados)**; **exportação (Markdown com o código para copiar, CSV e PDF) implementada**; faltam a coluna de node pool e salvar/comparar eventos. Atualizar a tabela de fases conforme o trabalho avançar.
+Status: **fase 2 (backend) implementada e validada; fase 3, etapa 1 (aba com seleção, janela, coleta e tabela) implementada, com alvos escolhidos direto nos clusters (cartões com cluster HLG/PRD, namespaces e deployments, e o botão + para outro alvo; sem depender da lista de HPAs monitorados)**; **exportação (Markdown com o código para copiar, CSV e PDF) implementada**; **contexto de node (pool, CPU/memória dos nodes, throttling) implementado**; faltam salvar/comparar eventos. Atualizar a tabela de fases conforme o trabalho avançar.
 
 ## 1. Objetivo
 
@@ -151,6 +151,12 @@ Suposições assumidas (ajustáveis): janela máxima 400 dias; CPU/Mem nos dois 
 ## 7.4 Percentis escolhidos pelo operador
 
 Os percentis de latência são **P50, P95 e P99, escolhidos na tela** (padrão: só P99). O pedido leva `percentiles: [50, 95, 99]` (vazio = `[99]`; fora desse conjunto, 400) e o resultado devolve quais foram coletados. Só os escolhidos geram consulta ao Dynatrace (`percentile(50|95|99)`, resolução de no mínimo 5 min, µs → ms) e aparecem na tabela; o valor de cada um é o **pico na janela**, sem serviços com menos de 1% das requisições. O selo 🔴 por latência continua sendo só do P99 (> 1 s).
+
+## 7.5 Contexto de node (implementado)
+
+Sondagem real (cluster AKS `akspriv-oferta-prd`, `frete-hub`): todas as métricas de node existem; o `frete-hub` rodou em 27 nodes de **um pool** (`calculofret2`, `Standard_D4s_v5`, 3,86 cores alocáveis); pior pico de CPU de node em 6 h ≈ 76%; throttling da aplicação ≈ 0,005% no máximo. A retenção do Prometheus é de **~14 dias** (informada pelo operador; a sondagem tem dado com 7 dias e não com 15).
+
+Decisões de desenho: opt-in (mais consultas); só contexto, sem selo; "pior" = maior pico entre os nodes e "média" = média das médias; pool por `label_agentpool` com alternativas; ligação node-exporter → node **pelo IP**, porque o nome diverge de caixa; junções com `max by (...)` (kube-state-metrics duplicado); sem fallback pelo cAdvisor (não existe nesse cluster). Fica de fora a soma "consumo da aplicação dentro do pool".
 
 ## 8. Decisões pendentes
 

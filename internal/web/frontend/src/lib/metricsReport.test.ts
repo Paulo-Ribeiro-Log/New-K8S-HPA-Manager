@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_PERCENTILES, allItems, groupRows, fmtInt, fmtLatency, fmtPct, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, parseSets, parseTargets, pickKey, presetWindow,
+  DEFAULT_PERCENTILES, allItems, fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, groupRows, fmtInt, fmtLatency, fmtPct, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, parseSets, parseTargets, pickKey, presetWindow,
   parsePercentiles, percentileValue, togglePercentile, setTargetCluster, setTargetNamespaces, setTargetPicked, targetItems, targetSummary, togglePicked, toggleTargetNamespace, upsertSet,
   zonedLocalToISO, type ReportRow, type ReportTraffic, type Target,
 } from "./metricsReport";
@@ -222,5 +222,38 @@ describe("percentis de latência", () => {
     expect(percentileValue(t, 90)).toBeNull();
     expect(percentileValue(null, 99)).toBeNull();
     expect(percentileValue({ p50_peak_ms: 0, p95_peak_ms: 0, p99_peak_ms: 0 } as ReportTraffic, 50)).toBe(0); // zero real continua zero
+  });
+});
+
+describe("contexto de node", () => {
+  it("é opt-in: só a escolha gravada 'true' liga", () => {
+    expect(parseNodeContext(null)).toBe(false);
+    expect(parseNodeContext("true")).toBe(true);
+    expect(parseNodeContext("false")).toBe(false);
+    expect(parseNodeContext("1")).toBe(false);
+    expect(parseNodeContext("lixo")).toBe(false);
+  });
+
+  it("descreve os pools, com plural e tipo de instância", () => {
+    expect(fmtPools(null)).toBe("sem dado");
+    expect(fmtPools([])).toBe("sem dado");
+    expect(fmtPools([{ name: "calculofret2", nodes: 27, instance_type: "Standard_D4s_v5" }])).toBe("calculofret2 (27 nodes, Standard_D4s_v5)");
+    expect(fmtPools([{ name: "a", nodes: 1 }, { name: "b", nodes: 2, instance_type: "m5.large" }])).toBe("a (1 node); b (2 nodes, m5.large)");
+  });
+
+  it("mostra pior node e média, e a cobertura quando é parcial", () => {
+    const u = { nodes_with_data: 27, worst_pct: 76.4, avg_pct: 22.14 };
+    expect(fmtNodeUsage(u, 27)).toBe("76.4% / 22.1%");
+    expect(fmtNodeUsage(u)).toBe("76.4% / 22.1%");
+    expect(fmtNodeUsage({ ...u, nodes_with_data: 9 }, 27)).toBe("76.4% / 22.1% (9 de 27 nodes)");
+    expect(fmtNodeUsage(null, 27)).toBe("sem dado");
+    expect(fmtNodeUsage({ nodes_with_data: 0, worst_pct: null, avg_pct: null })).toBe("sem dado");
+    expect(fmtNodeUsage({ nodes_with_data: 1, worst_pct: 0, avg_pct: 0 })).toBe("0.0% / 0.0%"); // zero real continua zero
+  });
+
+  it("throttling usa duas casas (são frações de por cento)", () => {
+    expect(fmtThrottle({ max: 0.00506, min: 0, avg: 0.0007 })).toBe("0.01% / 0.00%");
+    expect(fmtThrottle({ max: 12.345, min: 1, avg: 3.2 })).toBe("12.35% / 3.20%");
+    expect(fmtThrottle(null)).toBe("sem dado");
   });
 });

@@ -78,12 +78,35 @@ func (f fakeDTAPI) QueryServiceSeries(_ context.Context, sel string, _ []string,
 
 type fakePromQ struct{}
 
-func (fakePromQ) QueryRange(_ context.Context, _ string, _, _ time.Time, _ time.Duration) (*promclient.QueryRangeResult, error) {
+func (fakePromQ) QueryRange(_ context.Context, q string, _, _ time.Time, _ time.Duration) (*promclient.QueryRangeResult, error) {
 	r := &promclient.QueryRangeResult{Status: "success"}
-	r.Data.Result = append(r.Data.Result, struct {
-		Metric map[string]string `json:"metric"`
-		Values [][]interface{}   `json:"values"`
-	}{Values: [][]interface{}{{0.0, "10"}, {60.0, "20"}}})
+	add := func(metric map[string]string, vals ...string) {
+		var v [][]interface{}
+		for i, x := range vals {
+			v = append(v, []interface{}{float64(i), x})
+		}
+		r.Data.Result = append(r.Data.Result, struct {
+			Metric map[string]string `json:"metric"`
+			Values [][]interface{}   `json:"values"`
+		}{Metric: metric, Values: v})
+	}
+	switch {
+	case strings.Contains(q, "count by (node) (kube_pod_info"):
+		add(map[string]string{"node": "aks-p-vmss000001"}, "2")
+		add(map[string]string{"node": "aks-p-vmss00000f"}, "1")
+	case strings.HasPrefix(q, "kube_node_labels"):
+		add(map[string]string{"node": "aks-p-vmss000001", "label_agentpool": "calculofret2", "label_node_kubernetes_io_instance_type": "Standard_D4s_v5"}, "1")
+		add(map[string]string{"node": "aks-p-vmss00000f", "label_agentpool": "calculofret2"}, "1")
+	case strings.Contains(q, "node_cpu_seconds_total"):
+		add(map[string]string{"node": "aks-p-vmss000001"}, "20", "76")
+		add(map[string]string{"node": "aks-p-vmss00000f"}, "10", "30")
+	case strings.Contains(q, "node_memory_MemAvailable_bytes"):
+		add(map[string]string{"node": "aks-p-vmss000001"}, "40")
+	case strings.Contains(q, "cfs_throttled"):
+		add(map[string]string{}, "0.1", "0.4")
+	default: // consumo dos pods (CPU/memória em % do request e do limit)
+		add(map[string]string{}, "10", "20")
+	}
 	return r, nil
 }
 
@@ -321,5 +344,62 @@ func TestRelatorioPercentisEscolhidos(t *testing.T) {
 	// percentil que não existe: 400, sem abrir job
 	if _, _, w := roda(t, []int{90}); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "percentil 90") {
 		t.Errorf("percentil inválido: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRelatorioContextoDeNode(t *testing.T) {
+	roda := func(t *testing.T, node any) reportJob {
+		t.Helper()
+		r, _ := montaRelatorios(t, fakeDTAPI{}, nil)
+		body := pedido()
+		if node != nil {
+			body["node_context"] = node
+		}
+		w := chamar(r, http.MethodPost, "/reports", "ana@x", body)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("POST: %d %s", w.Code, w.Body.String())
+		}
+		var created struct{ ID string }
+		_ = json.Unmarshal(w.Body.Bytes(), &created)
+		return esperar(t, r, created.ID, "ana@x")
+	}
+
+	// sem pedir (padrão): não há contexto de node e o resultado diz que não foi coletado
+	j := roda(t, nil)
+	if j.Result.NodeContext || j.Result.Rows[0].Node != nil {
+		t.Errorf("por padrão não coleta node: %+v", j.Result.Rows[0].Node)
+	}
+
+	// pedindo: pool, nodes, uso e throttling
+	j = roda(t, true)
+	n := j.Result.Rows[0].Node
+	if !j.Result.NodeContext || n == nil {
+		t.Fatalf("esperava o contexto de node: %+v", j.Result)
+	}
+	if n.Nodes != 2 || len(n.Pools) != 1 || n.Pools[0].Name != "calculofret2" || n.Pools[0].Nodes != 2 {
+		t.Errorf("nodes/pool: %+v", n)
+	}
+	if n.CPU == nil || *n.CPU.WorstPct != 76 || n.Mem == nil || n.Mem.NodesWithData != 1 || n.Throttle == nil || n.Throttle.Max != 0.4 {
+		t.Errorf("uso dos nodes e throttling: cpu=%+v mem=%+v throttle=%+v", n.CPU, n.Mem, n.Throttle)
+	}
+	if len(j.Result.Rows[0].Errors) != 0 {
+		t.Errorf("erros inesperados: %v", j.Result.Rows[0].Errors)
+	}
+}
+
+func TestRelatorioPlanoAvisaRetencaoDoPrometheus(t *testing.T) {
+	r, _ := montaRelatorios(t, fakeDTAPI{}, nil)
+	now := time.Now().UTC()
+	var out struct {
+		Warnings []string `json:"warnings"`
+	}
+	w := chamar(r, http.MethodGet, "/reports/plan?start="+now.Add(-30*24*time.Hour).Format(time.RFC3339)+"&end="+now.Add(-29*24*time.Hour).Format(time.RFC3339), "ana@x", nil)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "retenção do Prometheus") {
+		t.Errorf("o plano deve avisar antes de coletar: %d %s", w.Code, w.Body.String())
+	}
+	out.Warnings = nil
+	w = chamar(r, http.MethodGet, "/reports/plan?start="+now.Add(-6*time.Hour).Format(time.RFC3339)+"&end="+now.Add(-time.Hour).Format(time.RFC3339), "ana@x", nil)
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || len(out.Warnings) != 0 {
+		t.Errorf("janela recente não tem aviso: %d %s", w.Code, w.Body.String())
 	}
 }

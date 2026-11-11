@@ -18,7 +18,7 @@ Gera um **relatório por aplicação** numa janela de tempo que você escolhe: r
 2. O botão **+** (no topo, ou **Adicionar alvo** embaixo) cria outro alvo, por exemplo para incluir um segundo cluster. O **×** remove o alvo e a seta recolhe o cartão; o resumo de uma linha ("5 deployments em 2 namespaces") continua visível. Esta aba **não depende** da lista de HPAs monitorados nem de nenhuma outra aba. Os alvos ficam lembrados no navegador.
 3. Para repetir uma seleção, digite um nome e use o botão de **salvar conjunto**; o conjunto volta pelo seletor **Conjuntos salvos** (substitui os alvos atuais; ficam no seu navegador).
 4. Escolha a **janela de tempo**: um atalho (1 h, 6 h, 24 h, 7 dias) ou **Personalizado**, com data e hora de início e de fim em horário de Brasília (por exemplo, de 01/10/2026 23:00 até 02/10/2026 04:30). A tela mostra a **resolução** que será usada e os avisos.
-5. Em **Percentis de latência (pico)** marque quais coletar: **P50**, **P95** e/ou **P99** (o padrão é só o P99; sempre fica ao menos um). **Só os marcados são consultados** e aparecem como colunas; a escolha fica lembrada no navegador. Clique em **Coletar**. O andamento aparece ("2 de 5 concluídas"); **Cancelar** interrompe.
+5. Em **Percentis de latência (pico)** marque quais coletar: **P50**, **P95** e/ou **P99** (o padrão é só o P99; sempre fica ao menos um). **Só os marcados são consultados** e aparecem como colunas; a escolha fica lembrada no navegador. Marque também **Contexto de node** se quiser saber em que node pool a aplicação rodou e como estavam os nodes (veja a seção abaixo; é opcional porque faz mais consultas ao Prometheus). Clique em **Coletar**. O andamento aparece ("2 de 5 concluídas"); **Cancelar** interrompe.
 6. O resultado vem em **árvore**: **cluster → namespace → deployment**. Cada nível recolhe com um clique (há **Expandir tudo** e **Recolher tudo**) e o cabeçalho mostra quantas aplicações há e quantas estão com 🔴, ⚠️ ou erro de coleta, para achar o problema sem abrir tudo.
 7. Clique numa linha de deployment para ver os **serviços usados**, a **fonte** de cada número e as **notas** de como a aplicação foi encontrada.
 
@@ -30,7 +30,7 @@ Gera um **relatório por aplicação** numa janela de tempo que você escolhe: r
 | Max RPS | pico da série **somada** de todos os pontos de entrada, não a soma dos picos |
 | P50 / P95 / P99 (pico) | maior valor do percentil na janela (um por coluna, só os escolhidos), considerando apenas serviços com pelo menos 1% do tráfego; o serviço que gerou o pico do P99 aparece ao abrir a linha |
 | 4xx / 5xx | erros por classe de status |
-| CPU % / Mem % | máximo, mínimo e média; a linha \`req\` é em relação ao **request**, a linha \`lim\` em relação ao **limit** |
+| CPU % / Mem % | máximo, mínimo e média; a linha \`req\` é em relação ao **request**, a linha \`lim\` em relação ao **limit** (dados do Prometheus: ~14 dias) |
 
 Selos: 🔴 P99 acima de 1 s (só quando o P99 foi coletado) ou qualquer 5xx; ⚠️ qualquer 4xx.
 
@@ -45,6 +45,21 @@ Depois da coleta, a barra **Exportar** gera o relatório **no seu navegador** (n
 - **PDF**: A4 em paisagem, uma tabela por cluster, com **fundo vermelho** (P99 acima de 1 s ou 5xx) e **amarelo** (4xx) no lugar dos emojis, legenda e observações.
 
 Todos levam a **janela de tempo e o fuso**, a **resolução**, os **percentis coletados**, as **fontes** (Dynatrace e Prometheus) e o aviso de **pico aproximado**, para o número continuar rastreável fora da ferramenta.
+
+## Contexto de node (opcional)
+
+A caixa **Contexto de node** acrescenta quatro colunas, para ajudar a interpretar a latência (um P99 alto pode ser da aplicação, do node ou de throttling):
+
+| Coluna | O que é |
+|---|---|
+| Node pool | pool(s) onde os pods rodaram na janela, com o número de nodes e o tipo de instância (ex.: \`calculofret2 (27 nodes, Standard_D4s_v5)\`) |
+| Node CPU % (pior/média) | uso de CPU dos nodes que hospedaram a aplicação: o **pior** pico entre eles e a **média** das médias de cada node |
+| Node Mem % (pior/média) | o mesmo para memória |
+| Throttling CPU % (máx/méd) | fração dos períodos em que a CPU da **própria aplicação** foi limitada pelo limit |
+
+É **contexto, não veredito**: não gera selo. Cobertura parcial aparece escrita (por exemplo "9 de 27 nodes") e as notas ficam ao abrir a linha. O pool vem do rótulo \`label_agentpool\` do node (ou o equivalente de AKS, EKS e GKE); sem ele aparece "sem rótulo de pool".
+
+**Retenção:** CPU, memória e o contexto de node vêm do **Prometheus, que guarda cerca de 14 dias**. Numa janela mais antiga essas colunas saem "sem dado" (o tráfego, que vem do Dynatrace, continua). A tela avisa **antes de coletar**, logo abaixo da janela.
 
 ## Janelas antigas e pico aproximado
 

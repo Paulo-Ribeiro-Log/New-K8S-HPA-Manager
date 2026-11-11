@@ -53,17 +53,19 @@ func (t Thresholds) flags(tr *Traffic) Flags {
 // Row é uma linha do relatório. Cada fonte falha sozinha: Errors diz o que faltou e o resto aparece.
 type Row struct {
 	Item
-	Traffic *Traffic `json:"traffic"`
-	Usage   *Usage   `json:"usage"`
-	Flags   Flags    `json:"flags"`
-	Errors  []string `json:"errors,omitempty"`
+	Traffic *Traffic     `json:"traffic"`
+	Usage   *Usage       `json:"usage"`
+	Node    *NodeContext `json:"node,omitempty"`
+	Flags   Flags        `json:"flags"`
+	Errors  []string     `json:"errors,omitempty"`
 }
 
 // Result é o relatório completo.
 type Result struct {
 	Window      Window    `json:"window"`
 	Plan        Plan      `json:"plan"`
-	Percentiles []int     `json:"percentiles"` // os percentis coletados (50, 95 e/ou 99)
+	Percentiles []int     `json:"percentiles"`  // os percentis coletados (50, 95 e/ou 99)
+	NodeContext bool      `json:"node_context"` // o contexto de node foi coletado
 	Warnings    []string  `json:"warnings,omitempty"`
 	Rows        []Row     `json:"rows"`
 	GeneratedAt time.Time `json:"generated_at"`
@@ -77,12 +79,16 @@ type Request struct {
 	// Percentiles de latência a coletar (50, 95 e/ou 99); vazio = só P99. O que não for escolhido não é
 	// consultado nem aparece no relatório.
 	Percentiles []int
+	// NodeContext pede o contexto de node (pool, uso dos nodes, throttling); opt-in, custa consultas a mais.
+	NodeContext bool
 }
 
 // Deps são as fontes de dados (injetadas: nos testes, falsas).
 type Deps struct {
 	Traffic func(ctx context.Context, it Item, w Window, plan Plan) (*Traffic, error)
 	Usage   func(ctx context.Context, it Item, w Window, plan Plan) (*Usage, error)
+	// Node só roda quando o pedido liga o contexto de node.
+	Node func(ctx context.Context, it Item, w Window, plan Plan) (*NodeContext, error)
 }
 
 // Collector roda o relatório.
@@ -118,6 +124,7 @@ type Prepared struct {
 	Plan        Plan
 	Thresholds  Thresholds
 	Percentiles []int
+	NodeContext bool
 }
 
 func (c *Collector) now() time.Time {
@@ -137,6 +144,15 @@ func (c *Collector) PrepareWindow(w Window) (Window, []string, Plan, error) {
 	plan, err := PlanFor(nw, c.now(), nil)
 	if err != nil {
 		return Window{}, nil, Plan{}, err
+	}
+	// CPU, memória e contexto de node vêm do Prometheus, que guarda ~14 dias (o tráfego vem do Dynatrace,
+	// com retenção maior): avisa antes de coletar, em vez de só descobrir "sem dado" depois.
+	if limit := c.now().Add(-PrometheusRetention); nw.Start.Before(limit) {
+		if nw.End.Before(limit) {
+			warns = append(warns, fmt.Sprintf("a janela é mais antiga que a retenção do Prometheus (cerca de %d dias): CPU, memória e contexto de node ficam \"sem dado\"; o tráfego (Dynatrace) continua", int(PrometheusRetention.Hours()/24)))
+		} else {
+			warns = append(warns, fmt.Sprintf("o Prometheus guarda cerca de %d dias: CPU, memória e contexto de node só têm dado a partir de %s", int(PrometheusRetention.Hours()/24), limit.UTC().Format("02/01/2006 15:04 UTC")))
+		}
 	}
 	return nw, warns, plan, nil
 }
@@ -158,7 +174,7 @@ func (c *Collector) Prepare(req Request) (Prepared, error) {
 	if err != nil {
 		return Prepared{}, err
 	}
-	return Prepared{Window: w, Warnings: warns, Plan: plan, Thresholds: th, Percentiles: pcts}, nil
+	return Prepared{Window: w, Warnings: warns, Plan: plan, Thresholds: th, Percentiles: pcts, NodeContext: req.NodeContext}, nil
 }
 
 // Run coleta o relatório. onProgress (opcional) é chamado a cada item concluído. Itens com falha
@@ -196,7 +212,7 @@ func (c *Collector) Run(ctx context.Context, req Request, onProgress func(done, 
 				rows[i] = Row{Item: it, Errors: []string{"cancelado"}}
 				return
 			}
-			rows[i] = c.collectItem(ctx, it, w, plan, th, timeout)
+			rows[i] = c.collectItem(ctx, it, w, plan, th, timeout, pre.NodeContext)
 			mu.Lock()
 			done++
 			d := done
@@ -207,10 +223,10 @@ func (c *Collector) Run(ctx context.Context, req Request, onProgress func(done, 
 		}(i, it)
 	}
 	wg.Wait()
-	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, Percentiles: pre.Percentiles, GeneratedAt: c.now().UTC()}, nil
+	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, Percentiles: pre.Percentiles, NodeContext: pre.NodeContext, GeneratedAt: c.now().UTC()}, nil
 }
 
-func (c *Collector) collectItem(ctx context.Context, it Item, w Window, plan Plan, th Thresholds, timeout time.Duration) Row {
+func (c *Collector) collectItem(ctx context.Context, it Item, w Window, plan Plan, th Thresholds, timeout time.Duration, nodeOn bool) Row {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	row := Row{Item: it}
@@ -240,6 +256,17 @@ func (c *Collector) collectItem(ctx context.Context, it Item, w Window, plan Pla
 				addErr(fmt.Errorf("Prometheus: %w", err))
 			} else {
 				row.Usage = u
+			}
+		}()
+	}
+	if nodeOn && c.Deps.Node != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if n, err := c.Deps.Node(ctx, it, w, plan); err != nil {
+				addErr(fmt.Errorf("Prometheus (node): %w", err))
+			} else {
+				row.Node = n
 			}
 		}()
 	}
