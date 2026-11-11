@@ -1,6 +1,6 @@
 # Plano: relatório de métricas na aba Monitoramento
 
-Status: **fase 2 (backend) implementada e validada; fase 3, etapa 1 (aba com seleção, janela, coleta e tabela) implementada, com alvos escolhidos direto nos clusters (cartões com cluster HLG/PRD, namespaces e deployments, e o botão + para outro alvo; sem depender da lista de HPAs monitorados)**; faltam a exportação (CSV, Markdown com o código para copiar e PDF), a coluna de node pool e salvar/comparar eventos. Atualizar a tabela de fases conforme o trabalho avançar.
+Status: **fase 2 (backend) implementada e validada; fase 3, etapa 1 (aba com seleção, janela, coleta e tabela) implementada, com alvos escolhidos direto nos clusters (cartões com cluster HLG/PRD, namespaces e deployments, e o botão + para outro alvo; sem depender da lista de HPAs monitorados)**; **exportação (Markdown com o código para copiar, CSV e PDF) implementada**; faltam a coluna de node pool e salvar/comparar eventos. Atualizar a tabela de fases conforme o trabalho avançar.
 
 ## 1. Objetivo
 

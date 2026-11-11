@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, FileDown, FileSpreadsheet, FileText, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
@@ -15,10 +16,12 @@ import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 import { isProdClusterName } from "@/lib/clusterSafety";
 import { cn } from "@/lib/utils";
 import { apiClient } from "@/lib/api/client";
+import { copyText } from "@/lib/clipboard";
+import { buildCSV, buildMarkdown, downloadText, exportReportPDF, fileStamp, type CsvDelimiter } from "@/lib/metricsReportExport";
 import {
   FLAG_ICON, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
   parsePercentiles, parseSets, parseTargets, percentileValue, pickKey, presetWindow, setTargetCluster, targetItems, targetSummary, togglePercentile,
-  setTargetNamespaces, setTargetPicked, upsertSet, zonedLocalToISO, type ReportAlerts, type ReportRow, type SavedSet, type Target, type WindowPreset,
+  setTargetNamespaces, setTargetPicked, upsertSet, zonedLocalToISO, type ReportAlerts, type ReportResult, type ReportRow, type SavedSet, type Target, type WindowPreset,
 } from "@/lib/metricsReport";
 
 // Relatório de métricas por aplicação: o operador monta uma lista de ALVOS (cada alvo = um cluster com
@@ -553,6 +556,8 @@ export function MetricsReportTab() {
         {job.data?.state === "failed" && <div className="text-xs text-red-400">Falhou: {job.data.error}</div>}
         {job.data?.state === "cancelled" && <div className="text-xs text-amber-400">Coleta cancelada.</div>}
 
+        {result && <ReportExportBar result={result} />}
+
         {result && (
           <ReportTable
             rows={result.rows}
@@ -573,6 +578,80 @@ export function MetricsReportTab() {
         )}
       </main>
     </div>
+  );
+}
+
+// Exporta o relatório: Markdown (com o código à vista para colar em relatórios manuais), CSV e PDF.
+// Tudo é gerado no navegador a partir do resultado; nada é enviado a lugar nenhum.
+function ReportExportBar({ result }: { result: ReportResult }) {
+  const [showMd, setShowMd] = useState(false);
+  const [delimiter, setDelimiter] = useState<CsvDelimiter>(";");
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const md = useMemo(() => buildMarkdown(result), [result]);
+  const stamp = fileStamp(result.generated_at);
+
+  async function pdf() {
+    setPdfBusy(true);
+    try {
+      await exportReportPDF(result);
+    } catch (e) {
+      toast.error(`Falha ao gerar o PDF: ${errText(e)}`);
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  return (
+    <section className="rounded-md border border-border p-2 space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-medium mr-1">Exportar</span>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
+          <Copy className="h-3.5 w-3.5" />Copiar Markdown
+        </Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => setShowMd(true)}>
+          <FileText className="h-3.5 w-3.5" />Ver código Markdown
+        </Button>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
+          <FileDown className="h-3.5 w-3.5" />.md
+        </Button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => downloadText(buildCSV(result, delimiter), "text/csv", `relatorio-metricas_${stamp}.csv`)}>
+          <FileSpreadsheet className="h-3.5 w-3.5" />CSV
+        </Button>
+        <select
+          className="h-7 rounded border border-border bg-background px-1 text-xs"
+          value={delimiter}
+          onChange={(e) => setDelimiter(e.target.value as CsvDelimiter)}
+          title="Separador do CSV: ponto e vírgula abre certo no Excel em português; vírgula é o padrão internacional"
+        >
+          <option value=";">separador ;</option>
+          <option value=",">separador ,</option>
+        </select>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={pdfBusy} onClick={pdf}>
+          {pdfBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}PDF
+        </Button>
+      </div>
+      <Dialog open={showMd} onOpenChange={setShowMd}>
+        <DialogContent className="max-w-4xl max-h-[88vh] flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>Código Markdown do relatório</DialogTitle>
+            <DialogDescription>
+              Uma tabela por cluster, pronta para colar em um relatório feito à mão. Selecione um trecho ou use os botões.
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="flex-1 min-h-0 overflow-auto rounded border border-border bg-muted/30 p-3 text-[11px] leading-snug whitespace-pre">{md}</pre>
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" variant="outline" className="gap-1" onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
+              <FileDown className="h-3.5 w-3.5" />Baixar .md
+            </Button>
+            <Button size="sm" className="gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
+              <Copy className="h-3.5 w-3.5" />Copiar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </section>
   );
 }
 
