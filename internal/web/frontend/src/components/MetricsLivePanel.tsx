@@ -23,7 +23,7 @@ import {
 // consulta não fica em cache depois de substituída e a contagem regressiva é um componente à parte
 // (não refaz a tela inteira a cada segundo).
 
-const COLORS = { rps: "#38bdf8", p50: "#34d399", p95: "#fbbf24", p99: "#f87171", e4: "#fbbf24", e5: "#f87171", proj: "#a78bfa", grid: "#374151", axis: "#9ca3af", spark: "#d946ef" };
+const COLORS = { rps: "#38bdf8", p50: "#34d399", p95: "#fbbf24", p99: "#f87171", e4: "#fbbf24", e5: "#f87171", proj: "#a78bfa", avg: "#2dd4bf", grid: "#374151", axis: "#9ca3af", spark: "#d946ef" };
 const LEVEL_CLASS: Record<Level, string> = { ok: "text-emerald-400", warn: "text-amber-400", red: "text-red-400", info: "text-sky-400" };
 
 function loadPref<T>(key: string, parse: (raw: string | null) => T): T {
@@ -420,6 +420,8 @@ const LiveCard = memo(function LiveCard({
   const e4 = lastValue(s.err_4xx_rps);
   const lat = [50, 95, 99].filter((p) => percentiles.includes(p)).map((p) => ({ p, v: lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms) }));
   const hasLatency = lat.some((l) => l.v != null);
+  const avgNow = lastValue(s.avg_ms);
+  const hasAvg = avgNow != null;
   const latP = projectedPercentile(percentiles);
   const rpsProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, s.rps, base ? { times: base.times, values: base.rps } : null, horizon) : null), [s, base, horizon]);
   const latProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, (latP === 99 ? s.p99_ms : latP === 95 ? s.p95_ms : s.p50_ms) ?? [], base ? { times: base.times, values: (latP === 99 ? base.p99_ms : latP === 95 ? base.p95_ms : base.p50_ms) ?? [] } : null, horizon) : null), [s, base, horizon, latP]);
@@ -499,6 +501,11 @@ const LiveCard = memo(function LiveCard({
       <Row label="Erros 4xx" level={errorLevel(s.err_4xx_total, "4xx")}>
         <b>{fmtInt(s.err_4xx_total)}</b> <span className="text-muted-foreground">no período · {fmtRps(e4)}/s agora</span>
       </Row>
+      {hasAvg && (
+        <Row label="Resp. média" level="info">
+          <b>{fmtLatency(avgNow)}</b> <span className="text-muted-foreground">média ponderada pelas requisições</span>
+        </Row>
+      )}
       {hasLatency && (
         <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v)}>
           {lat.map((l, i) => (
@@ -549,9 +556,10 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs, win }: { s: LiveS
       </DialogHeader>
       <MiniChart title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
         lines={[{ key: "rps", color: COLORS.rps, name: "RPS" }, { key: "rpsProj", color: COLORS.proj, name: "projeção", dashed: true }]} />
-      {d.hasLatency && (
-        <MiniChart title="Latência" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? LATENCY_RED_MS : undefined}
+      {(d.hasLatency || d.hasAvg) && (
+        <MiniChart title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? LATENCY_RED_MS : undefined}
           lines={[
+            ...(d.hasAvg ? [{ key: "avg", color: COLORS.avg, name: "Média" }] : []),
             ...(percentiles.includes(50) ? [{ key: "p50", color: COLORS.p50, name: "P50" }] : []),
             ...(percentiles.includes(95) ? [{ key: "p95", color: COLORS.p95, name: "P95" }] : []),
             ...(percentiles.includes(99) ? [{ key: "p99", color: COLORS.p99, name: "P99" }] : []),

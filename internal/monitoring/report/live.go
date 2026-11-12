@@ -55,13 +55,15 @@ type LiveSeries struct {
 	Err4xxRPS []*float64 `json:"err_4xx_rps"`
 	Err5xxRPS []*float64 `json:"err_5xx_rps"`
 	// Totais no período (contagem inteira, somada antes de reduzir os pontos). Nulo = sem dado.
-	Err4xxTotal *float64       `json:"err_4xx_total"`
-	Err5xxTotal *float64       `json:"err_5xx_total"`
-	P50Ms       []*float64     `json:"p50_ms,omitempty"`
-	P95Ms       []*float64     `json:"p95_ms,omitempty"`
-	P99Ms       []*float64     `json:"p99_ms,omitempty"`
-	Resources   *LiveResources `json:"resources,omitempty"`
-	Services    []string       `json:"services,omitempty"`
+	Err4xxTotal *float64 `json:"err_4xx_total"`
+	Err5xxTotal *float64 `json:"err_5xx_total"`
+	// AvgMs é o tempo de resposta médio por instante (ms), ponderado pelas requisições dos serviços.
+	AvgMs     []*float64     `json:"avg_ms,omitempty"`
+	P50Ms     []*float64     `json:"p50_ms,omitempty"`
+	P95Ms     []*float64     `json:"p95_ms,omitempty"`
+	P99Ms     []*float64     `json:"p99_ms,omitempty"`
+	Resources *LiveResources `json:"resources,omitempty"`
+	Services  []string       `json:"services,omitempty"`
 	// Links diretos para os serviços no Dynatrace (só quando o cliente sabe montar a URL).
 	Links      []LiveLink `json:"links,omitempty"`
 	Resolution string     `json:"resolution,omitempty"`
@@ -218,9 +220,72 @@ func BuildLive(svcs []ServiceTraffic, res time.Duration, floor float64, now time
 		}
 		return r
 	}
+	out.AvgMs = weightedAvgSeries(svcs, out.Times)
 	out.P50Ms = pct(func(s ServiceTraffic) Series { return s.P50Ms })
 	out.P95Ms = pct(func(s ServiceTraffic) Series { return s.P95Ms })
 	out.P99Ms = pct(func(s ServiceTraffic) Series { return s.P99Ms })
+	return out
+}
+
+// weightedAvgSeries é a média do tempo de resposta em cada instante: Σ(média × requisições) / Σ requisições
+// entre os serviços que têm os dois valores naquele instante. Sem nenhum par válido, nulo (nunca zero).
+func weightedAvgSeries(svcs []ServiceTraffic, times []int64) []*float64 {
+	type pair struct{ avg, req map[int64]float64 }
+	var ps []pair
+	for _, s := range svcs {
+		ps = append(ps, pair{s.AvgMs.byTime(), s.Requests.byTime()})
+	}
+	out := make([]*float64, len(times))
+	any := false
+	for i, t := range times {
+		num, den := 0.0, 0.0
+		for _, p := range ps {
+			if a, ok := p.avg[t]; ok {
+				if w, ok := p.req[t]; ok && w > 0 {
+					num += a * w
+					den += w
+				}
+			}
+		}
+		if den > 0 {
+			v := num / den
+			out[i] = &v
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+// shrinkWeighted agrupa de k em k pontos com média PONDERADA (a média do tempo de resposta de um grupo
+// pesa cada ponto pelo seu tráfego). Grupo sem peso válido fica nulo.
+func shrinkWeighted(a, w []*float64, k int, places int) []*float64 {
+	if a == nil {
+		return nil
+	}
+	out := make([]*float64, 0, (len(a)+k-1)/k)
+	for i := 0; i < len(a); i += k {
+		end := i + k
+		if end > len(a) {
+			end = len(a)
+		}
+		num, den := 0.0, 0.0
+		for j := i; j < end; j++ {
+			if a[j] == nil || j >= len(w) || w[j] == nil || *w[j] <= 0 {
+				continue
+			}
+			num += *a[j] * *w[j]
+			den += *w[j]
+		}
+		if den <= 0 {
+			out = append(out, nil)
+			continue
+		}
+		v := round(num/den, places)
+		out = append(out, &v)
+	}
 	return out
 }
 
@@ -293,6 +358,7 @@ func Downsample(s LiveSeries, k int) LiveSeries {
 		times = []int64{}
 	}
 	s.Times = times
+	s.AvgMs = shrinkWeighted(s.AvgMs, s.RPS, k, 1) // antes de reduzir o RPS: ele é o peso
 	s.RPS = shrink(s.RPS, k, false, 3)
 	s.Err4xxRPS = shrink(s.Err4xxRPS, k, false, 3)
 	s.Err5xxRPS = shrink(s.Err5xxRPS, k, false, 3)
@@ -450,7 +516,7 @@ func CollectLive(ctx context.Context, req LiveRequest, deps LiveDeps, now time.T
 				sel   string
 				scale float64
 			}
-			jobs := map[string]job{"req": {selRequests, 1}, "4xx": {sel4xx, 1}, "5xx": {sel5xx, 1}}
+			jobs := map[string]job{"req": {selRequests, 1}, "4xx": {sel4xx, 1}, "5xx": {sel5xx, 1}, "avg": {selAvg, 0.001}}
 			for _, p := range pcts {
 				switch p {
 				case 50:
@@ -498,7 +564,7 @@ func CollectLive(ctx context.Context, req LiveRequest, deps LiveDeps, now time.T
 				for _, s := range got[i].svcs {
 					st = append(st, ServiceTraffic{ID: s.ID, Name: s.Name, Type: s.Type,
 						Requests: pick("req", s.ID), Err4xx: pick("4xx", s.ID), Err5xx: pick("5xx", s.ID),
-						P50Ms: pick("p50", s.ID), P95Ms: pick("p95", s.ID), P99Ms: pick("p99", s.ID)})
+						AvgMs: pick("avg", s.ID), P50Ms: pick("p50", s.ID), P95Ms: pick("p95", s.ID), P99Ms: pick("p99", s.ID)})
 				}
 				ls := Downsample(BuildLive(st, plan.DTRes, DefaultP99Floor, now), bucket)
 				ls.Item, ls.Resolution = req.Items[i], plan.DTResolution

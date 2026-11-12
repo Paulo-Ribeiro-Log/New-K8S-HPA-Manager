@@ -22,6 +22,8 @@ export interface ReportTraffic {
   source: string;
   requests: number | null;
   max_rps: number | null;
+  /** Tempo de resposta médio da janela (ms), ponderado pelas requisições. */
+  avg_ms?: number | null;
   p50_peak_ms: number | null;
   p95_peak_ms: number | null;
   p99_peak_ms: number | null;

@@ -109,3 +109,31 @@ func TestAggregateTrafficSemDadoNaoViraZero(t *testing.T) {
 		t.Errorf("sem tráfego não há percentil de pico: %v %v %v", tr.P50PeakMs, tr.P95PeakMs, tr.P99PeakMs)
 	}
 }
+
+func TestAggregateTrafficMediaDoTempoDeRespostaPonderadaPelasRequisicoes(t *testing.T) {
+	// minuto calmo (100 req a 50 ms) e minuto de pico (900 req a 250 ms): a média da janela é
+	// (100*50 + 900*250) / 1000 = 230 ms; a média simples dos pontos daria 150 ms
+	svcs := []ServiceTraffic{{Name: "A", Requests: serie(100, 900), AvgMs: serie(50, 250)}}
+	tr := AggregateTraffic(svcs, 60, DefaultP99Floor)
+	if tr.AvgMs == nil || *tr.AvgMs != 230 {
+		t.Fatalf("média = %v, esperado 230", tr.AvgMs)
+	}
+	// dois serviços: o de pouco tráfego pesa pouco
+	svcs = append(svcs, ServiceTraffic{Name: "B", Requests: serie(1, 1), AvgMs: serie(5000, 5000)})
+	tr = AggregateTraffic(svcs, 60, DefaultP99Floor)
+	want := (100.0*50 + 900*250 + 1*5000 + 1*5000) / 1002
+	if tr.AvgMs == nil || math.Abs(*tr.AvgMs-want) > 1e-9 {
+		t.Errorf("média com 2 serviços = %v, esperado %v", tr.AvgMs, want)
+	}
+}
+
+func TestAggregateTrafficMediaSemDadoOuSemPesoFicaNula(t *testing.T) {
+	semMedia := []ServiceTraffic{{Name: "A", Requests: serie(100, 100), AvgMs: serie(nan, nan)}}
+	if tr := AggregateTraffic(semMedia, 60, DefaultP99Floor); tr.AvgMs != nil {
+		t.Errorf("sem média virou %v", *tr.AvgMs)
+	}
+	semPeso := []ServiceTraffic{{Name: "A", Requests: serie(0, 0), AvgMs: serie(50, 60)}}
+	if tr := AggregateTraffic(semPeso, 60, DefaultP99Floor); tr.AvgMs != nil {
+		t.Errorf("zero requisições não dá média, veio %v", *tr.AvgMs)
+	}
+}

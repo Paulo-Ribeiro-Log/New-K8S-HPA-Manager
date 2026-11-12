@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório de Métricas: tempo de resposta médio no Tempo real e no Relatório (Novembro 2026)
+
+`builtin:service.response.time:avg` (uma consulta a mais por cluster no Tempo real e por aplicação no Relatório, na mesma resolução das requisições para os pesos caírem nos mesmos instantes). A média entre serviços e a média de um grupo de pontos são **ponderadas pelas requisições** (`weightedAvgSeries`, `weightedAvgMs`, `shrinkWeighted`): média simples daria o mesmo peso a um minuto de madrugada e a um de pico. Tempo real: linha "Resp. média" no cartão, linha "Média" no gráfico de latência e no resumo da sessão. Relatório: coluna "Resposta média" na tabela e nas exportações Markdown, CSV (`resposta_media_ms`) e PDF, e métrica na comparação com um evento. Sem dado ou sem requisições, nulo (nunca zero).
+
 ### Relatório de Métricas: eventos nomeados, comparação, resumo da sessão, motivo dos restarts e memória da aba (Novembro 2026)
 
 - **Motivo dos restarts e pods:** 3 consultas novas por cluster (19 no total, validadas com o parser oficial do PromQL): última razão de término só dos containers que reiniciaram em 15 min (`restart_reasons`), pods `Pending` e pods não prontos. A linha Pods só aparece quando há algum.

@@ -131,8 +131,8 @@ func TestCollectLiveUmaChamadaPorMetricaPorCluster(t *testing.T) {
 			t.Errorf("métrica consultada %d vezes, esperado 1 por cluster", n)
 		}
 	}
-	if total != 5 { // req, 4xx, 5xx, P50, P99
-		t.Errorf("%d chamadas, esperado 5 (percentil 95 não foi pedido): %v", total, f.selCalls)
+	if total != 6 { // req, 4xx, 5xx, média, P50, P99
+		t.Errorf("%d chamadas, esperado 6 (percentil 95 não foi pedido): %v", total, f.selCalls)
 	}
 	for _, ids := range f.idsSeen {
 		if len(ids) != 5 {
@@ -303,5 +303,48 @@ func TestDownsampleMantemOTotalExato(t *testing.T) {
 	s := LiveSeries{Times: []int64{0, 1, 2}, RPS: []*float64{fp(1), fp(1), fp(1)}, Err4xxRPS: []*float64{fp(1), fp(1), fp(1)}, Err5xxRPS: []*float64{nil, nil, nil}, Err4xxTotal: fp(19197)}
 	if got := Downsample(s, 2); got.Err4xxTotal == nil || *got.Err4xxTotal != 19197 {
 		t.Errorf("a redução de pontos não pode mexer no total: %v", got.Err4xxTotal)
+	}
+}
+
+func TestBuildLiveMediaDoTempoDeRespostaPonderadaPelasRequisicoes(t *testing.T) {
+	ts := []int64{0, 60000, 120000}
+	svcs := []ServiceTraffic{
+		// A: 900 req a 100 ms e B: 100 req a 1000 ms no 1º instante -> (900*100 + 100*1000) / 1000 = 190 ms,
+		// não a média simples (550 ms)
+		{ID: "A", Name: "A", Requests: ser(ts, 900, 100, 50), AvgMs: ser(ts, 100, 100, nan)},
+		{ID: "B", Name: "B", Requests: ser(ts, 100, 0, 50), AvgMs: ser(ts, 1000, 500, nan)},
+	}
+	got := BuildLive(svcs, time.Minute, DefaultP99Floor, time.UnixMilli(10*60000))
+	if got.AvgMs == nil || got.AvgMs[0] == nil || *got.AvgMs[0] != 190 {
+		t.Fatalf("média[0] = %v, esperado 190 (ponderada)", got.AvgMs)
+	}
+	if *got.AvgMs[1] != 100 {
+		t.Errorf("média[1] = %v: B tem 0 requisições e não pode pesar", *got.AvgMs[1])
+	}
+	if got.AvgMs[2] != nil {
+		t.Errorf("média sem dado virou %v, esperado nulo (nunca zero)", *got.AvgMs[2])
+	}
+}
+
+func TestBuildLiveSemMediaNaoCriaSerie(t *testing.T) {
+	ts := []int64{0}
+	got := BuildLive([]ServiceTraffic{{ID: "A", Name: "A", Requests: ser(ts, 60)}}, time.Minute, DefaultP99Floor, time.UnixMilli(600000))
+	if got.AvgMs != nil {
+		t.Errorf("sem dado de média a série deve ficar ausente: %v", got.AvgMs)
+	}
+}
+
+func TestDownsampleMediaPesaPeloTrafegoDoGrupo(t *testing.T) {
+	v := func(x float64) *float64 { return &x }
+	// grupo de 2: 10 req/s a 100 ms e 90 req/s a 200 ms -> (10*100 + 90*200) / 100 = 190 ms
+	s := LiveSeries{Times: []int64{0, 60000}, RPS: []*float64{v(10), v(90)}, AvgMs: []*float64{v(100), v(200)}}
+	got := Downsample(s, 2)
+	if len(got.AvgMs) != 1 || got.AvgMs[0] == nil || *got.AvgMs[0] != 190 {
+		t.Fatalf("média do grupo = %v, esperado 190", got.AvgMs)
+	}
+	// sem tráfego no grupo, sem peso: nulo
+	z := Downsample(LiveSeries{Times: []int64{0, 60000}, RPS: []*float64{v(0), nil}, AvgMs: []*float64{v(100), v(200)}}, 2)
+	if z.AvgMs[0] != nil {
+		t.Errorf("grupo sem peso virou %v", *z.AvgMs[0])
 	}
 }

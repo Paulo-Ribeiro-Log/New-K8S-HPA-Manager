@@ -56,7 +56,7 @@ describe("resumo da sessão do Tempo real", () => {
     expect(md).toContain("mín 10 · méd 20 · máx 30");
     expect(md).toContain("no teto do HPA em 1 de 2 amostras");
     expect(md).toContain("duração 30 min");
-    const lines = buildSessionCSV(s).replace(/^﻿/, "").split("\r\n").filter(Boolean);
+    const lines = buildSessionCSV(s).replace(/^\uFEFF/, "").split("\r\n").filter(Boolean);
     expect(lines).toHaveLength(2);
     expect(lines[0].split(";").length).toBe(lines[1].split(";").length);
     expect(lines[0]).toContain("p99_ms_max");
@@ -64,5 +64,17 @@ describe("resumo da sessão do Tempo real", () => {
 
   it("sessão vazia diz que nada foi acompanhado", () => {
     expect(buildSessionMarkdown(newSession(0), 60000)).toContain("Nenhuma aplicação foi acompanhada");
+  });
+});
+
+describe("tempo de resposta médio na sessão", () => {
+  it("agrega a média e a exporta no resumo e no CSV", () => {
+    const s = newSession(0);
+    recordSample(s, [mk({ avg_ms: [100] })], 99);
+    recordSample(s, [mk({ avg_ms: [300] })], 99);
+    const a = [...s.apps.values()][0];
+    expect(a.avg).toEqual({ n: 2, min: 100, max: 300, sum: 400 });
+    expect(buildSessionMarkdown(s, 60000)).toContain("**Resposta média:** mín 0.100s · méd 0.200s · máx 0.300s");
+    expect(buildSessionCSV(s).split("\r\n")[0]).toContain("resposta_media_ms_med");
   });
 });

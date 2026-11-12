@@ -72,7 +72,7 @@ function usedSources(rows: ReportRow[]): string {
 export function buildExportTable(result: ReportResult): ExportTable {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const columns = [
-    "Aplicação", "Total Requests", "Max RPS", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
+    "Aplicação", "Total Requests", "Max RPS", "Resposta média", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
     "CPU % do request (Máx/Mín/Méd)", "CPU % do limit (Máx/Mín/Méd)", "Mem % do request (Máx/Mín/Méd)", "Mem % do limit (Máx/Mín/Méd)",
     ...(result.node_context ? NODE_COLUMNS : []),
     ...(result.extras ? EXTRAS_COLUMNS : []),
@@ -107,7 +107,7 @@ export function buildExportTable(result: ReportResult): ExportTable {
           for (const e of r.errors ?? []) issues.push(`${r.cluster} / ${r.namespace} / ${r.workload}: ${e.length > 300 ? `${e.slice(0, 300)}…` : e}`);
           return {
             cells: [
-              `${r.workload} (ns: ${r.namespace})`, int(t?.requests), rps(t?.max_rps),
+              `${r.workload} (ns: ${r.namespace})`, int(t?.requests), rps(t?.max_rps), fmtLatency(t?.avg_ms),
               ...pcts.map((p) => fmtLatency(percentileValue(t, p))),
               int(t?.err_4xx), int(t?.err_5xx),
               fmtPctStats(u?.cpu_req_pct), fmtPctStats(u?.cpu_lim_pct), fmtPctStats(u?.mem_req_pct), fmtPctStats(u?.mem_lim_pct),
@@ -205,7 +205,7 @@ const csvFlag = (f?: string) => (f === "red" ? "vermelho" : f === "warn" ? "avis
 export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): string {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const header = [
-    "cluster", "namespace", "deployment", "requisicoes", "max_rps", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
+    "cluster", "namespace", "deployment", "requisicoes", "max_rps", "resposta_media_ms", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
     "erros_4xx", "erros_5xx",
     "cpu_req_max_pct", "cpu_req_min_pct", "cpu_req_med_pct", "cpu_lim_max_pct", "cpu_lim_min_pct", "cpu_lim_med_pct",
     "mem_req_max_pct", "mem_req_min_pct", "mem_req_med_pct", "mem_lim_max_pct", "mem_lim_min_pct", "mem_lim_med_pct",
@@ -225,7 +225,7 @@ export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): s
     const u = r.usage;
     const cells = [
       csvText(r.cluster), csvText(r.namespace), csvText(r.workload),
-      csvNum(t?.requests), csvNum(t?.max_rps, 1),
+      csvNum(t?.requests), csvNum(t?.max_rps, 1), csvNum(t?.avg_ms, 1),
       ...pcts.map((p) => csvNum(percentileValue(t, p), 1)),
       ...(pcts.includes(99) ? [csvText(t?.p99_service ?? "")] : []),
       csvNum(t?.err_4xx), csvNum(t?.err_5xx),

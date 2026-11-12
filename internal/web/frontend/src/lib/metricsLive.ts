@@ -71,6 +71,8 @@ export interface LiveSeries extends ReportItem {
   /** Contagem de erros no período (inteiro, somada no servidor antes de reduzir os pontos). */
   err_4xx_total: number | null;
   err_5xx_total: number | null;
+  /** Tempo de resposta médio (ms), ponderado pelas requisições dos serviços. */
+  avg_ms?: (number | null)[] | null;
   p50_ms?: (number | null)[];
   p95_ms?: (number | null)[];
   p99_ms?: (number | null)[];
@@ -357,6 +359,7 @@ export interface LiveRow {
   rps?: number | null;
   e4?: number | null;
   e5?: number | null;
+  avg?: number | null;
   p50?: number | null;
   p95?: number | null;
   p99?: number | null;
@@ -381,6 +384,7 @@ export interface LiveChartData {
   latPercentile: 50 | 95 | 99;
   /** true quando o servidor devolveu pelo menos um ponto de cada tipo (decide quais gráficos desenhar). */
   hasLatency: boolean;
+  hasAvg: boolean;
   hasErrors: boolean;
 }
 
@@ -393,6 +397,7 @@ export function buildChartData(s: LiveSeries, percentiles: number[], horizonMin:
     rps: s.rps[i] ?? null,
     e4: s.err_4xx_rps[i] ?? null,
     e5: s.err_5xx_rps[i] ?? null,
+    avg: s.avg_ms?.[i] ?? null,
     p50: s.p50_ms?.[i] ?? null,
     p95: s.p95_ms?.[i] ?? null,
     p99: s.p99_ms?.[i] ?? null,
@@ -418,6 +423,7 @@ export function buildChartData(s: LiveSeries, percentiles: number[], horizonMin:
     rpsProjection,
     latProjection,
     latPercentile,
+    hasAvg: hasAny(s.avg_ms),
     hasLatency: hasAny(s.p50_ms) || hasAny(s.p95_ms) || hasAny(s.p99_ms),
     hasErrors: hasAny(s.err_4xx_rps) || hasAny(s.err_5xx_rps),
   };
@@ -638,6 +644,7 @@ export function normalizeLive(r: LiveResult): LiveResult {
       rps: arr(s.rps),
       err_4xx_rps: arr(s.err_4xx_rps),
       err_5xx_rps: arr(s.err_5xx_rps),
+      avg_ms: s.avg_ms == null ? s.avg_ms : arr(s.avg_ms),
       p50_ms: s.p50_ms == null ? s.p50_ms : arr(s.p50_ms),
       p95_ms: s.p95_ms == null ? s.p95_ms : arr(s.p95_ms),
       p99_ms: s.p99_ms == null ? s.p99_ms : arr(s.p99_ms),

@@ -767,7 +767,7 @@ function ReportTable({
   const fmtDate = (iso: string) => new Date(iso).toLocaleString("pt-BR", { timeZone: REPORT_TZ });
   const flag = (f?: string) => (f ? ` ${FLAG_ICON[f] ?? ""}` : "");
   const groups = useMemo(() => groupRows(rows), [rows]);
-  const cols = 7 + percentiles.length + (nodeContext ? 4 : 0) + (extras ? EXTRAS_COLUMNS.length : 0); // Aplicação, Requisições, Max RPS, [percentis], 4xx, 5xx, CPU, Mem, [node: pool, CPU, Mem, throttling]
+  const cols = 8 + percentiles.length + (nodeContext ? 4 : 0) + (extras ? EXTRAS_COLUMNS.length : 0); // Aplicação, Requisições, Max RPS, [percentis], 4xx, 5xx, CPU, Mem, [node: pool, CPU, Mem, throttling]
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const toggleGroup = (id: string) =>
     setClosed((prev) => {
@@ -793,6 +793,7 @@ function ReportTable({
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap">{fmtInt(t?.requests)}</td>
           <td className="px-2 py-1.5 whitespace-nowrap">{fmtRps(t?.max_rps)}{t?.peak_approx && <span title="pico aproximado"> ≈</span>}</td>
+          <td className="px-2 py-1.5 whitespace-nowrap" title="Média do tempo de resposta na janela, ponderada pelas requisições (não é pico)">{fmtLatency(t?.avg_ms)}</td>
           {percentiles.map((p) => (
             <td key={p} className="px-2 py-1.5 whitespace-nowrap">
               {fmtLatency(percentileValue(t, p))}
@@ -856,7 +857,7 @@ function ReportTable({
         <table className="w-full text-xs">
           <thead className="bg-muted/50 text-left">
             <tr>
-              {["Aplicação", "Requisições", "Max RPS", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : []), ...(extras ? EXTRAS_COLUMNS : [])].map((h) => (
+              {["Aplicação", "Requisições", "Max RPS", "Resposta média", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : []), ...(extras ? EXTRAS_COLUMNS : [])].map((h) => (
                 <th key={h} className="px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>

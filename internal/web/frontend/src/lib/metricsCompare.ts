@@ -52,6 +52,7 @@ function metricsOf(row: ReportRow | undefined, secs: number, pct: number) {
   return {
     avg_rps: t?.requests == null ? null : t.requests / secs,
     max_rps: t?.max_rps ?? null,
+    avg: row ? (t?.avg_ms ?? null) : null,
     lat: row ? percentileValue(t ?? null, pct) : null,
     err5: ratio(t?.err_5xx, t?.requests),
     err4: ratio(t?.err_4xx, t?.requests),
@@ -83,6 +84,7 @@ export function buildComparison(a: ReportResult, b: ReportResult): Comparison {
       metrics: [
         m("avg_rps", "RPS médio", "rps", ma.avg_rps, mb.avg_rps, false),
         m("max_rps", "Pico de RPS", "rps", ma.max_rps, mb.max_rps, false),
+        m("avg", "Resposta média", "ms", ma.avg, mb.avg, true),
         m("lat", `Latência P${pct} (pico)`, "ms", ma.lat, mb.lat, true),
         m("err5", "Erros 5xx (% das requisições)", "pct", ma.err5, mb.err5, true),
         m("err4", "Erros 4xx (% das requisições)", "pct", ma.err4, mb.err4, true),

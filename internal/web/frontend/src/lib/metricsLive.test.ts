@@ -388,3 +388,20 @@ describe("motivo dos restarts e pods pendentes", () => {
     expect(podsLevel(null, 2)).toBe("warn");
   });
 });
+
+describe("média do tempo de resposta no gráfico", () => {
+  const s = { cluster: "c", namespace: "n", workload: "w", times: [1000, 2000], rps: [1, 2], err_4xx_rps: [0, 0], err_5xx_rps: [0, 0], avg_ms: [120, null], p99_ms: null } as any;
+  it("entra nas linhas e liga o gráfico de latência mesmo sem percentis", () => {
+    const d = buildChartData(s, [99], 0);
+    expect(d.rows.map((r) => r.avg)).toEqual([120, null]);
+    expect(d.hasAvg).toBe(true);
+    expect(d.hasLatency).toBe(false);
+    expect(buildChartData({ ...s, avg_ms: null }, [99], 0).hasAvg).toBe(false);
+  });
+  it("normalizeLive troca avg_ms nulo por ausente e preserva lista", () => {
+    const r = normalizeLive({ series: [{ item: {}, times: null, rps: null, err_4xx_rps: null, err_5xx_rps: null, avg_ms: null }], warnings: null } as any);
+    expect(r.series[0].avg_ms).toBeNull();
+    const r2 = normalizeLive({ series: [{ item: {}, times: [1], rps: [1], err_4xx_rps: [0], err_5xx_rps: [0], avg_ms: [5] }], warnings: null } as any);
+    expect(r2.series[0].avg_ms).toEqual([5]);
+  });
+});

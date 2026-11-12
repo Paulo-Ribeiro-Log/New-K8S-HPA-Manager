@@ -18,6 +18,7 @@ type ServiceTraffic struct {
 	Requests       Series // contagem por intervalo (resolução do Plan)
 	Err4xx         Series
 	Err5xx         Series
+	AvgMs          Series // média do tempo de resposta em ms (na resolução das requisições)
 	P50Ms          Series // P50 em ms (já convertido de microssegundos)
 	P95Ms          Series
 	P99Ms          Series
@@ -25,9 +26,12 @@ type ServiceTraffic struct {
 
 // Traffic é o resultado agregado de uma aplicação. Ponteiro nulo = "sem dado".
 type Traffic struct {
-	Source     string   `json:"source"` // "dynatrace"
-	Requests   *float64 `json:"requests"`
-	MaxRPS     *float64 `json:"max_rps"`
+	Source   string   `json:"source"` // "dynatrace"
+	Requests *float64 `json:"requests"`
+	MaxRPS   *float64 `json:"max_rps"`
+	// AvgMs é o tempo de resposta MÉDIO da janela, em ms: média das médias de cada serviço ponderada
+	// pelas requisições de cada instante (não é pico nem média simples de pontos).
+	AvgMs      *float64 `json:"avg_ms"`
 	P50PeakMs  *float64 `json:"p50_peak_ms"`
 	P95PeakMs  *float64 `json:"p95_peak_ms"`
 	P99PeakMs  *float64 `json:"p99_peak_ms"`
@@ -92,6 +96,26 @@ func sumByTime(all []Series) (times []int64, sums []float64) {
 	return
 }
 
+// weightedAvgMs é a média do tempo de resposta da janela: Σ(média × requisições) / Σ requisições, sobre os
+// pares (serviço, instante) que têm os dois valores. Média simples dos pontos daria o mesmo peso a um
+// minuto de madrugada e a um minuto de pico. Nulo quando não há par válido ou o peso é zero.
+func weightedAvgMs(svcs []ServiceTraffic) *float64 {
+	num, den := 0.0, 0.0
+	for _, s := range svcs {
+		req := s.Requests.byTime()
+		for t, avg := range s.AvgMs.byTime() {
+			if w, ok := req[t]; ok && w > 0 {
+				num += avg * w
+				den += w
+			}
+		}
+	}
+	if den <= 0 {
+		return nil
+	}
+	return f(num / den)
+}
+
 // AggregateTraffic junta os serviços de entrada de uma aplicação:
 //   - requisições, 4xx e 5xx: soma de todos os serviços (são pontos de entrada disjuntos);
 //   - Max RPS: pico da série SOMADA dividido pelo intervalo (nunca soma de picos);
@@ -134,6 +158,8 @@ func AggregateTraffic(svcs []ServiceTraffic, resSec float64, floor float64) Traf
 		}
 		t.MaxRPS = f(peak / resSec)
 	}
+
+	t.AvgMs = weightedAvgMs(svcs)
 
 	// P50, P95 e P99: pico da janela, só entre serviços com fatia relevante do tráfego
 	if t.Requests != nil && *t.Requests > 0 {

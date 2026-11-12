@@ -19,6 +19,7 @@ export interface AppStat {
   rps: Agg | null;
   err5xx: Agg | null; // taxa por segundo, na hora da amostra
   err4xx: Agg | null;
+  avg: Agg | null; // tempo de resposta médio, em ms
   lat: Agg | null; // percentil escolhido, em ms
   replicas: Agg | null;
   cpuLimPct: Agg | null;
@@ -61,7 +62,7 @@ export function recordSample(sess: Session, series: LiveSeries[], percentile: 50
     let a = sess.apps.get(k);
     if (!a) {
       a = {
-        cluster: s.cluster, namespace: s.namespace, workload: s.workload, samples: 0, rps: null, err5xx: null, err4xx: null, lat: null, replicas: null,
+        cluster: s.cluster, namespace: s.namespace, workload: s.workload, samples: 0, rps: null, err5xx: null, err4xx: null, avg: null, lat: null, replicas: null,
         cpuLimPct: null, memLimPct: null, throttlePct: null, netRx: null, netTx: null, restartsMax: 0, restartReasons: {}, pendingMax: 0, notReadyMax: 0, atCeiling: 0, errors: 0,
       };
       sess.apps.set(k, a);
@@ -74,6 +75,7 @@ export function recordSample(sess: Session, series: LiveSeries[], percentile: 50
     a.rps = add(a.rps, lastValue(s.rps));
     a.err5xx = add(a.err5xx, lastValue(s.err_5xx_rps));
     a.err4xx = add(a.err4xx, lastValue(s.err_4xx_rps));
+    a.avg = add(a.avg, lastValue(s.avg_ms));
     a.lat = add(a.lat, lastValue(percentile === 99 ? s.p99_ms : percentile === 95 ? s.p95_ms : s.p50_ms));
     const r = s.resources;
     if (!r) continue;
@@ -134,6 +136,7 @@ export function buildSessionMarkdown(sess: Session, nowMs: number): string {
     lines.push(`- **RPS:** ${range(a.rps, (v) => num(v))}`);
     lines.push(`- **Erros 5xx/s:** ${range(a.err5xx, (v) => num(v, 2))}`);
     lines.push(`- **Erros 4xx/s:** ${range(a.err4xx, (v) => num(v, 2))}`);
+    lines.push(`- **Resposta média:** ${range(a.avg, (v) => fmtLatency(v))}`);
     lines.push(`- **P${sess.percentile}:** ${range(a.lat, (v) => fmtLatency(v))}`);
     lines.push(`- **Réplicas disponíveis:** ${range(a.replicas, (v) => num(v, 0))}${a.atCeiling ? ` · **no teto do HPA em ${a.atCeiling} de ${a.samples} amostras**` : ""}`);
     lines.push(`- **CPU % do limit:** ${range(a.cpuLimPct, (v) => `${num(v)}%`)}`);
@@ -161,6 +164,7 @@ export function buildSessionCSV(sess: Session, delimiter = ";"): string {
   aggCols("rps", (a) => a.rps, 2);
   aggCols("erros_5xx_ps", (a) => a.err5xx, 3);
   aggCols("erros_4xx_ps", (a) => a.err4xx, 3);
+  aggCols("resposta_media_ms", (a) => a.avg, 1);
   aggCols(`p${sess.percentile}_ms`, (a) => a.lat, 1);
   aggCols("replicas", (a) => a.replicas, 0);
   aggCols("cpu_limit_pct", (a) => a.cpuLimPct, 1);
@@ -171,5 +175,5 @@ export function buildSessionCSV(sess: Session, delimiter = ";"): string {
   cols.push(["restarts_max_15m", (a) => String(a.restartsMax)], ["razoes_restart", (a) => csvText(reasons(a.restartReasons))], ["pods_pendentes_max", (a) => String(a.pendingMax)], ["pods_nao_prontos_max", (a) => String(a.notReadyMax)], ["amostras_no_teto_hpa", (a) => String(a.atCeiling)]);
   const lines = [cols.map(([h]) => csvText(h)).join(delimiter)];
   for (const a of sorted(sess)) lines.push(cols.map(([, f]) => f(a)).join(delimiter));
-  return "﻿" + lines.join("\r\n") + "\r\n";
+  return "\uFEFF" + lines.join("\r\n") + "\r\n";
 }
