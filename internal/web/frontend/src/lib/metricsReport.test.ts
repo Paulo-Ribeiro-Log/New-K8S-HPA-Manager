@@ -138,6 +138,10 @@ describe("janela em fuso", () => {
     const w = presetWindow("6h", now);
     expect(w.end).toBe("2026-11-11T12:34:00.000Z");
     expect(Date.parse(w.end) - Date.parse(w.start)).toBe(6 * 3600e3);
+    for (const [id, h] of [["3h", 3], ["12h", 12], ["14d", 336]] as const) {
+      const x = presetWindow(id, now);
+      expect(Date.parse(x.end) - Date.parse(x.start)).toBe(h * 3600e3);
+    }
     expect(Date.parse(presetWindow("7d", now).end) - Date.parse(presetWindow("7d", now).start)).toBe(7 * 24 * 3600e3);
   });
 });

@@ -320,8 +320,10 @@ export function isoToZonedLocal(ts: number | string | Date, tz: string = REPORT_
   return `${g("year")}-${g("month")}-${g("day")}T${g("hour")}:${g("minute")}`;
 }
 
-export type WindowPreset = "1h" | "6h" | "24h" | "7d";
-const PRESET_MS: Record<WindowPreset, number> = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, "7d": 7 * 24 * 3600e3 };
+export type WindowPreset = "1h" | "3h" | "6h" | "12h" | "24h" | "7d" | "14d";
+const PRESET_MS: Record<WindowPreset, number> = {
+  "1h": 3600e3, "3h": 3 * 3600e3, "6h": 6 * 3600e3, "12h": 12 * 3600e3, "24h": 24 * 3600e3, "7d": 7 * 24 * 3600e3, "14d": 14 * 24 * 3600e3,
+};
 
 /** Janela dos atalhos: termina agora (minuto cheio) e volta N horas. Devolve instantes em ISO UTC. */
 export function presetWindow(p: WindowPreset, now: number = Date.now()): { start: string; end: string } {
