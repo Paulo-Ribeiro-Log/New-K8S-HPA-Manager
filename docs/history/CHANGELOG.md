@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório de Métricas: atalhos de janela de 3 h, 12 h e 14 dias (Novembro 2026)
+
+Acrescentados aos atalhos de janela (agora 1 h, 3 h, 6 h, 12 h, 24 h, 7 d e 14 d). O de 14 dias coincide com a retenção do Prometheus: o aviso de retenção cobre o início da janela quando ele não tem mais dado.
+
 ### Relatório de Métricas: contexto de node e aviso de retenção do Prometheus (Novembro 2026)
 
 Caixa opcional **Contexto de node** (`node_context` no pedido, `internal/monitoring/report/nodecontext.go`): em que **node pool** a aplicação rodou (rótulo `label_agentpool`, com alternativas de AKS/EKS/GKE/Karpenter), **CPU e memória dos nodes** que a hospedaram (pior pico e média das médias) e **throttling de CPU** da aplicação; vira 4 colunas na tela e nas exportações (Markdown, PDF e CSV). É contexto para interpretar a latência, sem selo. Achados da sondagem real (AKS, node-exporter + kube-state-metrics): o node-exporter informa o hostname com a caixa do Azure (`…vmss00000S`) e o Kubernetes usa minúscula, então ligar pelo nome perdia 18 dos 27 nodes; a ligação passou a ser **pelo IP** (`instance` do node-exporter sem a porta contra o `host_ip` do pod de node-exporter de cada node, 27 de 27), e o lado direito das junções usa `max by (...)` por causa do kube-state-metrics duplicado. Também: `GET /monitoring/reports/plan` e o `POST` avisam **antes de coletar** quando a janela passa da retenção do Prometheus (~14 dias), que vale para CPU, memória e node (o tráfego, do Dynatrace, continua). Coletas parciais viram nota ("N de M nodes"). Testes com mutação (ligar pelo nome, NaN como valor, rótulo alternativo, aviso de retenção, rodar sem pedir, sem `max by`).

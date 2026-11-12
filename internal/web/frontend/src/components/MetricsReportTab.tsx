@@ -33,9 +33,12 @@ const MAX_ITEMS = 200;
 const LIST_STALE = 2 * 60 * 1000;
 const PRESETS: { id: WindowPreset; label: string }[] = [
   { id: "1h", label: "Última 1 h" },
+  { id: "3h", label: "Últimas 3 h" },
   { id: "6h", label: "Últimas 6 h" },
+  { id: "12h", label: "Últimas 12 h" },
   { id: "24h", label: "Últimas 24 h" },
   { id: "7d", label: "Últimos 7 dias" },
+  { id: "14d", label: "Últimos 14 dias" },
 ];
 // consultas das listas (clusters, namespaces, deployments): o botão de recarregar invalida só estas
 const LIST_KEYS = ["metrics-report-clusters", "metrics-report-namespaces", "metrics-report-deployments"];
