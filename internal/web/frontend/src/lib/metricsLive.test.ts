@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  normalizeLive, fmtRestartReasons, podsLevel, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
+  normalizeLive, assessSeries, fmtRestartReasons, podsLevel, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
   parseLiveRange, parseLiveRefresh, parseProjection, projectTrend, projectedPercentile, type LiveSeries,
 } from "./metricsLive";
 
@@ -403,5 +403,33 @@ describe("média do tempo de resposta no gráfico", () => {
     expect(r.series[0].avg_ms).toBeNull();
     const r2 = normalizeLive({ series: [{ item: {}, times: [1], rps: [1], err_4xx_rps: [0], err_5xx_rps: [0], avg_ms: [5] }], warnings: null } as any);
     expect(r2.series[0].avg_ms).toEqual([5]);
+  });
+});
+
+describe("assessSeries (a mesma regra dos cartões, selos e tabela)", () => {
+  const base = { cluster: "c", namespace: "n", workload: "w", times: [1], rps: [10], err_4xx_rps: [0], err_5xx_rps: [0], p99_ms: [100] } as any;
+  const res = (o: object) => ({ replicas_available: 10, replicas_desired: 10, restarts_15m: 0, cpu_lim_pct: 20, mem_lim_pct: 30, pods: 10, ...o }) as any;
+
+  it("sem Prometheus vale só tráfego e latência", () => {
+    expect(assessSeries(base, [99])).toEqual({ level: "ok", reasons: [] });
+    expect(assessSeries({ ...base, p99_ms: [1500] }, [99]).level).toBe("red");
+  });
+  it("o Prometheus também pesa: réplicas faltando, teto do HPA, OOMKilled, throttling, CPU e pods", () => {
+    expect(assessSeries({ ...base, resources: res({ replicas_available: 8 }) }, [99])).toEqual({ level: "red", reasons: ["réplicas 8/10"] });
+    expect(assessSeries({ ...base, resources: res({ hpa_max: 10 }) }, [99])).toEqual({ level: "warn", reasons: ["HPA no teto (10 réplicas)"] });
+    const oom = assessSeries({ ...base, resources: res({ restarts_15m: 2, restart_reasons: { OOMKilled: 2 } }) }, [99]);
+    expect(oom.level).toBe("red");
+    expect(oom.reasons[0]).toContain("OOMKilled ×2");
+    expect(assessSeries({ ...base, resources: res({ restarts_15m: 1, restart_reasons: { Error: 1 } }) }, [99]).level).toBe("warn");
+    expect(assessSeries({ ...base, resources: res({ cpu_throttle_pct: 30 }) }, [99])).toEqual({ level: "red", reasons: ["throttling de CPU 30%"] });
+    expect(assessSeries({ ...base, resources: res({ cpu_lim_pct: 75 }) }, [99]).reasons).toEqual(["CPU 75% do limit"]);
+    expect(assessSeries({ ...base, resources: res({ pods_pending: 2 }) }, [99]).reasons[0]).toContain("2 pod(s) pendente(s)");
+  });
+  it("falha de coleta é erro, mesmo com tráfego ausente", () => {
+    expect(assessSeries({ ...base, error: "timeout" }, [99])).toEqual({ level: "red", reasons: ["falha na coleta: timeout"] });
+  });
+  it("sem nenhum dado fica info", () => {
+    const vazio = { ...base, rps: [], err_4xx_rps: [], err_5xx_rps: [], p99_ms: null };
+    expect(assessSeries(vazio, [99])).toEqual({ level: "info", reasons: ["sem dados no período"] });
   });
 });

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, FileDown, FileSpreadsheet, FileText, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronsUpDown, Copy, FileDown, FileSpreadsheet, FileText, Loader2, Play, Plus, RefreshCw, Save, SlidersHorizontal, Square, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -531,16 +531,22 @@ export function MetricsReportTab() {
         ) : (
           <>
         <section className="rounded-md border border-border p-3 space-y-2">
-          <div className="text-sm font-medium">Janela de tempo</div>
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map((p) => (
-              <Button key={p.id} size="sm" variant={mode === p.id ? "default" : "outline"} className="h-7 text-xs" onClick={() => pickPreset(p.id)}>
-                {p.label}
-              </Button>
-            ))}
-            <Button size="sm" variant={mode === "custom" ? "default" : "outline"} className="h-7 text-xs" onClick={() => setMode("custom")}>
-              Personalizado
-            </Button>
+          {/* janela à vista; o que se mexe pouco fica em "Opções de coleta" */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium">Janela</span>
+            <div role="group" aria-label="Janela de tempo" className="inline-flex overflow-hidden rounded-md border border-border">
+              {[...PRESETS.map((p) => ({ id: p.id as WindowPreset | "custom", label: p.label })), { id: "custom" as const, label: "Personalizado" }].map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  aria-pressed={mode === p.id}
+                  onClick={() => (p.id === "custom" ? setMode("custom") : pickPreset(p.id))}
+                  className={`px-2.5 py-1 text-xs ${mode === p.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
             <MetricsEventPicker
               events={reportEvents.events}
               current={windowIso}
@@ -567,35 +573,63 @@ export function MetricsReportTab() {
               <span className="text-muted-foreground">fuso {REPORT_TZ}</span>
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <span className="text-muted-foreground">Percentis de latência (pico):</span>
-            {PERCENTILE_CHOICES.map((p) => (
-              <label key={p} className="flex items-center gap-1.5 cursor-pointer">
-                <Checkbox
-                  checked={percentiles.includes(p)}
-                  disabled={running}
-                  onCheckedChange={(v) => setPercentiles((prev) => togglePercentile(prev, p, v === true))}
-                />
-                P{p}
-              </label>
-            ))}
-            <span className="text-[10px] text-muted-foreground">só os marcados são consultados</span>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <Button disabled={!canCollect} onClick={() => start.mutate()} className="gap-2">
+              {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Coletar {items.length > 0 ? `${items.length} aplicação(ões)` : ""}
+            </Button>
+            {running && jobId && (
+              <Button variant="outline" size="sm" className="gap-1" onClick={() => cancel.mutate()}>
+                <Square className="h-3 w-3" />Cancelar
+              </Button>
+            )}
+            {job.data && job.data.state === "running" && (
+              <span className="text-xs text-muted-foreground">{job.data.done} de {job.data.total} concluídas…</span>
+            )}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button size="sm" variant="outline" className="h-8 text-xs gap-1" title="Percentis de latência, contexto de node e réplicas, HPA e rede">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />Opções de coleta
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[28rem] space-y-3 p-3 text-xs">
+                <div className="space-y-1">
+                  <div className="font-medium">Percentis de latência (pico)</div>
+                  <div className="flex items-center gap-3">
+                    {PERCENTILE_CHOICES.map((p) => (
+                      <label key={p} className="flex items-center gap-1.5 cursor-pointer">
+                        <Checkbox checked={percentiles.includes(p)} disabled={running} onCheckedChange={(v) => setPercentiles((prev) => togglePercentile(prev, p, v === true))} />
+                        P{p}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Só os marcados são consultados e aparecem como colunas. Sempre fica ao menos um.</div>
+                </div>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-1.5 cursor-pointer font-medium" title="Mostra em que node pool a aplicação rodou, o uso de CPU e memória dos nodes que a hospedaram e o throttling de CPU dela. É contexto para interpretar a latência, não um veredito.">
+                    <Checkbox checked={nodeContext} disabled={running} onCheckedChange={(v) => setNodeContext(v === true)} />
+                    Contexto de node
+                  </label>
+                  <div className="text-[10px] text-muted-foreground">Pool, CPU e memória dos nodes e throttling de CPU. Mais consultas ao Prometheus (dado dos últimos ~14 dias).</div>
+                </div>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-1.5 cursor-pointer font-medium" title="Acrescenta réplicas disponíveis (máx/mín/méd), limites do HPA, restarts na janela e rede (bytes/s recebidos e enviados, descartes e erros). Só Prometheus; é contexto, não veredito.">
+                    <Checkbox checked={extras} disabled={running} onCheckedChange={(v) => setExtras(v === true)} />
+                    Réplicas, HPA e rede
+                  </label>
+                  <div className="text-[10px] text-muted-foreground">Réplicas, teto do HPA, restarts e rede. Mais consultas ao Prometheus (dado dos últimos ~14 dias).</div>
+                </div>
+              </PopoverContent>
+            </Popover>
+            <span className="text-[11px] text-muted-foreground" title="O que será coletado, além de tráfego, erros, CPU e memória">
+              {[percentiles.map((p) => `P${p}`).join("/"), nodeContext && "node", extras && "réplicas/HPA/rede"].filter(Boolean).join(" · ")}
+            </span>
+            {items.length === 0 && <span className="text-xs text-muted-foreground">Marque ao menos uma aplicação à esquerda.</span>}
+            {items.length > MAX_ITEMS && <span className="text-xs text-red-400">Máximo de {MAX_ITEMS} aplicações por relatório.</span>}
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <label className="flex items-center gap-1.5 cursor-pointer" title="Mostra em que node pool a aplicação rodou, o uso de CPU e memória dos nodes que a hospedaram e o throttling de CPU dela. É contexto para interpretar a latência, não um veredito.">
-              <Checkbox checked={nodeContext} disabled={running} onCheckedChange={(v) => setNodeContext(v === true)} />
-              Contexto de node
-            </label>
-            <span className="text-[10px] text-muted-foreground">pool, CPU e memória dos nodes, throttling · mais consultas ao Prometheus (dado dos últimos ~14 dias)</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <label className="flex items-center gap-1.5 cursor-pointer" title="Acrescenta réplicas disponíveis (máx/mín/méd), limites do HPA, restarts na janela e rede (bytes/s recebidos e enviados, descartes e erros). Só Prometheus; é contexto, não veredito.">
-              <Checkbox checked={extras} disabled={running} onCheckedChange={(v) => setExtras(v === true)} />
-              Réplicas, HPA e rede
-            </label>
-            <span className="text-[10px] text-muted-foreground">réplicas, teto do HPA, restarts, rede · mais consultas ao Prometheus (dado dos últimos ~14 dias)</span>
-          </div>
-          <div className="text-xs space-y-1">
+
+          <div className="space-y-0.5 text-[11px]">
             {!windowIso && <div className="text-red-400">Data ou hora inválida.</div>}
             {plan.isLoading && windowIso && <div className="text-muted-foreground">Conferindo a janela…</div>}
             {plan.isError && <div className="text-red-400">{(plan.error as Error).message}</div>}
@@ -611,23 +645,6 @@ export function MetricsReportTab() {
               </>
             )}
           </div>
-        </section>
-
-        <section className="flex flex-wrap items-center gap-3">
-          <Button disabled={!canCollect} onClick={() => start.mutate()} className="gap-2">
-            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Coletar {items.length > 0 ? `${items.length} aplicação(ões)` : ""}
-          </Button>
-          {running && jobId && (
-            <Button variant="outline" size="sm" className="gap-1" onClick={() => cancel.mutate()}>
-              <Square className="h-3 w-3" />Cancelar
-            </Button>
-          )}
-          {job.data && job.data.state === "running" && (
-            <span className="text-xs text-muted-foreground">{job.data.done} de {job.data.total} concluídas…</span>
-          )}
-          {items.length === 0 && <span className="text-xs text-muted-foreground">Marque ao menos uma aplicação à esquerda.</span>}
-          {items.length > MAX_ITEMS && <span className="text-xs text-red-400">Máximo de {MAX_ITEMS} aplicações por relatório.</span>}
         </section>
 
         {job.isError && <div className="text-xs text-red-400">{(job.error as Error).message}</div>}
@@ -857,7 +874,7 @@ function ReportTable({
         <table className="w-full text-xs">
           <thead className="bg-muted/50 text-left">
             <tr>
-              {["Aplicação", "Requisições", "Max RPS", "Resposta média", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : []), ...(extras ? EXTRAS_COLUMNS : [])].map((h) => (
+              {["Aplicação", "Requisições", "Max RPS", "Response time (média)", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : []), ...(extras ? EXTRAS_COLUMNS : [])].map((h) => (
                 <th key={h} className="px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>

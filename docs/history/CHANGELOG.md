@@ -3,9 +3,21 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: barra de coleta mais limpa (Novembro 2026)
+
+A janela de tempo virou um controle segmentado (1 h … 14 d, Personalizado) com o botão Eventos ao lado. **Coletar** passou para a mesma linha, junto com Cancelar, o andamento e o botão **Opções de coleta**, que guarda os percentis de latência, o contexto de node e "Réplicas, HPA e rede" com a explicação de cada um; ao lado do botão, uma linha curta diz o que será coletado ("P95/P99 · node"). A resolução e os avisos da janela ficaram numa linha menor. Sem mudança de comportamento, só de lugar.
+
+### Tempo real: barra de controles mais limpa (Novembro 2026)
+
+A barra do topo passou a mostrar só Parar/Iniciar, Período, Atualizar a cada, Atualizar agora, a contagem e o botão Eventos. Projeção, percentis de latência, a caixa dos itens do Prometheus e o resumo da sessão (exportar e zerar) foram para o popover **Opções**, com a explicação de cada um; o indicador de memória da aba foi para o rodapé (continua montado para o pico não zerar). Sem mudança de comportamento, só de lugar.
+
+### Tempo real: faixa de resumo, tabela densa e cartão com o essencial na frente (Novembro 2026)
+
+Para acompanhar muitas aplicações de uma vez. **Faixa de resumo** (`MetricsLiveSummary`): contagem em ERRO/ALERTA/OK/SEM DADO (clicar filtra; o tooltip lista quais e o motivo), RPS total, pior latência com o nome da aplicação e total de 5xx. **Tabela** (`MetricsLiveTable`) como visão padrão a partir de 7 aplicações: uma linha por aplicação, colunas ordenáveis, cluster minimizável e a linha abre o cartão completo; **cartões** para poucas, com quatro números grandes e "Detalhes". Ordenação por gravidade por padrão e **Só problemas**. A situação passou a vir de um só lugar (`assessSeries`) e agora inclui réplicas, teto do HPA, restarts (OOMKilled é ERRO), pods, throttling, CPU/memória e rede, não só tráfego e latência; os selos, a tabela e o cabeçalho do cluster usam a mesma regra. Lógica pura em `metricsLiveView.ts` (modelo de linha, ordenação, filtro, KPIs), com testes.
+
 ### Relatório de Métricas: tempo de resposta médio no Tempo real e no Relatório (Novembro 2026)
 
-`builtin:service.response.time:avg` (uma consulta a mais por cluster no Tempo real e por aplicação no Relatório, na mesma resolução das requisições para os pesos caírem nos mesmos instantes). A média entre serviços e a média de um grupo de pontos são **ponderadas pelas requisições** (`weightedAvgSeries`, `weightedAvgMs`, `shrinkWeighted`): média simples daria o mesmo peso a um minuto de madrugada e a um de pico. Tempo real: linha "Resp. média" no cartão, linha "Média" no gráfico de latência e no resumo da sessão. Relatório: coluna "Resposta média" na tabela e nas exportações Markdown, CSV (`resposta_media_ms`) e PDF, e métrica na comparação com um evento. Sem dado ou sem requisições, nulo (nunca zero).
+`builtin:service.response.time:avg` (uma consulta a mais por cluster no Tempo real e por aplicação no Relatório, na mesma resolução das requisições para os pesos caírem nos mesmos instantes). A média entre serviços e a média de um grupo de pontos são **ponderadas pelas requisições** (`weightedAvgSeries`, `weightedAvgMs`, `shrinkWeighted`): média simples daria o mesmo peso a um minuto de madrugada e a um de pico. Tempo real: linha "Response time" no cartão, linha "Média" no gráfico de latência e no resumo da sessão. Relatório: coluna "Response time (média)" na tabela e nas exportações Markdown, CSV (`response_time_medio_ms`) e PDF, e métrica na comparação com um evento. Sem dado ou sem requisições, nulo (nunca zero).
 
 ### Relatório de Métricas: eventos nomeados, comparação, resumo da sessão, motivo dos restarts e memória da aba (Novembro 2026)
 

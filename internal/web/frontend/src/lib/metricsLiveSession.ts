@@ -136,7 +136,7 @@ export function buildSessionMarkdown(sess: Session, nowMs: number): string {
     lines.push(`- **RPS:** ${range(a.rps, (v) => num(v))}`);
     lines.push(`- **Erros 5xx/s:** ${range(a.err5xx, (v) => num(v, 2))}`);
     lines.push(`- **Erros 4xx/s:** ${range(a.err4xx, (v) => num(v, 2))}`);
-    lines.push(`- **Resposta média:** ${range(a.avg, (v) => fmtLatency(v))}`);
+    lines.push(`- **Response time (média):** ${range(a.avg, (v) => fmtLatency(v))}`);
     lines.push(`- **P${sess.percentile}:** ${range(a.lat, (v) => fmtLatency(v))}`);
     lines.push(`- **Réplicas disponíveis:** ${range(a.replicas, (v) => num(v, 0))}${a.atCeiling ? ` · **no teto do HPA em ${a.atCeiling} de ${a.samples} amostras**` : ""}`);
     lines.push(`- **CPU % do limit:** ${range(a.cpuLimPct, (v) => `${num(v)}%`)}`);
@@ -164,7 +164,7 @@ export function buildSessionCSV(sess: Session, delimiter = ";"): string {
   aggCols("rps", (a) => a.rps, 2);
   aggCols("erros_5xx_ps", (a) => a.err5xx, 3);
   aggCols("erros_4xx_ps", (a) => a.err4xx, 3);
-  aggCols("resposta_media_ms", (a) => a.avg, 1);
+  aggCols("response_time_medio_ms", (a) => a.avg, 1);
   aggCols(`p${sess.percentile}_ms`, (a) => a.lat, 1);
   aggCols("replicas", (a) => a.replicas, 0);
   aggCols("cpu_limit_pct", (a) => a.cpuLimPct, 1);

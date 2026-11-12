@@ -72,7 +72,7 @@ function usedSources(rows: ReportRow[]): string {
 export function buildExportTable(result: ReportResult): ExportTable {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const columns = [
-    "Aplicação", "Total Requests", "Max RPS", "Resposta média", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
+    "Aplicação", "Total Requests", "Max RPS", "Response time (média)", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
     "CPU % do request (Máx/Mín/Méd)", "CPU % do limit (Máx/Mín/Méd)", "Mem % do request (Máx/Mín/Méd)", "Mem % do limit (Máx/Mín/Méd)",
     ...(result.node_context ? NODE_COLUMNS : []),
     ...(result.extras ? EXTRAS_COLUMNS : []),
@@ -205,7 +205,7 @@ const csvFlag = (f?: string) => (f === "red" ? "vermelho" : f === "warn" ? "avis
 export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): string {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const header = [
-    "cluster", "namespace", "deployment", "requisicoes", "max_rps", "resposta_media_ms", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
+    "cluster", "namespace", "deployment", "requisicoes", "max_rps", "response_time_medio_ms", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
     "erros_4xx", "erros_5xx",
     "cpu_req_max_pct", "cpu_req_min_pct", "cpu_req_med_pct", "cpu_lim_max_pct", "cpu_lim_min_pct", "cpu_lim_med_pct",
     "mem_req_max_pct", "mem_req_min_pct", "mem_req_med_pct", "mem_lim_max_pct", "mem_lim_min_pct", "mem_lim_med_pct",
