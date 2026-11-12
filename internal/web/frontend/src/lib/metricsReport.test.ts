@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSets, removePickedItem,
+import { EXTRAS_COLUMNS, extrasCells, fmtHPA, fmtNetErr, fmtNetStats, fmtReplicasStats, parseExtras, mergeSets, removePickedItem,
   DEFAULT_PERCENTILES, allItems, fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, groupRows, fmtInt, fmtLatency, fmtPct, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, parseSets, parseTargets, pickKey, presetWindow,
   parsePercentiles, percentileValue, togglePercentile, setTargetCluster, setTargetNamespaces, setTargetPicked, targetItems, targetSummary, togglePicked, toggleTargetNamespace, upsertSet,
   zonedLocalToISO, type ReportRow, type ReportTraffic, type Target,
@@ -280,5 +280,31 @@ describe("removePickedItem", () => {
     const r = removePickedItem([a, b], { cluster: "c1", namespace: "n", workload: "x" });
     expect(r[0].picked).toEqual(["n/y"]);
     expect(r[1]).toBe(b);
+  });
+});
+
+describe("extras do relatório (réplicas, HPA, restarts e rede)", () => {
+  it("formata cada item e devolve 'sem dado' quando falta", () => {
+    expect(fmtReplicasStats({ max: 30, min: 10, avg: 20.5 })).toBe("30 (Mín: 10, Méd: 20,5)");
+    expect(fmtReplicasStats(null)).toBe("sem dado");
+    expect(fmtHPA(10, 40)).toBe("10-40");
+    expect(fmtHPA(null, 40)).toBe("?-40");
+    expect(fmtHPA(null, null)).toBe("sem dado");
+    expect(fmtNetStats({ max: 3 * 1024 * 1024, min: 0, avg: 2 * 1024 * 1024 })).toBe("3,0 MB/s / 2,0 MB/s");
+    expect(fmtNetErr({ max: 1.234, min: 0, avg: 0 })).toBe("1,23/s");
+    expect(fmtNetErr(undefined)).toBe("sem dado");
+  });
+  it("as células seguem a ordem e o tamanho das colunas, mesmo sem dado", () => {
+    const x = { source: "prometheus", replicas: { max: 5, min: 4, avg: 4.5 }, replicas_desired: null, hpa_min: 2, hpa_max: 8, restarts: 1234, net_rx_bps: null, net_tx_bps: null, net_err_ps: null, step: "1m" };
+    const cells = extrasCells(x);
+    expect(cells).toHaveLength(EXTRAS_COLUMNS.length);
+    expect(cells[1]).toBe("2-8");
+    expect(cells[2]).toBe("1.234");
+    expect(extrasCells(null)).toEqual(EXTRAS_COLUMNS.map(() => "sem dado"));
+  });
+  it("só 'true' liga a opção (padrão desligado)", () => {
+    expect(parseExtras(null)).toBe(false);
+    expect(parseExtras("false")).toBe(false);
+    expect(parseExtras("true")).toBe(true);
   });
 });

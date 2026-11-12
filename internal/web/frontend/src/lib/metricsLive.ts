@@ -17,7 +17,46 @@ export interface LiveResources {
   mem_mb: number | null;
   mem_req_pct: number | null;
   mem_lim_pct: number | null;
+  hpa_min?: number | null;
+  hpa_max?: number | null;
+  cpu_throttle_pct?: number | null;
+  net_rx_bps?: number | null;
+  net_tx_bps?: number | null;
+  net_err_ps?: number | null;
   pods: number;
+}
+
+export interface LiveLink {
+  name: string;
+  url: string;
+}
+
+/** Rede de uma aplicação ao longo do tempo (gráfico do modal): bytes/s e descartes+erros/s. */
+export interface NetworkSeries {
+  step_seconds: number;
+  times: number[];
+  rx_bps: (number | null)[];
+  tx_bps: (number | null)[];
+  err_ps: (number | null)[];
+  notes?: string[];
+}
+
+export interface NetworkRow {
+  t: number;
+  rx: number | null;
+  tx: number | null;
+  err: number | null;
+}
+
+/** Linhas do gráfico de rede; aceita listas nulas do Go. `hasErrors` diz se há algum descarte/erro a mostrar. */
+export function buildNetworkRows(n: Partial<NetworkSeries> | null | undefined): { rows: NetworkRow[]; hasData: boolean; hasErrors: boolean } {
+  const times = n?.times ?? [];
+  const rows = times.map((t, i) => ({ t, rx: n?.rx_bps?.[i] ?? null, tx: n?.tx_bps?.[i] ?? null, err: n?.err_ps?.[i] ?? null }));
+  return {
+    rows,
+    hasData: rows.some((r) => r.rx != null || r.tx != null),
+    hasErrors: rows.some((r) => r.err != null && r.err > 0),
+  };
 }
 
 export interface LiveSeries extends ReportItem {
@@ -34,6 +73,8 @@ export interface LiveSeries extends ReportItem {
   p99_ms?: (number | null)[];
   resources?: LiveResources;
   services?: string[];
+  /** Links diretos para os serviços no Dynatrace. */
+  links?: LiveLink[];
   resolution?: string;
   notes?: string[];
 }
@@ -520,6 +561,37 @@ export function usageLevel(limPct: number | null | undefined): Level {
   return limPct > 85 ? "red" : limPct > 70 ? "warn" : "ok";
 }
 
+/** HPA no teto (réplicas desejadas >= máximo): a aplicação não escala mais e a latência tende a subir. Sem HPA = info. */
+export function hpaLevel(desired: number | null | undefined, max: number | null | undefined): Level {
+  if (max == null || desired == null) return "info";
+  return max > 0 && desired >= max ? "warn" : "ok";
+}
+
+/** Throttling de CPU (% dos períodos limitados): acima de 25% é ERRO, acima de 10% é ALERTA. */
+export function throttleLevel(pct: number | null | undefined): Level {
+  if (pct == null) return "info";
+  return pct > 25 ? "red" : pct > 10 ? "warn" : "ok";
+}
+
+/** Rede: pacotes descartados + erros acima de 0,5/s é ALERTA. O volume em si não tem veredito. */
+export function netLevel(errPs: number | null | undefined): Level {
+  if (errPs == null) return "info";
+  return errPs > 0.5 ? "warn" : "ok";
+}
+
+/** Bytes por segundo em B, KB, MB ou GB (base 1024), com uma casa. */
+export function fmtBytesPerSec(v: number | null | undefined): string {
+  if (v == null) return "sem dado";
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let x = Math.max(0, v);
+  let i = 0;
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024;
+    i++;
+  }
+  return `${i === 0 ? Math.round(x) : x.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${units[i]}`;
+}
+
 export function fmtCores(v: number | null | undefined): string {
   return v == null ? "sem dado" : `${v.toFixed(2)} cores`;
 }
@@ -555,6 +627,7 @@ export function normalizeLive(r: LiveResult): LiveResult {
       p99_ms: s.p99_ms == null ? s.p99_ms : arr(s.p99_ms),
       notes: arr(s.notes),
       services: arr(s.services),
+      links: arr(s.links),
     })),
   };
 }

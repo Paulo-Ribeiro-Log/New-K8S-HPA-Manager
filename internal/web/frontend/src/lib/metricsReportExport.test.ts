@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { EXTRAS_COLUMNS } from "./metricsReport";
 import { NODE_COLUMNS, buildCSV, buildReportPDF, buildExportTable, buildMarkdown, csvText, escapeMdCell, fileStamp, fmtWhen, pdfSafe } from "./metricsReportExport";
 import type { ReportResult, ReportRow } from "./metricsReport";
 
@@ -269,5 +270,43 @@ describe("contexto de node nas exportações", () => {
     expect(raw).toContain("calculofret2");
     expect(raw).toContain("Contexto de node incluido");
     expect(raw).toContain("Throttling CPU");
+  });
+});
+
+describe("extras (réplicas, HPA, restarts e rede) nas exportações", () => {
+  const extras = {
+    source: "prometheus", step: "1m", replicas: { max: 72, min: 10, avg: 40 }, replicas_desired: { max: 72, min: 10, avg: 40 }, hpa_min: 10, hpa_max: 72, restarts: 3,
+    net_rx_bps: { max: 3 * 1024 * 1024, min: 0, avg: 2 * 1024 * 1024 }, net_tx_bps: { max: 1024 * 1024, min: 0, avg: 512 * 1024 }, net_err_ps: { max: 1.5, min: 0, avg: 0.2 }, notes: ["hpa_max: sem série"],
+  };
+  const comExtras = () => {
+    const f = fixture({ extras: true });
+    f.rows = [row("c1", "ns", "frete-hub", { extras }), row("c1", "ns", "sem-extras", { extras: null })];
+    return f;
+  };
+
+  it("sem os extras coletados, nenhuma coluna deles aparece", () => {
+    expect(buildExportTable(fixture()).columns).not.toContain(EXTRAS_COLUMNS[0]);
+    expect(buildCSV(fixture()).split("\r\n")[0]).not.toContain("replicas_max");
+  });
+
+  it("com os extras, a tabela ganha as colunas e 'sem dado' quando a linha não tem", () => {
+    const t = buildExportTable(comExtras());
+    expect(t.columns.slice(-EXTRAS_COLUMNS.length)).toEqual(EXTRAS_COLUMNS);
+    const rows = t.groups[0].rows;
+    const hub = rows.find((r) => r.cells[0].startsWith("frete-hub"))!;
+    const sem = rows.find((r) => r.cells[0].startsWith("sem-extras"))!;
+    expect(hub.cells.length).toBe(t.columns.length);
+    expect(hub.cells.slice(-EXTRAS_COLUMNS.length)).toEqual(["72 (Mín: 10, Méd: 40)", "10-72", "3", "3,0 MB/s / 2,0 MB/s", "1,0 MB/s / 512,0 KB/s", "1,5/s"]);
+    expect(sem.cells.slice(-EXTRAS_COLUMNS.length)).toEqual(Array(EXTRAS_COLUMNS.length).fill("sem dado"));
+    expect(t.meta.extras).toBe(true);
+    expect(t.issues).toContain("c1 / ns / frete-hub (extras): hpa_max: sem série");
+    expect(buildMarkdown(comExtras())).toContain("Réplicas, HPA, restarts e rede");
+  });
+
+  it("no CSV, cabeçalho e linhas têm o mesmo número de colunas e o sem dado é vazio", () => {
+    const lines = buildCSV(comExtras()).replace(/^﻿/, "").split("\r\n").filter(Boolean);
+    const n = lines[0].split(";").length;
+    expect(lines.slice(1).every((l) => l.split(";").length === n)).toBe(true);
+    expect(lines[0]).toContain("hpa_max");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  normalizeLive, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
+  normalizeLive, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
   parseLiveRange, parseLiveRefresh, parseProjection, projectTrend, projectedPercentile, type LiveSeries,
 } from "./metricsLive";
 
@@ -323,5 +323,52 @@ describe("summarizeStatus (selos do topo)", () => {
     expect(r.red[0].reasons[0]).toContain("1.234");
     expect(r.red[1].reasons[0]).toContain("falha na coleta");
     expect(r.warn.map((e) => e.name)).toEqual(["c · c"]);
+  });
+});
+
+describe("HPA, throttling e rede", () => {
+  it("HPA no teto é alerta; sem HPA é info", () => {
+    expect(hpaLevel(72, 72)).toBe("warn");
+    expect(hpaLevel(80, 72)).toBe("warn");
+    expect(hpaLevel(40, 72)).toBe("ok");
+    expect(hpaLevel(40, null)).toBe("info");
+    expect(hpaLevel(null, 72)).toBe("info");
+    expect(hpaLevel(0, 0)).toBe("ok");
+  });
+  it("throttling: >10% alerta, >25% erro", () => {
+    expect(throttleLevel(null)).toBe("info");
+    expect(throttleLevel(10)).toBe("ok");
+    expect(throttleLevel(10.1)).toBe("warn");
+    expect(throttleLevel(25.1)).toBe("red");
+  });
+  it("rede: descartes/erros >0,5/s é alerta", () => {
+    expect(netLevel(null)).toBe("info");
+    expect(netLevel(0.5)).toBe("ok");
+    expect(netLevel(0.6)).toBe("warn");
+  });
+  it("bytes por segundo na unidade certa", () => {
+    expect(fmtBytesPerSec(null)).toBe("sem dado");
+    expect(fmtBytesPerSec(512)).toBe("512 B/s");
+    expect(fmtBytesPerSec(1536)).toBe("1,5 KB/s");
+    expect(fmtBytesPerSec(5 * 1024 * 1024)).toBe("5,0 MB/s");
+    expect(fmtBytesPerSec(-3)).toBe("0 B/s");
+  });
+});
+
+describe("buildNetworkRows (gráfico de rede)", () => {
+  it("monta as linhas e diz se há dado e se há descartes/erros", () => {
+    const r = buildNetworkRows({ times: [1000, 2000], rx_bps: [100, null], tx_bps: [50, 60], err_ps: [0, 0] });
+    expect(r.rows).toEqual([{ t: 1000, rx: 100, tx: 50, err: 0 }, { t: 2000, rx: null, tx: 60, err: 0 }]);
+    expect(r.hasData).toBe(true);
+    expect(r.hasErrors).toBe(false);
+    expect(buildNetworkRows({ times: [1], rx_bps: [1], tx_bps: [1], err_ps: [0.2] }).hasErrors).toBe(true);
+  });
+  it("aceita listas nulas do Go e ausência de resposta", () => {
+    expect(buildNetworkRows({ times: null as any, rx_bps: null as any })).toEqual({ rows: [], hasData: false, hasErrors: false });
+    expect(buildNetworkRows(undefined).hasData).toBe(false);
+  });
+  it("normalizeLive troca links nulos por lista vazia", () => {
+    const r = normalizeLive({ series: [{ item: {}, times: null, rps: null, err_4xx_rps: null, err_5xx_rps: null, links: null }], warnings: null } as any);
+    expect(r.series[0].links).toEqual([]);
   });
 });

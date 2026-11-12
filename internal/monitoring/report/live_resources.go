@@ -13,7 +13,7 @@ import (
 )
 
 // Itens que só existem no Prometheus e que o tempo real mostra ao lado das métricas do Dynatrace:
-// réplicas, restarts, CPU e memória. Tráfego, erros e P50/P95/P99 continuam vindo SÓ do Dynatrace.
+// réplicas, teto do HPA, restarts, CPU, throttling de CPU, memória e rede. Tráfego, erros e P50/P95/P99 continuam vindo SÓ do Dynatrace.
 //
 // Custo: um conjunto fixo de consultas por CLUSTER (não por aplicação): cada métrica é pedida para
 // todos os namespaces do cluster de uma vez, agrupada por pod, e dividida entre as aplicações aqui.
@@ -29,7 +29,16 @@ type LiveResources struct {
 	MemMB             *float64 `json:"mem_mb"`
 	MemReqPct         *float64 `json:"mem_req_pct"`
 	MemLimPct         *float64 `json:"mem_lim_pct"`
-	Pods              int      `json:"pods"` // pods com métrica de CPU ou memória
+	// HPA (kube-state-metrics): limites do HPA do Deployment. "No teto" = desejadas >= máximo.
+	HPAMin *float64 `json:"hpa_min"`
+	HPAMax *float64 `json:"hpa_max"`
+	// Throttling de CPU: fração dos períodos do CFS em que algum container foi limitado (0 a 100).
+	CPUThrottlePct *float64 `json:"cpu_throttle_pct"`
+	// Rede (cAdvisor, soma dos pods): bytes/s recebidos e enviados; pacotes descartados + erros por segundo.
+	NetRxBps *float64 `json:"net_rx_bps"`
+	NetTxBps *float64 `json:"net_tx_bps"`
+	NetErrPs *float64 `json:"net_err_ps"`
+	Pods     int      `json:"pods"` // pods com métrica de CPU ou memória
 }
 
 // liveResourceQueries monta as consultas de um cluster para os namespaces dados (ns = regex já escapada).
@@ -44,7 +53,26 @@ func liveResourceQueries(ns string) map[string]string {
 	kube := func(metric, resource string) string {
 		return perPod(fmt.Sprintf(`%s{namespace=~"%s",resource="%s"}`, metric, ns, resource))
 	}
+	// HPA por Deployment: pelo alvo do HPA (kube_horizontalpodautoscaler_info) e, onde isso não existir,
+	// pelo nome do HPA igual ao do Deployment (a convenção). `or` só acrescenta o que faltou.
+	hpa := func(metric string) string {
+		m := fmt.Sprintf(`%s{namespace=~"%s"}`, metric, ns)
+		info := fmt.Sprintf(`kube_horizontalpodautoscaler_info{namespace=~"%s",scaletargetref_kind="Deployment"}`, ns)
+		return fmt.Sprintf(`max by (namespace,deployment) (label_replace(%s * on (namespace,horizontalpodautoscaler) group_left (scaletargetref_name) %s, "deployment", "$1", "scaletargetref_name", "(.+)")) or max by (namespace,deployment) (label_replace(%s, "deployment", "$1", "horizontalpodautoscaler", "(.+)"))`, m, info, m)
+	}
+	// rede: cAdvisor expõe por pod e interface; `max by (...,interface)` evita contar a série duas vezes
+	net := func(inner string) string {
+		return fmt.Sprintf(`sum by (namespace,pod) (max by (namespace,pod,interface) (%s))`, inner)
+	}
+	netSel := fmt.Sprintf(`namespace=~"%s",pod!=""`, ns)
 	return map[string]string{
+		"hpa_max":          hpa("kube_horizontalpodautoscaler_spec_max_replicas"),
+		"hpa_min":          hpa("kube_horizontalpodautoscaler_spec_min_replicas"),
+		"throttled":        perPod(fmt.Sprintf(`rate(container_cpu_cfs_throttled_periods_total{%s}[2m])`, cont)),
+		"periods":          perPod(fmt.Sprintf(`rate(container_cpu_cfs_periods_total{%s}[2m])`, cont)),
+		"net_rx":           net(fmt.Sprintf(`rate(container_network_receive_bytes_total{%s}[2m])`, netSel)),
+		"net_tx":           net(fmt.Sprintf(`rate(container_network_transmit_bytes_total{%s}[2m])`, netSel)),
+		"net_bad":          net(fmt.Sprintf(`rate(container_network_receive_packets_dropped_total{%[1]s}[2m]) + rate(container_network_transmit_packets_dropped_total{%[1]s}[2m]) + rate(container_network_receive_errors_total{%[1]s}[2m]) + rate(container_network_transmit_errors_total{%[1]s}[2m])`, netSel)),
 		"replicas_avail":   fmt.Sprintf(`max by (namespace,deployment) (kube_deployment_status_replicas_available{namespace=~"%s"})`, ns),
 		"replicas_desired": fmt.Sprintf(`max by (namespace,deployment) (kube_deployment_spec_replicas{namespace=~"%s"})`, ns),
 		"restarts":         perPod(fmt.Sprintf(`increase(kube_pod_container_status_restarts_total{namespace=~"%s"}[15m])`, ns)),
@@ -143,7 +171,7 @@ func CollectLiveResources(ctx context.Context, q RangeQuerier, items []Item, now
 			}
 			m := map[nsKey]float64{}
 			second := "pod"
-			if strings.HasPrefix(key, "replicas") {
+			if strings.HasPrefix(key, "replicas") || strings.HasPrefix(key, "hpa_") {
 				second = "deployment"
 			}
 			for _, r := range res.Data.Result {
@@ -170,7 +198,27 @@ func CollectLiveResources(ctx context.Context, q RangeQuerier, items []Item, now
 		if v, ok := got["replicas_desired"][nsKey{it.Namespace, it.Workload}]; ok {
 			r.ReplicasDesired = ptr(v)
 		}
+		if v, ok := got["hpa_max"][nsKey{it.Namespace, it.Workload}]; ok {
+			r.HPAMax = ptr(v)
+		}
+		if v, ok := got["hpa_min"][nsKey{it.Namespace, it.Workload}]; ok {
+			r.HPAMin = ptr(v)
+		}
 		owner := podOwner(it.Workload)
+		if thr, n := sumFor(got["throttled"], it.Namespace, owner); n > 0 {
+			if per, m := sumFor(got["periods"], it.Namespace, owner); m > 0 && per > 0 {
+				r.CPUThrottlePct = ptr(math.Min(100, thr/per*100))
+			}
+		}
+		if v, n := sumFor(got["net_rx"], it.Namespace, owner); n > 0 {
+			r.NetRxBps = ptr(v)
+		}
+		if v, n := sumFor(got["net_tx"], it.Namespace, owner); n > 0 {
+			r.NetTxBps = ptr(v)
+		}
+		if v, n := sumFor(got["net_bad"], it.Namespace, owner); n > 0 {
+			r.NetErrPs = ptr(v)
+		}
 		if v, n := sumFor(got["restarts"], it.Namespace, owner); n > 0 {
 			r.Restarts15m = ptr(math.Round(v))
 		}

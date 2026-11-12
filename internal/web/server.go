@@ -2188,6 +2188,7 @@ func (s *Server) setupRoutes() {
 	}
 	// Tempo real do relatório (séries do Dynatrace, consulta síncrona repetida pela tela)
 	api.POST("/monitoring/live", rbacMiddleware.InjectUserEmail(), monitoringReports.Live)
+	api.POST("/monitoring/live/network", rbacMiddleware.InjectUserEmail(), monitoringReports.LiveNetwork)
 	monitoringSets := handlers.NewMonitoringSetsHandler(s.localSettingsStore)
 	api.GET("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Get)
 	api.PUT("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Put)

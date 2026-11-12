@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { BarChart3, ChevronDown, ChevronRight, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
+import { BarChart3, ChevronDown, ChevronRight, ExternalLink, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,8 +10,8 @@ import { apiClient } from "@/lib/api/client";
 import { PERCENTILE_CHOICES, REPORT_TZ, fmtInt, fmtLatency, fmtRps, togglePercentile, zonedLocalToISO, isoToZonedLocal, type ReportItem } from "@/lib/metricsReport";
 import {
   DEFAULT_LIVE_RANGE, LATENCY_RED_MS, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
-  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, groupLive, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
-  normalizeLive, projectedPercentile, sparkHeights, seriesLevel, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
+  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, usageLevel, groupLive, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
+  normalizeLive, buildNetworkRows, projectedPercentile, sparkHeights, seriesLevel, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
 } from "@/lib/metricsLive";
 
 // Tempo real do Relatório de Métricas: as mesmas métricas do relatório (Dynatrace), num cartão por
@@ -287,7 +287,7 @@ export function MetricsLivePanel({
       {/* gráficos completos: só existem enquanto o modal está aberto */}
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          {detail && <DetailCharts s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} />}
+          {detail && <DetailCharts s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} win={data?.window} />}
         </DialogContent>
       </Dialog>
     </div>
@@ -382,12 +382,28 @@ const LiveCard = memo(function LiveCard({
             {r.replicas_available != null && r.replicas_desired != null ? <><b>{r.replicas_available}</b> / {r.replicas_desired} <span className="text-muted-foreground">(disp / des)</span></> : "sem dado"}
           </Row>
           <Row label="Restarts 15m" level={restartsLevel(r.restarts_15m)} source="Prometheus">{r.restarts_15m == null ? "sem dado" : <b>{r.restarts_15m}</b>}</Row>
+          {r.hpa_max != null && (
+            <Row label="HPA" level={hpaLevel(r.replicas_desired, r.hpa_max)} source="Prometheus">
+              <b>{r.hpa_min ?? "?"}–{r.hpa_max}</b> <span className="text-muted-foreground">réplicas (mín–máx){hpaLevel(r.replicas_desired, r.hpa_max) === "warn" ? " · no teto: não escala mais" : ""}</span>
+            </Row>
+          )}
           <Row label="CPU" level={usageLevel(r.cpu_lim_pct)} source="Prometheus">
             <b>{fmtCores(r.cpu_cores)}</b> <span className="text-muted-foreground">{fmtUsagePcts(r.cpu_lim_pct, r.cpu_req_pct)}</span>
           </Row>
+          {r.cpu_throttle_pct != null && (
+            <Row label="Throttling" level={throttleLevel(r.cpu_throttle_pct)} source="Prometheus">
+              <b>{r.cpu_throttle_pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</b> <span className="text-muted-foreground">dos períodos de CPU limitados</span>
+            </Row>
+          )}
           <Row label="Memória" level={usageLevel(r.mem_lim_pct)} source="Prometheus">
             <b>{fmtMemMB(r.mem_mb)}</b> <span className="text-muted-foreground">{fmtUsagePcts(r.mem_lim_pct, r.mem_req_pct)}</span>
           </Row>
+          {(r.net_rx_bps != null || r.net_tx_bps != null) && (
+            <Row label="Rede" level={netLevel(r.net_err_ps)} source="Prometheus">
+              <b>↓ {fmtBytesPerSec(r.net_rx_bps)}</b> <b>↑ {fmtBytesPerSec(r.net_tx_bps)}</b>
+              {r.net_err_ps != null && r.net_err_ps > 0 && <span className="text-muted-foreground"> · {r.net_err_ps.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}/s descartes/erros</span>}
+            </Row>
+          )}
         </>
       )}
       {s.error ? (
@@ -422,13 +438,25 @@ const LiveCard = memo(function LiveCard({
       )}
         </>
       )}
+      {s.links && s.links.length > 0 && <DynatraceLinks links={s.links} className="mt-1" />}
       {s.notes && s.notes.length > 0 && <div className="mt-1 font-sans text-[10px] text-muted-foreground">{s.notes.join(" · ")}</div>}
     </div>
   );
 });
 
 // Gráficos completos de uma aplicação (RPS, latência e erros com a projeção): montados só no modal.
-function DetailCharts({ s, base, percentiles, horizon, spanMs }: { s: LiveSeries; base?: LiveSeries; percentiles: number[]; horizon: number; spanMs: number }) {
+function DetailCharts({ s, base, percentiles, horizon, spanMs, win }: { s: LiveSeries; base?: LiveSeries; percentiles: number[]; horizon: number; spanMs: number; win?: { start: string; end: string } }) {
+  // a rede só é pedida quando o modal abre (uma consulta por abertura e por atualização), não em todo cartão
+  const netQ = useQuery({
+    queryKey: ["metrics-live-net", s.cluster, s.namespace, s.workload, win?.start, win?.end],
+    queryFn: () => apiClient.metricsLiveNetwork({ item: { cluster: s.cluster, namespace: s.namespace, workload: s.workload }, start: win!.start, end: win!.end }),
+    enabled: !!win,
+    retry: false,
+    gcTime: 0,
+    structuralSharing: false,
+    placeholderData: keepPreviousData,
+  });
+  const net = useMemo(() => buildNetworkRows(netQ.data), [netQ.data]);
   const d = useMemo(() => buildChartData(s, percentiles, horizon, base), [s, base, percentiles, horizon]);
   const withDate = spanMs > 20 * 3600e3;
   return (
@@ -436,6 +464,7 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs }: { s: LiveSeries
       <DialogHeader>
         <DialogTitle>{s.workload}</DialogTitle>
         <DialogDescription>ns: {s.namespace} · {s.cluster}{s.services?.length ? ` · ${s.services.length} serviço(s) de entrada` : ""}</DialogDescription>
+        {s.links && s.links.length > 0 && <DynatraceLinks links={s.links} />}
       </DialogHeader>
       <MiniChart title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
         lines={[{ key: "rps", color: COLORS.rps, name: "RPS" }, { key: "rpsProj", color: COLORS.proj, name: "projeção", dashed: true }]} />
@@ -452,6 +481,31 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs }: { s: LiveSeries
         <MiniChart title="Erros por segundo" data={d} spanWithDate={withDate} height={120} yFmt={(v) => fmtRps(v)}
           lines={[{ key: "e4", color: COLORS.e4, name: "4xx" }, { key: "e5", color: COLORS.e5, name: "5xx" }]} />
       )}
+      {netQ.isLoading && <div className="text-[11px] text-muted-foreground">Carregando a rede (Prometheus)…</div>}
+      {netQ.isError && <div className="text-[11px] text-red-400">Rede (Prometheus): {errText(netQ.error)}</div>}
+      {net.hasData && (
+        <MiniChart title="Rede (Prometheus): ↓ recebido · ↑ enviado, somando os pods" data={net} spanWithDate={withDate} height={140} yFmt={(v) => fmtBytesPerSec(v)}
+          lines={[{ key: "rx", color: COLORS.rps, name: "↓ recebido" }, { key: "tx", color: COLORS.p50, name: "↑ enviado" }]} />
+      )}
+      {net.hasErrors && (
+        <MiniChart title="Pacotes descartados e erros de rede por segundo" data={net} spanWithDate={withDate} height={100} yFmt={(v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
+          lines={[{ key: "err", color: COLORS.e5, name: "descartes + erros" }]} />
+      )}
+    </div>
+  );
+}
+
+// Links para os serviços da aplicação no Dynatrace (abre em outra aba).
+function DynatraceLinks({ links, className }: { links: { name: string; url: string }[]; className?: string }) {
+  return (
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 font-sans text-[11px] ${className ?? ""}`}>
+      <span className="text-muted-foreground">Abrir no Dynatrace:</span>
+      {links.map((l) => (
+        <a key={l.url} href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sky-400 hover:underline" title={`Abrir o serviço ${l.name} no Dynatrace`}>
+          <ExternalLink className="h-3 w-3" />
+          <span className="max-w-[18rem] truncate">{l.name}</span>
+        </a>
+      ))}
     </div>
   );
 }
@@ -475,7 +529,7 @@ function MiniChart({
   title, data, lines, yFmt, limit, height = 120, spanWithDate,
 }: {
   title: string;
-  data: LiveChartData;
+  data: { rows: object[] };
   lines: { key: string; color: string; name: string; dashed?: boolean }[];
   yFmt: (v: number) => string;
   limit?: number;

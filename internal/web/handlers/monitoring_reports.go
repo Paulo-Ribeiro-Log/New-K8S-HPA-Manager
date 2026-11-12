@@ -72,6 +72,8 @@ type startReportRequest struct {
 	Percentiles []int `json:"percentiles,omitempty"`
 	// NodeContext liga o contexto de node (pool, uso dos nodes, throttling). Opt-in: custa consultas a mais.
 	NodeContext bool `json:"node_context,omitempty"`
+	// Extras liga réplicas, HPA, restarts e rede (Prometheus). Opt-in: custa consultas a mais.
+	Extras bool `json:"extras,omitempty"`
 }
 
 func newJobID() string {
@@ -119,7 +121,7 @@ func (h *MonitoringReportHandler) Start(c *gin.Context) {
 	col := &report.Collector{Deps: h.deps(user, pcts)}
 
 	// valida antes de abrir o job: erro de pedido volta na hora, com 400
-	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds, Percentiles: pcts, NodeContext: req.NodeContext}
+	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds, Percentiles: pcts, NodeContext: req.NodeContext, Extras: req.Extras}
 	if _, err := col.Prepare(creq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -243,6 +245,13 @@ func (h *MonitoringReportHandler) deps(user string, pcts []int) report.Deps {
 		return q, err
 	}
 	return report.Deps{
+		Extras: func(ctx context.Context, it report.Item, w report.Window, plan report.Plan) (*report.Extras, error) {
+			q, err := prom(it.Cluster)
+			if err != nil {
+				return nil, err
+			}
+			return report.CollectExtras(ctx, q, it.Namespace, it.Workload, w, plan)
+		},
 		Node: func(ctx context.Context, it report.Item, w report.Window, plan report.Plan) (*report.NodeContext, error) {
 			q, err := prom(it.Cluster)
 			if err != nil {

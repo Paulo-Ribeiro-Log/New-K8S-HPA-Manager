@@ -62,8 +62,43 @@ type LiveSeries struct {
 	P99Ms       []*float64     `json:"p99_ms,omitempty"`
 	Resources   *LiveResources `json:"resources,omitempty"`
 	Services    []string       `json:"services,omitempty"`
-	Resolution  string         `json:"resolution,omitempty"`
-	Notes       []string       `json:"notes,omitempty"`
+	// Links diretos para os serviços no Dynatrace (só quando o cliente sabe montar a URL).
+	Links      []LiveLink `json:"links,omitempty"`
+	Resolution string     `json:"resolution,omitempty"`
+	Notes      []string   `json:"notes,omitempty"`
+}
+
+// LiveLink aponta para um serviço no Dynatrace.
+type LiveLink struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// maxLiveLinks limita os links por aplicação (um Deployment costuma ter poucos serviços de entrada).
+const maxLiveLinks = 5
+
+// entityURLer é opcional: o cliente real monta a URL da entidade; os fakes dos testes não precisam.
+type entityURLer interface{ EntityURL(id string) string }
+
+func liveLinks(api DynatraceAPI, svcs []dynatrace.ServiceRef) []LiveLink {
+	u, ok := api.(entityURLer)
+	if !ok {
+		return nil
+	}
+	var out []LiveLink
+	for _, s := range svcs {
+		if s.ID == "" {
+			continue
+		}
+		if link := u.EntityURL(s.ID); link != "" {
+			out = append(out, LiveLink{Name: s.Name, URL: link})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	if len(out) > maxLiveLinks {
+		out = out[:maxLiveLinks]
+	}
+	return out
 }
 
 // LiveResult é a resposta de uma consulta.
@@ -467,6 +502,7 @@ func CollectLive(ctx context.Context, req LiveRequest, deps LiveDeps, now time.T
 				}
 				ls := Downsample(BuildLive(st, plan.DTRes, DefaultP99Floor, now), bucket)
 				ls.Item, ls.Resolution = req.Items[i], plan.DTResolution
+				ls.Links = liveLinks(api, got[i].svcs)
 				ls.Notes = append(ls.Notes, got[i].notes...)
 				for key, e := range errs {
 					ls.Notes = append(ls.Notes, fmt.Sprintf("%s indisponível: %v", key, e))

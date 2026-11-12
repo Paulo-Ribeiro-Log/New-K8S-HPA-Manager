@@ -57,7 +57,15 @@ func fakeCluster() *promFake {
 	const hub1, hub2 = "frete-hub-7d9f8c6b5d-abcde", "frete-hub-7d9f8c6b5d-fghij"
 	const outro = "frete-hub-regionalizado-6c8d7f5b4-zzzzz" // NÃO é do frete-hub
 	const gib = 1024 * 1024 * 1024
+	const mbps = 1024 * 1024
 	return &promFake{data: map[string][]sample{
+		"kube_horizontalpodautoscaler_spec_max_replicas":                            {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "72"}},
+		"kube_horizontalpodautoscaler_spec_min_replicas":                            {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "10"}},
+		"container_cpu_cfs_throttled_periods_total":                                 {{pod("calc", hub1), "10"}, {pod("calc", hub2), "30"}, {pod("calc", outro), "500"}},
+		"container_cpu_cfs_periods_total":                                           {{pod("calc", hub1), "100"}, {pod("calc", hub2), "100"}, {pod("calc", outro), "100"}},
+		"container_network_receive_bytes_total":                                     {{pod("calc", hub1), fmt.Sprint(mbps)}, {pod("calc", hub2), fmt.Sprint(2 * mbps)}, {pod("calc", outro), fmt.Sprint(99 * mbps)}},
+		"container_network_transmit_bytes_total":                                    {{pod("calc", hub1), fmt.Sprint(mbps / 2)}, {pod("calc", hub2), fmt.Sprint(mbps / 2)}},
+		"container_network_receive_packets_dropped_total":                           {{pod("calc", hub1), "0.5"}, {pod("calc", hub2), "1.5"}},
 		"kube_deployment_status_replicas_available":                                 {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "70"}},
 		"kube_deployment_spec_replicas":                                             {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "72"}},
 		"kube_pod_container_status_restarts_total":                                  {{pod("calc", hub1), "1.4"}, {pod("calc", hub2), "0.4"}, {pod("calc", outro), "50"}},
@@ -104,14 +112,14 @@ func TestLiveResourcesUmaChamadaPorMetricaPorCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.queries) != 9 {
-		t.Errorf("%d consultas, esperado 9 (uma por métrica, não por aplicação)", len(f.queries))
+	if len(f.queries) != 16 {
+		t.Errorf("%d consultas, esperado 16 (uma por métrica, não por aplicação)", len(f.queries))
 	}
 	for _, q := range f.queries {
 		if !strings.Contains(q, `namespace=~"calc|outro-ns"`) {
 			t.Errorf("a consulta deveria cobrir os dois namespaces: %s", q)
 		}
-		if strings.Contains(q, "sum by (namespace,pod)") && !strings.Contains(q, "max by (namespace,pod,container)") {
+		if strings.Contains(q, "sum by (namespace,pod)") && !strings.Contains(q, "max by (namespace,pod,container)") && !strings.Contains(q, "max by (namespace,pod,interface)") {
 			t.Errorf("série duplicada do kube-state-metrics/cAdvisor dobraria a soma: %s", q)
 		}
 	}
@@ -235,5 +243,54 @@ func TestLiveResourcesLimitZeradoNaoDividePorZero(t *testing.T) {
 	rs, _, _ := CollectLiveResources(context.Background(), f, []Item{{"c1", "calc", "frete-hub"}}, time.Now())
 	if rs[0].CPULimPct != nil {
 		t.Errorf("limit total 0 daria +Inf (e quebra o JSON): esperado nulo, veio %v", *rs[0].CPULimPct)
+	}
+}
+
+func TestLiveResourcesHPAThrottlingERede(t *testing.T) {
+	rs, notes, err := CollectLiveResources(context.Background(), fakeCluster(), []Item{{"c1", "calc", "frete-hub"}, {"c1", "calc", "frete-b2c"}}, time.Now())
+	if err != nil || len(notes) != 0 {
+		t.Fatalf("err=%v notes=%v", err, notes)
+	}
+	r := rs[0]
+	chk := func(nome string, got *float64, want float64) {
+		t.Helper()
+		if got == nil || (*got-want) > 1e-9 || (want-*got) > 1e-9 {
+			t.Errorf("%s = %v, esperado %v", nome, got, want)
+		}
+	}
+	chk("HPA máximo", r.HPAMax, 72)
+	chk("HPA mínimo", r.HPAMin, 10)
+	chk("throttling = (10+30)/(100+100), o outro deployment não entra", r.CPUThrottlePct, 20)
+	chk("rede recebida (1+2 MiB/s)", r.NetRxBps, 3*1024*1024)
+	chk("rede enviada (0,5+0,5 MiB/s)", r.NetTxBps, 1024*1024)
+	chk("erros e descartes de rede (0,5+1,5)", r.NetErrPs, 2)
+	// aplicação sem HPA, sem pods: sem dado, nunca zero
+	o := rs[1]
+	if o.HPAMax != nil || o.CPUThrottlePct != nil || o.NetRxBps != nil || o.NetErrPs != nil {
+		t.Errorf("sem dado tem de ficar nulo: %+v", o)
+	}
+}
+
+func TestLiveResourcesThrottlingSemPeriodosNaoDivideDeZero(t *testing.T) {
+	f := fakeCluster()
+	f.data["container_cpu_cfs_periods_total"] = []sample{{pod("calc", "frete-hub-7d9f8c6b5d-abcde"), "0"}}
+	rs, _, err := CollectLiveResources(context.Background(), f, []Item{{"c1", "calc", "frete-hub"}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rs[0].CPUThrottlePct != nil {
+		t.Errorf("períodos zero deve dar sem dado, veio %v", *rs[0].CPUThrottlePct)
+	}
+}
+
+func TestLiveResourcesConsultasNovasSaoPromQLValido(t *testing.T) {
+	qs := liveResourceQueries("calc")
+	for _, k := range []string{"hpa_max", "hpa_min", "throttled", "periods", "net_rx", "net_tx", "net_bad"} {
+		if qs[k] == "" {
+			t.Errorf("falta a consulta %s", k)
+		}
+	}
+	if !strings.Contains(qs["hpa_max"], " or ") || !strings.Contains(qs["hpa_max"], "scaletargetref_name") {
+		t.Errorf("o HPA deve casar pelo alvo e cair no nome: %s", qs["hpa_max"])
 	}
 }

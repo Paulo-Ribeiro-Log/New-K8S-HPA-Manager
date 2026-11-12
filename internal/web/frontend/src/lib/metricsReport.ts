@@ -2,6 +2,8 @@
 // fuso, agrupamento da lista de HPAs monitorados e formatação. Lógica pura (testada em
 // metricsReport.test.ts); nenhuma chamada de rede aqui.
 
+import { fmtBytesPerSec } from "./metricsLive";
+
 // ── tipos da API (espelham internal/monitoring/report) ─────────────────────────────────────────────
 
 export interface ReportItem {
@@ -69,10 +71,26 @@ export interface ReportNodeContext {
   notes?: string[];
 }
 
+/** Réplicas, teto do HPA, restarts e rede da aplicação na janela (só Prometheus, opt-in). */
+export interface ReportExtras {
+  source: string;
+  replicas: ReportPct | null;
+  replicas_desired: ReportPct | null;
+  hpa_min: number | null;
+  hpa_max: number | null;
+  restarts: number | null;
+  net_rx_bps: ReportPct | null;
+  net_tx_bps: ReportPct | null;
+  net_err_ps: ReportPct | null;
+  step: string;
+  notes?: string[];
+}
+
 export interface ReportRow extends ReportItem {
   traffic: ReportTraffic | null;
   usage: ReportUsage | null;
   node?: ReportNodeContext | null;
+  extras?: ReportExtras | null;
   flags: { p99?: ReportFlag; err_4xx?: ReportFlag; err_5xx?: ReportFlag };
   errors?: string[];
 }
@@ -90,6 +108,8 @@ export interface ReportResult {
   percentiles: number[];
   /** O contexto de node foi coletado (colunas de node na tabela e nas exportações). */
   node_context?: boolean;
+  /** Réplicas, HPA, restarts e rede foram coletados (colunas na tabela e nas exportações). */
+  extras?: boolean;
   plan: ReportPlan;
   warnings?: string[];
   rows: ReportRow[];
@@ -409,6 +429,46 @@ export function fmtThrottle(p: ReportPct | null | undefined): string {
   if (!p) return NO_DATA;
   const f = (v: number) => `${(Math.round(v * 100) / 100).toFixed(2)}%`;
   return `${f(p.max)} / ${f(p.avg)}`;
+}
+
+// ── réplicas, HPA, restarts e rede (opt-in) ────────────────────────────────────────────────────────
+
+export const EXTRAS_KEY = "metrics_report_extras";
+
+/** Lê a escolha gravada dos extras: só "true" liga (padrão desligado: custa consultas a mais). */
+export function parseExtras(raw: string | null): boolean {
+  return raw === "true";
+}
+
+/** Colunas dos extras (só existem quando o relatório os coletou). Texto simples: vale também no PDF. */
+export const EXTRAS_COLUMNS = ["Réplicas disp. (Máx/Mín/Méd)", "HPA (mín-máx)", "Restarts na janela", "Rede recebida (pico/méd)", "Rede enviada (pico/méd)", "Descartes+erros de rede (pico/s)"];
+
+const num1 = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+
+/** "30 (Mín: 10, Méd: 20,5)": réplicas são contagens, então o máximo e o mínimo saem inteiros. */
+export function fmtReplicasStats(p: ReportPct | null | undefined): string {
+  return p == null ? NO_DATA : `${Math.round(p.max)} (Mín: ${Math.round(p.min)}, Méd: ${num1(p.avg)})`;
+}
+
+/** "10-40"; só um dos lados também aparece ("?-40"); sem HPA = sem dado. */
+export function fmtHPA(min: number | null | undefined, max: number | null | undefined): string {
+  if (min == null && max == null) return NO_DATA;
+  return `${min == null ? "?" : Math.round(min)}-${max == null ? "?" : Math.round(max)}`;
+}
+
+/** "3,0 MB/s / 2,0 MB/s" (pico / média). */
+export function fmtNetStats(p: ReportPct | null | undefined): string {
+  return p == null ? NO_DATA : `${fmtBytesPerSec(p.max)} / ${fmtBytesPerSec(p.avg)}`;
+}
+
+/** Descartes e erros de pacote: pico por segundo, duas casas. */
+export function fmtNetErr(p: ReportPct | null | undefined): string {
+  return p == null ? NO_DATA : `${p.max.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}/s`;
+}
+
+/** As células dos extras de uma linha, na ordem de EXTRAS_COLUMNS. */
+export function extrasCells(x: ReportExtras | null | undefined): string[] {
+  return [fmtReplicasStats(x?.replicas), fmtHPA(x?.hpa_min, x?.hpa_max), x?.restarts == null ? NO_DATA : fmtInt(x.restarts), fmtNetStats(x?.net_rx_bps), fmtNetStats(x?.net_tx_bps), fmtNetErr(x?.net_err_ps)];
 }
 
 // ── resultado agrupado: cluster → namespace → deployment ─────────────────────────────────────────────

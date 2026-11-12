@@ -33,6 +33,15 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// EntityURL é o link da entidade (ex.: SERVICE-123) na interface do Dynatrace, para abrir no navegador.
+// Vale para SaaS (https://<id>.live.dynatrace.com) e Managed (https://<domínio>/e/<ambiente>).
+func (c *Client) EntityURL(id string) string {
+	if c == nil || c.baseURL == "" || id == "" {
+		return ""
+	}
+	return c.baseURL + "/ui/entity/" + url.PathEscape(id)
+}
+
 // NewClient cria um cliente Dynatrace.
 // baseURL e apiToken podem ser vazios — fallback para env vars DT_API_URL e DT_API_TOKEN.
 func NewClient(baseURL, apiToken string) (*Client, error) {

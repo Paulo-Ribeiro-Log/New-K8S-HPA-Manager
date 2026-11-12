@@ -3,7 +3,7 @@
 // API Client - connects to Go backend
 
 import type { ReportItem, ReportJob, ReportPlanResponse } from "@/lib/metricsReport";
-import type { LiveResult } from "@/lib/metricsLive";
+import type { LiveResult, NetworkSeries } from "@/lib/metricsLive";
 import type {
   Cluster,
   ClusterInfo,
@@ -6026,7 +6026,7 @@ class APIClient {
   }
 
   // Inicia a coleta (job em memória no servidor) e devolve o id; o andamento vem de metricsReportJob.
-  async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; node_context?: boolean }): Promise<{ id: string; total: number }> {
+  async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; node_context?: boolean; extras?: boolean }): Promise<{ id: string; total: number }> {
     return this.request("/monitoring/reports", { method: "POST", body: JSON.stringify(body) });
   }
 
@@ -6041,6 +6041,11 @@ class APIClient {
   // Tempo real do relatório: séries (RPS, erros/s, P50/P95/P99) do Dynatrace numa janela que termina agora.
   async metricsLive(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; max_points?: number; resources?: boolean }): Promise<LiveResult> {
     return this.request("/monitoring/live", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  // Rede de uma aplicação no tempo (gráfico do modal do Tempo real), do Prometheus do cluster.
+  async metricsLiveNetwork(body: { item: ReportItem; start: string; end: string }): Promise<NetworkSeries> {
+    return this.request("/monitoring/live/network", { method: "POST", body: JSON.stringify(body) });
   }
 
   // Conjuntos salvos do Relatório de Métricas, por usuário, no servidor (sobrevivem a reinício e troca de navegador).

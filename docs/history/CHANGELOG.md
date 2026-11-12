@@ -3,6 +3,19 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório de Métricas: opção "Réplicas, HPA e rede" no Relatório (Novembro 2026)
+
+Caixa opt-in no Relatório (`extras` no pedido, `internal/monitoring/report/extras.go`): réplicas disponíveis e desejadas (máx/mín/méd), limites do HPA, restarts somados na janela (`increase` com janela igual ao passo) e rede (rx, tx e descartes+erros), tudo do Prometheus, 8 consultas por aplicação validadas com o parser oficial do PromQL. Seis colunas novas na tabela e nas exportações Markdown, CSV e PDF; sem dado = "sem dado" (vazio no CSV), nunca zero. O throttling de CPU continua no contexto de node.
+
+### Relatório de Métricas: gráfico de rede e link para o Dynatrace no Tempo real (Novembro 2026)
+
+- **Rede no tempo:** `POST /api/v1/monitoring/live/network` (`monitoring_live_network.go`, `report.CollectNetworkSeries`): bytes/s recebidos e enviados e descartes+erros/s de UMA aplicação, até 150 pontos (passo mínimo de 1 min), com janela de no máximo 15 dias. Só é chamado quando o modal de gráficos abre.
+- **Link para o Dynatrace:** `Client.EntityURL` monta `<base>/ui/entity/<SERVICE-ID>` e o cartão e o modal listam um link por serviço de entrada (`links` na série; no máximo 5).
+
+### Relatório de Métricas: HPA com teto, throttling de CPU e rede no Tempo real (Novembro 2026)
+
+Sete consultas novas por cluster ao Prometheus (16 no total, todas validadas com o parser oficial do PromQL): máximo e mínimo do HPA (casa pelo alvo em `kube_horizontalpodautoscaler_info` e, onde faltar, pelo nome igual ao do Deployment), throttling (`container_cpu_cfs_throttled_periods_total` / `container_cpu_cfs_periods_total`) e rede do cAdvisor (bytes recebidos e enviados; descartes e erros somados). Cartão: linhas HPA (ALERTA no teto), Throttling (>10% ALERTA, >25% ERRO) e Rede (descartes/erros >0,5/s ALERTA). Os limites de throttling e de rede são escolha nossa, não padrão do Prometheus.
+
 ### Relatório de Métricas: projeção sazonal, conjuntos salvos no servidor e ajustes do Tempo real (Novembro 2026)
 
 - **Projeção sazonal** (`projectSeasonal`, `metricsLive.ts`): curva de ontem no mesmo horário escalada pelo fator hoje/ontem dos últimos 30 min; cai na reta linear quando falta base. A base (≈1,5 h de ontem) é buscada a cada 5 min pelo mesmo `POST /monitoring/live`, sem mudança no backend.
