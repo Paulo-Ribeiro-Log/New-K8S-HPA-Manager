@@ -1,7 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useMemo, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { BarChart3, ChevronDown, ChevronRight, ExternalLink, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
+import { BarChart3, ChevronDown, FileDown, ChevronRight, ExternalLink, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,7 +10,7 @@ import { apiClient } from "@/lib/api/client";
 import { PERCENTILE_CHOICES, REPORT_TZ, fmtInt, fmtLatency, fmtRps, togglePercentile, zonedLocalToISO, isoToZonedLocal, type ReportItem } from "@/lib/metricsReport";
 import {
   DEFAULT_LIVE_RANGE, LATENCY_RED_MS, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
-  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, usageLevel, groupLive, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
+  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, podsLevel, fmtRestartReasons, netLevel, fmtBytesPerSec, usageLevel, groupLive, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
   normalizeLive, buildNetworkRows, projectedPercentile, sparkHeights, seriesLevel, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
 } from "@/lib/metricsLive";
 
@@ -39,6 +39,36 @@ function savePref(key: string, value: unknown) {
   } catch {
     /* sem armazenamento: segue sem lembrar */
   }
+}
+
+import { MetricsEventPicker } from "@/components/MetricsEventPicker";
+import type { SavedEvent } from "@/lib/metricsEvents";
+import { buildSessionCSV, buildSessionMarkdown, newSession, recordSample, type Session } from "@/lib/metricsLiveSession";
+import { downloadText, fileStamp } from "@/lib/metricsReportExport";
+
+// Memória JS desta aba (só Chromium: performance.memory). O número inclui lixo ainda não coletado, então
+// oscila em serra; o que importa é se o pico sobe com o tempo.
+function BrowserMemory() {
+  const [m, setM] = useState<{ used: number; peak: number } | null>(null);
+  useEffect(() => {
+    const perf = performance as unknown as { memory?: { usedJSHeapSize: number } };
+    if (!perf.memory) return;
+    let peak = 0;
+    const tick = () => {
+      const used = (perf.memory?.usedJSHeapSize ?? 0) / 1048576;
+      peak = Math.max(peak, used);
+      setM({ used, peak });
+    };
+    tick();
+    const id = setInterval(tick, 10_000);
+    return () => clearInterval(id);
+  }, []);
+  if (!m) return null;
+  return (
+    <span className="text-[11px] text-muted-foreground cursor-help" title="Heap JavaScript desta aba (Chromium), lido a cada 10 s. Inclui lixo ainda não coletado: oscila em serra. Se o pico só sobe com o tempo, há vazamento.">
+      memória JS da aba: <b>{m.used.toFixed(0)} MB</b> (pico {m.peak.toFixed(0)} MB)
+    </span>
+  );
 }
 
 const BADGE_CLASS: Record<Level, string> = {
@@ -82,8 +112,11 @@ function Countdown({ updatedAt, refreshSec, fetching }: { updatedAt: number; ref
 }
 
 export function MetricsLivePanel({
-  items, percentiles, onPercentiles, onRemove,
+  items, percentiles, onPercentiles, onRemove, events, onSaveEvent, onRemoveEvent,
 }: {
+  events: SavedEvent[];
+  onSaveEvent: (name: string, start: string, end: string) => boolean;
+  onRemoveEvent: (name: string) => void;
   onRemove: (item: ReportItem) => void;
   items: ReportItem[];
   percentiles: number[];
@@ -133,6 +166,23 @@ export function MetricsLivePanel({
   const data = q.data;
 
   const status = useMemo(() => (data ? summarizeStatus(data.series, data.percentiles ?? percentiles) : null), [data, percentiles]);
+
+  // resumo da sessão: só agregados por aplicação, a cada atualização (a memória não cresce com o tempo)
+  const sessionRef = useRef<Session>(newSession(Date.now()));
+  const [sessionUpdates, setSessionUpdates] = useState(0);
+  useEffect(() => {
+    if (!q.data) return;
+    recordSample(sessionRef.current, q.data.series, projectedPercentile(q.data.percentiles ?? percentiles));
+    setSessionUpdates(sessionRef.current.updates);
+    // só quando chega dado novo
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q.dataUpdatedAt]);
+  const exportSession = (kind: "md" | "csv") => {
+    const now = Date.now();
+    const stamp = fileStamp(new Date(now).toISOString());
+    if (kind === "md") downloadText(buildSessionMarkdown(sessionRef.current, now), "text/markdown", `tempo-real-resumo_${stamp}.md`);
+    else downloadText(buildSessionCSV(sessionRef.current), "text/csv", `tempo-real-resumo_${stamp}.csv`);
+  };
 
   // minimizados (cluster inteiro ou cartão), lembrados no navegador
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadPref(COLLAPSED_KEY, parseCollapsed));
@@ -206,6 +256,20 @@ export function MetricsLivePanel({
               {PROJECTION_CHOICES.map((m) => <option key={m} value={m}>{m === 0 ? "Desligada" : m === 60 ? "+1 h" : `+${m} min`}</option>)}
             </select>
           </label>
+          <MetricsEventPicker
+            events={events}
+            current={(() => {
+              const s = zonedLocalToISO(startLocal), e = zonedLocalToISO(endLocal);
+              return s && e ? { start: s, end: e } : null;
+            })()}
+            onApply={(s, e) => {
+              setRange("custom");
+              setStartLocal(isoToZonedLocal(Date.parse(s)));
+              setEndLocal(isoToZonedLocal(Date.parse(e)));
+            }}
+            onSave={onSaveEvent}
+            onRemove={onRemoveEvent}
+          />
           <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={items.length === 0 || customInvalid || q.isFetching} onClick={() => q.refetch()}>
             {q.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Atualizar agora
           </Button>
@@ -233,6 +297,15 @@ export function MetricsLivePanel({
             <span className="text-muted-foreground">passe o mouse para ver quais</span>
           </div>
         )}
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground" title="Agregados (mín/méd/máx) por aplicação, amostrados a cada atualização; a memória não cresce com o tempo">
+            sessão: {sessionUpdates} atualização(ões) desde {new Date(sessionRef.current.startedAt).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" })}
+          </span>
+          <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("md")} title="Baixa o resumo da sessão em Markdown"><FileDown className="h-3 w-3" />Resumo .md</Button>
+          <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("csv")} title="Baixa o resumo da sessão em CSV"><FileDown className="h-3 w-3" />CSV</Button>
+          <Button size="sm" variant="ghost" className="h-6 text-[11px]" disabled={sessionUpdates === 0} onClick={() => { sessionRef.current = newSession(Date.now()); setSessionUpdates(0); }} title="Zera o resumo e começa uma sessão nova">Zerar</Button>
+          <BrowserMemory />
+        </div>
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <span className="text-muted-foreground">Latência:</span>
           {PERCENTILE_CHOICES.map((p) => (
@@ -381,7 +454,15 @@ const LiveCard = memo(function LiveCard({
           <Row label="Réplicas" level={replicasLevel(r.replicas_available, r.replicas_desired)} source="Prometheus">
             {r.replicas_available != null && r.replicas_desired != null ? <><b>{r.replicas_available}</b> / {r.replicas_desired} <span className="text-muted-foreground">(disp / des)</span></> : "sem dado"}
           </Row>
-          <Row label="Restarts 15m" level={restartsLevel(r.restarts_15m)} source="Prometheus">{r.restarts_15m == null ? "sem dado" : <b>{r.restarts_15m}</b>}</Row>
+          <Row label="Restarts 15m" level={restartsLevel(r.restarts_15m)} source="Prometheus">
+            {r.restarts_15m == null ? "sem dado" : <b>{r.restarts_15m}</b>}
+            {fmtRestartReasons(r.restart_reasons) && <span className={`ml-1 ${fmtRestartReasons(r.restart_reasons).includes("OOMKilled") ? "text-red-400" : "text-muted-foreground"}`}>({fmtRestartReasons(r.restart_reasons)})</span>}
+          </Row>
+          {((r.pods_pending ?? 0) > 0 || (r.pods_not_ready ?? 0) > 0) && (
+            <Row label="Pods" level={podsLevel(r.pods_pending, r.pods_not_ready)} source="Prometheus">
+              <b>{r.pods_pending ?? 0}</b> pendente(s) · <b>{r.pods_not_ready ?? 0}</b> não pronto(s)
+            </Row>
+          )}
           {r.hpa_max != null && (
             <Row label="HPA" level={hpaLevel(r.replicas_desired, r.hpa_max)} source="Prometheus">
               <b>{r.hpa_min ?? "?"}–{r.hpa_max}</b> <span className="text-muted-foreground">réplicas (mín–máx){hpaLevel(r.replicas_desired, r.hpa_max) === "warn" ? " · no teto: não escala mais" : ""}</span>

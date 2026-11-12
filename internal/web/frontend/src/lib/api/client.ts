@@ -6052,6 +6052,13 @@ class APIClient {
   async metricsReportSetsGet(): Promise<{ sets: unknown }> {
     return this.request("/monitoring/report-sets");
   }
+  // Eventos nomeados (janelas de tempo salvas) do Relatório de Métricas, por usuário, no servidor.
+  async metricsReportEventsGet(): Promise<{ events: unknown }> {
+    return this.request("/monitoring/report-events");
+  }
+  async metricsReportEventsPut(events: unknown[]): Promise<{ saved: number }> {
+    return this.request("/monitoring/report-events", { method: "PUT", body: JSON.stringify({ events }) });
+  }
   async metricsReportSetsPut(sets: unknown[]): Promise<{ saved: number }> {
     return this.request("/monitoring/report-sets", { method: "PUT", body: JSON.stringify({ sets }) });
   }

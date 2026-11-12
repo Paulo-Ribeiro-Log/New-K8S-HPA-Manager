@@ -17,6 +17,9 @@ export interface LiveResources {
   mem_mb: number | null;
   mem_req_pct: number | null;
   mem_lim_pct: number | null;
+  restart_reasons?: Record<string, number> | null;
+  pods_pending?: number | null;
+  pods_not_ready?: number | null;
   hpa_min?: number | null;
   hpa_max?: number | null;
   cpu_throttle_pct?: number | null;
@@ -559,6 +562,19 @@ export function restartsLevel(n: number | null | undefined): Level {
 export function usageLevel(limPct: number | null | undefined): Level {
   if (limPct == null) return "info";
   return limPct > 85 ? "red" : limPct > 70 ? "warn" : "ok";
+}
+
+/** "OOMKilled ×2, Error ×1": as razões dos restarts, da mais frequente para a menos (empate por nome). */
+export function fmtRestartReasons(m: Record<string, number> | null | undefined): string {
+  const e = Object.entries(m ?? {}).filter(([, n]) => n > 0);
+  e.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return e.map(([r, n]) => `${r} ×${n}`).join(", ");
+}
+
+/** Pods pendentes ou não prontos: qualquer um é alerta (rollout, scale-out em andamento ou falta de capacidade). */
+export function podsLevel(pending: number | null | undefined, notReady: number | null | undefined): Level {
+  if (pending == null && notReady == null) return "info";
+  return (pending ?? 0) > 0 || (notReady ?? 0) > 0 ? "warn" : "ok";
 }
 
 /** HPA no teto (réplicas desejadas >= máximo): a aplicação não escala mais e a latência tende a subir. Sem HPA = info. */

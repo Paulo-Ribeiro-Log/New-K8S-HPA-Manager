@@ -38,7 +38,13 @@ type LiveResources struct {
 	NetRxBps *float64 `json:"net_rx_bps"`
 	NetTxBps *float64 `json:"net_tx_bps"`
 	NetErrPs *float64 `json:"net_err_ps"`
-	Pods     int      `json:"pods"` // pods com métrica de CPU ou memória
+	// Motivo dos restarts dos últimos 15 min (kube-state-metrics: última razão de término dos containers
+	// que reiniciaram) -> quantos pods: {"OOMKilled": 2}. Vazio quando não houve restart ou não há razão.
+	RestartReasons map[string]int `json:"restart_reasons,omitempty"`
+	// Pods do Deployment pendentes (fase Pending) e não prontos (condição Ready falsa). Nulo = sem dado.
+	PodsPending  *float64 `json:"pods_pending"`
+	PodsNotReady *float64 `json:"pods_not_ready"`
+	Pods         int      `json:"pods"` // pods com métrica de CPU ou memória
 }
 
 // liveResourceQueries monta as consultas de um cluster para os namespaces dados (ns = regex já escapada).
@@ -66,6 +72,10 @@ func liveResourceQueries(ns string) map[string]string {
 	}
 	netSel := fmt.Sprintf(`namespace=~"%s",pod!=""`, ns)
 	return map[string]string{
+		// só os containers que reiniciaram na janela: a razão "última" fica no kube-state-metrics para sempre
+		"restart_reason":   fmt.Sprintf(`sum by (namespace,pod,reason) (max by (namespace,pod,container,reason) (kube_pod_container_status_last_terminated_reason{namespace=~"%[1]s"} and on (namespace,pod,container) (increase(kube_pod_container_status_restarts_total{namespace=~"%[1]s"}[15m]) > 0)))`, ns),
+		"pods_pending":     fmt.Sprintf(`sum by (namespace,pod) (max by (namespace,pod,phase) (kube_pod_status_phase{namespace=~"%s",phase="Pending"}))`, ns),
+		"pods_not_ready":   fmt.Sprintf(`sum by (namespace,pod) (max by (namespace,pod,condition) (kube_pod_status_ready{namespace=~"%s",condition="false"}))`, ns),
 		"hpa_max":          hpa("kube_horizontalpodautoscaler_spec_max_replicas"),
 		"hpa_min":          hpa("kube_horizontalpodautoscaler_spec_min_replicas"),
 		"throttled":        perPod(fmt.Sprintf(`rate(container_cpu_cfs_throttled_periods_total{%s}[2m])`, cont)),
@@ -150,11 +160,13 @@ func CollectLiveResources(ctx context.Context, q RangeQuerier, items []Item, now
 	queries := liveResourceQueries(strings.Join(nss, "|"))
 
 	var (
-		mu     sync.Mutex
-		wg     sync.WaitGroup
-		got    = map[string]map[nsKey]float64{}
-		notes  []string
-		failed int
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		got = map[string]map[nsKey]float64{}
+		// pod -> razões de restart (uma consulta devolve uma série por pod e razão)
+		reasons = map[nsKey]map[string]bool{}
+		notes   []string
+		failed  int
 	)
 	start := now.Add(-3 * time.Minute)
 	for key, query := range queries {
@@ -167,6 +179,18 @@ func CollectLiveResources(ctx context.Context, q RangeQuerier, items []Item, now
 			if err != nil {
 				failed++
 				notes = append(notes, fmt.Sprintf("%s: %v", key, err))
+				return
+			}
+			if key == "restart_reason" {
+				for _, r := range res.Data.Result {
+					if v, ok := lastSample(r.Values); ok && v > 0 && r.Metric["reason"] != "" {
+						k := nsKey{r.Metric["namespace"], r.Metric["pod"]}
+						if reasons[k] == nil {
+							reasons[k] = map[string]bool{}
+						}
+						reasons[k][r.Metric["reason"]] = true
+					}
+				}
 				return
 			}
 			m := map[nsKey]float64{}
@@ -205,6 +229,22 @@ func CollectLiveResources(ctx context.Context, q RangeQuerier, items []Item, now
 			r.HPAMin = ptr(v)
 		}
 		owner := podOwner(it.Workload)
+		for k, rs := range reasons {
+			if k.ns == it.Namespace && owner.MatchString(k.name) {
+				for reason := range rs {
+					if r.RestartReasons == nil {
+						r.RestartReasons = map[string]int{}
+					}
+					r.RestartReasons[reason]++
+				}
+			}
+		}
+		if v, n := sumFor(got["pods_pending"], it.Namespace, owner); n > 0 {
+			r.PodsPending = ptr(v)
+		}
+		if v, n := sumFor(got["pods_not_ready"], it.Namespace, owner); n > 0 {
+			r.PodsNotReady = ptr(v)
+		}
 		if thr, n := sumFor(got["throttled"], it.Namespace, owner); n > 0 {
 			if per, m := sumFor(got["periods"], it.Namespace, owner); m > 0 && per > 0 {
 				r.CPUThrottlePct = ptr(math.Min(100, thr/per*100))

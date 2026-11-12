@@ -80,3 +80,31 @@ func TestConjuntosSalvosVazioEInvalido(t *testing.T) {
 		t.Fatalf("sem store = %d", w.Code)
 	}
 }
+
+func TestEventosNomeadosSobrevivemAoReinicioEFicamSeparadosDosConjuntos(t *testing.T) {
+	dir := t.TempDir()
+	st := newSetsStore(t, dir)
+	router := func(email string, st *storage.LocalSettingsStore) *gin.Engine {
+		gin.SetMode(gin.TestMode)
+		h := NewMonitoringEventsHandler(st)
+		r := gin.New()
+		r.Use(func(c *gin.Context) { c.Set("user_email", email) })
+		r.GET("/sets", h.Get)
+		r.PUT("/sets", h.Put)
+		return r
+	}
+	body := `{"events":[{"name":"Stress test","start":"2026-11-11T17:00:00Z","end":"2026-11-11T19:00:00Z"}]}`
+	if w := do(router("a@x.com", st), http.MethodPut, body); w.Code != 200 {
+		t.Fatalf("PUT = %d %s", w.Code, w.Body)
+	}
+	st2 := newSetsStore(t, dir)
+	if w := do(router("a@x.com", st2), http.MethodGet, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"events":[`) || !strings.Contains(w.Body.String(), "Stress test") {
+		t.Fatalf("GET após reinício = %d %s", w.Code, w.Body)
+	}
+	if w := do(setsRouter(t, "a@x.com", st2), http.MethodGet, ""); strings.Contains(w.Body.String(), "Stress test") {
+		t.Fatalf("evento apareceu nos conjuntos: %s", w.Body)
+	}
+	if w := do(router("a@x.com", st2), http.MethodPut, `{"sets":[]}`); w.Code != 400 {
+		t.Fatalf("campo errado deveria dar 400, deu %d", w.Code)
+	}
+}

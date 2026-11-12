@@ -2192,6 +2192,9 @@ func (s *Server) setupRoutes() {
 	monitoringSets := handlers.NewMonitoringSetsHandler(s.localSettingsStore)
 	api.GET("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Get)
 	api.PUT("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Put)
+	monitoringEvents := handlers.NewMonitoringEventsHandler(s.localSettingsStore)
+	api.GET("/monitoring/report-events", rbacMiddleware.InjectUserEmail(), monitoringEvents.Get)
+	api.PUT("/monitoring/report-events", rbacMiddleware.InjectUserEmail(), monitoringEvents.Put)
 
 	// Rotas V2 (diretas)
 	monitoringV2 := api.Group("/monitoring/v2")

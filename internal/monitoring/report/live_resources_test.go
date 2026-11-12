@@ -58,7 +58,14 @@ func fakeCluster() *promFake {
 	const outro = "frete-hub-regionalizado-6c8d7f5b4-zzzzz" // NÃO é do frete-hub
 	const gib = 1024 * 1024 * 1024
 	const mbps = 1024 * 1024
+	withReason := func(p map[string]string, reason string) map[string]string {
+		p["reason"] = reason
+		return p
+	}
 	return &promFake{data: map[string][]sample{
+		"kube_pod_container_status_last_terminated_reason":                          {{withReason(pod("calc", hub1), "OOMKilled"), "1"}, {withReason(pod("calc", hub2), "OOMKilled"), "1"}, {withReason(pod("calc", hub2), "Error"), "1"}, {withReason(pod("calc", outro), "Error"), "1"}},
+		"kube_pod_status_phase":                                                     {{pod("calc", hub1), "1"}, {pod("calc", hub2), "0"}, {pod("calc", outro), "1"}},
+		"kube_pod_status_ready":                                                     {{pod("calc", hub1), "0"}, {pod("calc", hub2), "1"}},
 		"kube_horizontalpodautoscaler_spec_max_replicas":                            {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "72"}},
 		"kube_horizontalpodautoscaler_spec_min_replicas":                            {{map[string]string{"namespace": "calc", "deployment": "frete-hub"}, "10"}},
 		"container_cpu_cfs_throttled_periods_total":                                 {{pod("calc", hub1), "10"}, {pod("calc", hub2), "30"}, {pod("calc", outro), "500"}},
@@ -112,14 +119,14 @@ func TestLiveResourcesUmaChamadaPorMetricaPorCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.queries) != 16 {
-		t.Errorf("%d consultas, esperado 16 (uma por métrica, não por aplicação)", len(f.queries))
+	if len(f.queries) != 19 {
+		t.Errorf("%d consultas, esperado 19 (uma por métrica, não por aplicação)", len(f.queries))
 	}
 	for _, q := range f.queries {
 		if !strings.Contains(q, `namespace=~"calc|outro-ns"`) {
 			t.Errorf("a consulta deveria cobrir os dois namespaces: %s", q)
 		}
-		if strings.Contains(q, "sum by (namespace,pod)") && !strings.Contains(q, "max by (namespace,pod,container)") && !strings.Contains(q, "max by (namespace,pod,interface)") {
+		if strings.Contains(q, "sum by (namespace,pod)") && !strings.Contains(q, "max by (namespace,pod,container)") && !strings.Contains(q, "max by (namespace,pod,interface)") && !strings.Contains(q, "max by (namespace,pod,phase)") && !strings.Contains(q, "max by (namespace,pod,condition)") && !strings.Contains(q, "max by (namespace,pod,container,reason)") {
 			t.Errorf("série duplicada do kube-state-metrics/cAdvisor dobraria a soma: %s", q)
 		}
 	}
@@ -292,5 +299,25 @@ func TestLiveResourcesConsultasNovasSaoPromQLValido(t *testing.T) {
 	}
 	if !strings.Contains(qs["hpa_max"], " or ") || !strings.Contains(qs["hpa_max"], "scaletargetref_name") {
 		t.Errorf("o HPA deve casar pelo alvo e cair no nome: %s", qs["hpa_max"])
+	}
+}
+
+func TestLiveResourcesMotivoDosRestartsEPodsNaoProntos(t *testing.T) {
+	rs, notes, err := CollectLiveResources(context.Background(), fakeCluster(), []Item{{"c1", "calc", "frete-hub"}, {"c1", "calc", "frete-b2c"}}, time.Now())
+	if err != nil || len(notes) != 0 {
+		t.Fatalf("err=%v notes=%v", err, notes)
+	}
+	r := rs[0]
+	if r.RestartReasons["OOMKilled"] != 2 || r.RestartReasons["Error"] != 1 || len(r.RestartReasons) != 2 {
+		t.Errorf("razões por pods do Deployment (o pod de outro deployment não entra): %v", r.RestartReasons)
+	}
+	if r.PodsPending == nil || *r.PodsPending != 1 {
+		t.Errorf("pendentes (hub1=1, hub2=0): %v", r.PodsPending)
+	}
+	if r.PodsNotReady == nil || *r.PodsNotReady != 1 {
+		t.Errorf("não prontos (hub1=0, hub2=1): %v", r.PodsNotReady)
+	}
+	if rs[1].RestartReasons != nil || rs[1].PodsPending != nil || rs[1].PodsNotReady != nil {
+		t.Errorf("aplicação sem pods fica sem dado: %+v", rs[1])
 	}
 }

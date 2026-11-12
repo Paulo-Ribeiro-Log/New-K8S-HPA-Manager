@@ -10,6 +10,9 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetricsLivePanel } from "@/components/MetricsLivePanel";
+import { MetricsEventPicker } from "@/components/MetricsEventPicker";
+import { MetricsComparePanel } from "@/components/MetricsComparePanel";
+import { useReportEvents } from "@/hooks/useReportEvents";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
@@ -381,6 +384,7 @@ export function MetricsReportTab() {
   // ── contexto de node (pool, uso dos nodes, throttling): opt-in, custa consultas a mais ───
   const [nodeContext, setNodeContext] = useState<boolean>(() => load(NODE_CONTEXT_KEY, parseNodeContext));
   useEffect(() => save(NODE_CONTEXT_KEY, nodeContext), [nodeContext]);
+  const reportEvents = useReportEvents();
   const [extras, setExtras] = useState<boolean>(() => load(EXTRAS_KEY, parseExtras));
   useEffect(() => save(EXTRAS_KEY, extras), [extras]);
 
@@ -523,7 +527,7 @@ export function MetricsReportTab() {
           ))}
         </div>
         {view === "live" ? (
-          <MetricsLivePanel items={items} percentiles={percentiles} onPercentiles={setPercentiles} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
+          <MetricsLivePanel items={items} percentiles={percentiles} onPercentiles={setPercentiles} events={reportEvents.events} onSaveEvent={reportEvents.save} onRemoveEvent={reportEvents.remove} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
         ) : (
           <>
         <section className="rounded-md border border-border p-3 space-y-2">
@@ -537,6 +541,18 @@ export function MetricsReportTab() {
             <Button size="sm" variant={mode === "custom" ? "default" : "outline"} className="h-7 text-xs" onClick={() => setMode("custom")}>
               Personalizado
             </Button>
+            <MetricsEventPicker
+              events={reportEvents.events}
+              current={windowIso}
+              disabled={running}
+              onApply={(s, e) => {
+                setMode("custom");
+                setStartLocal(isoToZonedLocal(Date.parse(s)));
+                setEndLocal(isoToZonedLocal(Date.parse(e)));
+              }}
+              onSave={reportEvents.save}
+              onRemove={reportEvents.remove}
+            />
           </div>
           {mode === "custom" && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -640,6 +656,7 @@ export function MetricsReportTab() {
             warnings={result.warnings ?? []}
           />
         )}
+        {result && result.rows.length > 0 && <MetricsComparePanel key={job.data?.id} result={result} events={reportEvents.events} />}
           </>
         )}
       </main>

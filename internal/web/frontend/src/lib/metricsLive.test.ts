@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  normalizeLive, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
+  normalizeLive, fmtRestartReasons, podsLevel, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
   parseLiveRange, parseLiveRefresh, parseProjection, projectTrend, projectedPercentile, type LiveSeries,
 } from "./metricsLive";
 
@@ -370,5 +370,21 @@ describe("buildNetworkRows (gráfico de rede)", () => {
   it("normalizeLive troca links nulos por lista vazia", () => {
     const r = normalizeLive({ series: [{ item: {}, times: null, rps: null, err_4xx_rps: null, err_5xx_rps: null, links: null }], warnings: null } as any);
     expect(r.series[0].links).toEqual([]);
+  });
+});
+
+describe("motivo dos restarts e pods pendentes", () => {
+  it("lista as razões da mais frequente para a menos", () => {
+    expect(fmtRestartReasons({ Error: 1, OOMKilled: 2 })).toBe("OOMKilled ×2, Error ×1");
+    expect(fmtRestartReasons({ B: 1, A: 1 })).toBe("A ×1, B ×1");
+    expect(fmtRestartReasons(null)).toBe("");
+    expect(fmtRestartReasons({})).toBe("");
+  });
+  it("pods pendentes ou não prontos dão alerta", () => {
+    expect(podsLevel(null, null)).toBe("info");
+    expect(podsLevel(0, 0)).toBe("ok");
+    expect(podsLevel(1, 0)).toBe("warn");
+    expect(podsLevel(0, 3)).toBe("warn");
+    expect(podsLevel(null, 2)).toBe("warn");
   });
 });

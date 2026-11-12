@@ -3,6 +3,13 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório de Métricas: eventos nomeados, comparação, resumo da sessão, motivo dos restarts e memória da aba (Novembro 2026)
+
+- **Motivo dos restarts e pods:** 3 consultas novas por cluster (19 no total, validadas com o parser oficial do PromQL): última razão de término só dos containers que reiniciaram em 15 min (`restart_reasons`), pods `Pending` e pods não prontos. A linha Pods só aparece quando há algum.
+- **Resumo da sessão** (`metricsLiveSession.ts`): agregados por aplicação a cada atualização (sem guardar séries) e exportação em Markdown e CSV; indicador de memória JS da aba (`performance.memory`, só Chromium).
+- **Eventos nomeados:** janelas de tempo salvas por usuário no servidor (`GET/PUT /api/v1/monitoring/report-events`, mesmo armazenamento dos conjuntos salvos), usadas como período no Relatório e no Tempo real.
+- **Comparação no Relatório:** `MetricsComparePanel` coleta os mesmos alvos na janela do evento e compara RPS médio, pico de RPS, pico de latência, % de erros e pico de CPU/memória (`metricsCompare.ts`); totais brutos ficam de fora porque dependem do tamanho da janela.
+
 ### Relatório de Métricas: opção "Réplicas, HPA e rede" no Relatório (Novembro 2026)
 
 Caixa opt-in no Relatório (`extras` no pedido, `internal/monitoring/report/extras.go`): réplicas disponíveis e desejadas (máx/mín/méd), limites do HPA, restarts somados na janela (`increase` com janela igual ao passo) e rede (rx, tx e descartes+erros), tudo do Prometheus, 8 consultas por aplicação validadas com o parser oficial do PromQL. Seis colunas novas na tabela e nas exportações Markdown, CSV e PDF; sem dado = "sem dado" (vazio no CSV), nunca zero. O throttling de CPU continua no contexto de node.
