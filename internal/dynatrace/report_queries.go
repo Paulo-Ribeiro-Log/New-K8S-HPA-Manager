@@ -86,7 +86,7 @@ func (c *Client) ResolveEntryServices(ctx context.Context, cluster, namespace, w
 	if err != nil {
 		return nil, nil, err
 	}
-	return svcs, append([]string{"Deployment resolvido por " + via}, skipNotes...), nil
+	return svcs, append([]string{"Serviços do Dynatrace localizados por " + via + " (só a localização usa isso; as métricas vêm do Dynatrace)"}, skipNotes...), nil
 }
 
 // pgNameLookup é o resultado do caminho 1.

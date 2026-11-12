@@ -16,7 +16,7 @@ Gera um **relatório por aplicação** numa janela de tempo que você escolhe: r
    - **Deployments:** seleção múltipla dos deployments dos namespaces escolhidos, agrupados por namespace e com as réplicas prontas. Tirar um namespace tira os deployments dele da seleção.
    Em cada seletor as marcações ficam em **rascunho**: só valem ao clicar em **Aplicar** (**Cancelar**, ou fechar o seletor, descarta). Ao trocar o cluster, o aviso lembra que os namespaces e deployments do alvo serão limpos.
 2. O botão **+** (no topo, ou **Adicionar alvo** embaixo) cria outro alvo, por exemplo para incluir um segundo cluster. O **×** remove o alvo e a seta recolhe o cartão; o resumo de uma linha ("5 deployments em 2 namespaces") continua visível. Esta aba **não depende** da lista de HPAs monitorados nem de nenhuma outra aba. Os alvos ficam lembrados no navegador.
-3. Para repetir uma seleção, digite um nome e use o botão de **salvar conjunto**; o conjunto volta pelo seletor **Conjuntos salvos** (substitui os alvos atuais; ficam no seu navegador).
+3. Para repetir uma seleção, digite um nome e use o botão de **salvar conjunto**; o conjunto volta pelo seletor **Conjuntos salvos** (substitui os alvos atuais; ficam salvos no servidor, por usuário, e sobrevivem a reinício; o navegador guarda só uma cópia).
 4. Escolha a **janela de tempo**: um atalho (1 h, 3 h, 6 h, 12 h, 24 h, 7 dias, 14 dias) ou **Personalizado**, com data e hora de início e de fim em horário de Brasília (por exemplo, de 01/10/2026 23:00 até 02/10/2026 04:30). A tela mostra a **resolução** que será usada e os avisos.
 5. Em **Percentis de latência (pico)** marque quais coletar: **P50**, **P95** e/ou **P99** (o padrão é só o P99; sempre fica ao menos um). **Só os marcados são consultados** e aparecem como colunas; a escolha fica lembrada no navegador. Marque também **Contexto de node** se quiser saber em que node pool a aplicação rodou e como estavam os nodes (veja a seção abaixo; é opcional porque faz mais consultas ao Prometheus). Clique em **Coletar**. O andamento aparece ("2 de 5 concluídas"); **Cancelar** interrompe.
 6. O resultado vem em **árvore**: **cluster → namespace → deployment**. Cada nível recolhe com um clique (há **Expandir tudo** e **Recolher tudo**) e o cabeçalho mostra quantas aplicações há e quantas estão com 🔴, ⚠️ ou erro de coleta, para achar o problema sem abrir tudo.
@@ -61,6 +61,21 @@ A caixa **Contexto de node** acrescenta quatro colunas, para ajudar a interpreta
 
 **Retenção:** CPU, memória e o contexto de node vêm do **Prometheus, que guarda cerca de 14 dias**. Numa janela mais antiga essas colunas saem "sem dado" (o tráfego, que vem do Dynatrace, continua). A tela avisa **antes de coletar**, logo abaixo da janela.
 
+## Tempo real
+
+A sub-aba **Tempo real** (ao lado de **Relatório**, no topo) acompanha as aplicações marcadas no painel de alvos, com as métricas do Dynatrace, num **cartão por aplicação**, agrupado por cluster: **RPS** atual, **barras do RPS** no período (com o máximo), **erros 5xx e 4xx** (contagem no período, como 19.197, mais a taxa por segundo de agora), **latências** (P50, P95 e P99, os mesmos percentis marcados no relatório) e a **tendência**. Cada linha tem a situação à direita: OK, ALERTA ou ERRO (P99 acima de 1 s, qualquer 5xx é ERRO e qualquer 4xx é ALERTA, a mesma regra do relatório). O ícone de gráfico no cartão abre os **gráficos completos** (RPS, latência e erros, com a projeção).
+
+- **Itens do Prometheus:** acima do RPS o cartão mostra **réplicas** (disponíveis / desejadas; menos disponíveis que desejadas é ERRO), **restarts** dos últimos 15 min (qualquer um é ALERTA), **CPU** e **memória** (valor total dos pods e a % do limit e do request; acima de 70% do limit é ALERTA e acima de 85% é ERRO; sem limit definido não há veredito). A caixa **Réplicas, restarts, CPU e memória** liga e desliga esse bloco (9 consultas por cluster a cada atualização). **P50, P95 e P99, tráfego e erros vêm sempre do Dynatrace**, nunca do Prometheus. A % é a soma do uso dividida pela soma do limit (ou do request) dos pods do Deployment; se só alguns containers têm limit, a % do limit sai maior que a real. Se o Prometheus não responder, o cartão mantém os dados do Dynatrace e avisa na nota; se o Dynatrace falhar, o cartão mantém os itens do Prometheus.
+- **Parar e Iniciar:** o botão **Parar** interrompe as consultas ao Dynatrace; os cartões ficam como estavam. Ao parar, mudar período ou seleção só vale ao **Iniciar** ou em **Atualizar agora**.
+- **Período:** "últimos X" como no Grafana (5 min, 15 min, 30 min, 1 h, 3 h, 6 h, 12 h, 24 h, 2 dias, 7 dias) ou **Personalizado** (início e fim). O período relativo termina sempre agora.
+- **Atualização:** a cada **1 a 5 minutos** (ou pausada), com a contagem até a próxima. O Dynatrace entrega dado de 1 em 1 minuto, por isso não há intervalo menor. A atualização para sozinha quando o navegador está em segundo plano. O período personalizado é passado e não atualiza.
+- **Barras:** a resposta vem reduzida a no máximo 120 pontos por série; em períodos longos, cada barra agrupa vários intervalos (a tela diz "cada barra = N min"): **média** para RPS e erros, **maior valor** para a latência.
+- **Último intervalo:** só aparece quando já terminou. O Dynatrace entrega o minuto corrente incompleto, e ele pareceria uma queda falsa de tráfego.
+- **Tendência (projeção sazonal):** usa a **curva de ontem no mesmo horário**, escalada pelo nível de hoje (fator hoje/ontem dos últimos 30 min), estendida por +15 min, +30 min ou +1 h (ou desligada). O cartão diz "base: ontem"; sem dado de ontem utilizável cai numa **reta ajustada** ao período ("reta"). É extrapolação, **não previsão**: se ontem foi atípico, a projeção herda isso. A base de ontem é buscada a cada 5 min (uma consulta a mais por métrica e cluster).
+- **Selos de status:** no topo, ERRO/ALERTA/OK/INFO com a contagem de aplicações; o tooltip lista quais e o motivo (P99, 5xx, 4xx, falha de coleta).
+- **Minimizar e remover:** a seta no nome do cluster esconde os cartões dele (mostra o pior nível); o **X** do cartão remove a aplicação do acompanhamento **e a desmarca da seleção** do painel de alvos.
+- **Custo:** uma consulta por métrica **por cluster** (todas as aplicações do cluster juntas), a cada atualização. Falta de dado aparece como lacuna, nunca como zero.
+
 ## Janelas antigas e pico aproximado
 
 As fontes guardam o detalhe fino por pouco tempo (no Dynatrace, em geral 1 minuto por cerca de 14 dias, 5 minutos por cerca de 28 dias e 1 hora por cerca de 400 dias). Numa janela antiga, **picos curtos são suavizados**. Quando isso acontece, a tela avisa **"pico aproximado"** e mostra a resolução usada; o sinal ≈ aparece ao lado do RPS. Janela mais antiga que a retenção da fonte não é aceita.
@@ -71,7 +86,7 @@ As fontes guardam o detalhe fino por pouco tempo (no Dynatrace, em geral 1 minut
 
 ## Impacto
 
-**Somente leitura.** Não altera nada nos clusters, no Dynatrace nem no Prometheus. Os relatórios ficam só na memória do servidor por cerca de 1 hora; a seleção e os conjuntos ficam no seu navegador. Listar namespaces e deployments faz leituras no cluster, como as outras abas.
+**Somente leitura.** Não altera nada nos clusters, no Dynatrace nem no Prometheus. Os relatórios ficam só na memória do servidor por cerca de 1 hora; a seleção fica no seu navegador e os conjuntos salvos no servidor (por usuário). Listar namespaces e deployments faz leituras no cluster, como as outras abas.
 
 ## Cuidados e erros comuns
 

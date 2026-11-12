@@ -403,3 +403,65 @@ func TestRelatorioPlanoAvisaRetencaoDoPrometheus(t *testing.T) {
 		t.Errorf("janela recente não tem aviso: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestTempoRealDevolveSeriesSemEstado(t *testing.T) {
+	r, h := montaRelatorios(t, fakeDTAPI{}, nil)
+	r.POST("/live", h.Live)
+	now := time.Now().UTC()
+	body := map[string]any{
+		"percentiles": []int{99},
+		"items":       []map[string]string{{"cluster": "c1", "namespace": "ns", "workload": "frete-hub"}},
+		"start":       now.Add(-time.Hour).Format(time.RFC3339),
+		"end":         now.Format(time.RFC3339),
+	}
+	w := chamar(r, http.MethodPost, "/live", "u@x", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var res report.LiveResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Series) != 1 || res.Series[0].Workload != "frete-hub" || res.Resolution != "1m" {
+		t.Errorf("resposta: %+v", res)
+	}
+	// NaN do Dynatrace não pode quebrar o JSON (ficaria 500): chegou até aqui, então virou nulo
+
+	body["items"] = []map[string]string{}
+	if w := chamar(r, http.MethodPost, "/live", "u@x", body); w.Code != http.StatusBadRequest {
+		t.Errorf("sem itens: status %d, esperado 400", w.Code)
+	}
+}
+
+func TestTempoRealComRecursosDoPrometheus(t *testing.T) {
+	r, h := montaRelatorios(t, fakeDTAPI{}, nil)
+	r.POST("/live", h.Live)
+	now := time.Now().UTC()
+	body := map[string]any{
+		"percentiles": []int{50, 99},
+		"resources":   true,
+		"items":       []map[string]string{{"cluster": "c1", "namespace": "ns", "workload": "frete-hub"}},
+		"start":       now.Add(-time.Hour).Format(time.RFC3339),
+		"end":         now.Format(time.RFC3339),
+	}
+	w := chamar(r, http.MethodPost, "/live", "u@x", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var res report.LiveResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	// o fake de Prometheus responde "consumo" a qualquer consulta; o que importa aqui é o contrato:
+	// o campo existe quando pedido e some quando não é pedido
+	if res.Series[0].Resources == nil {
+		t.Error("com resources=true a série deve trazer o bloco do Prometheus")
+	}
+	delete(body, "resources")
+	w = chamar(r, http.MethodPost, "/live", "u@x", body)
+	var sem report.LiveResult
+	_ = json.Unmarshal(w.Body.Bytes(), &sem)
+	if sem.Series[0].Resources != nil {
+		t.Error("sem resources o Prometheus não deve ser consultado")
+	}
+}

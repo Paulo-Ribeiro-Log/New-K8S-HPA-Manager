@@ -3,6 +3,7 @@
 // API Client - connects to Go backend
 
 import type { ReportItem, ReportJob, ReportPlanResponse } from "@/lib/metricsReport";
+import type { LiveResult } from "@/lib/metricsLive";
 import type {
   Cluster,
   ClusterInfo,
@@ -6035,6 +6036,19 @@ class APIClient {
 
   async cancelMetricsReport(id: string): Promise<{ id: string; state: string }> {
     return this.request(`/monitoring/reports/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  // Tempo real do relatório: séries (RPS, erros/s, P50/P95/P99) do Dynatrace numa janela que termina agora.
+  async metricsLive(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; max_points?: number; resources?: boolean }): Promise<LiveResult> {
+    return this.request("/monitoring/live", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  // Conjuntos salvos do Relatório de Métricas, por usuário, no servidor (sobrevivem a reinício e troca de navegador).
+  async metricsReportSetsGet(): Promise<{ sets: unknown }> {
+    return this.request("/monitoring/report-sets");
+  }
+  async metricsReportSetsPut(sets: unknown[]): Promise<{ saved: number }> {
+    return this.request("/monitoring/report-sets", { method: "PUT", body: JSON.stringify({ sets }) });
   }
 
   // Fecha ou reabre o PR no GitHub (grava em nome do PAT do perfil). PR mergeado o servidor recusa (409).

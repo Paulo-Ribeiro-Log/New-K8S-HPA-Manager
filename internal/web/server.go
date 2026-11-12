@@ -89,7 +89,8 @@ type Server struct {
 	cloudAccountHintsHandler *handlers.CloudAccountHintsHandler
 
 	// AI Tokens Store (compartilhado com Dynatrace handler)
-	aiTokensStore *storage.UserTokensStore
+	aiTokensStore      *storage.UserTokensStore
+	localSettingsStore *storage.LocalSettingsStore // conjuntos salvos do Relatório de Métricas
 
 	// AI History Store (compartilhado com Dynatrace handler)
 	aiHistoryStore *storage.AIHistoryStore
@@ -555,10 +556,11 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
 		monitoringEngineV2:        monitoringEngineV2,
-		aiHandler:                 aiHandler,                 // Pode ser nil se AI estiver desabilitado
-		aiTokensHandler:           aiTokensHandler,           // Gerencia tokens AI dos usuários
-		cloudAccountHintsHandler:  cloudAccountHintsHandler,  // Lembrete de conta .ca por provider
-		aiTokensStore:             aiTokensStore,             // Compartilhado com Dynatrace handler
+		aiHandler:                 aiHandler,                // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:           aiTokensHandler,          // Gerencia tokens AI dos usuários
+		cloudAccountHintsHandler:  cloudAccountHintsHandler, // Lembrete de conta .ca por provider
+		aiTokensStore:             aiTokensStore,            // Compartilhado com Dynatrace handler
+		localSettingsStore:        localSettingsStore,
 		aiHistoryStore:            aiHistoryStore,            // Compartilhado com Dynatrace handler
 		kubeManagerWrapper:        kubeManagerWrapper,        // Para predictions RBAC
 		awxHandler:                awxHandler,                // AWX Integration (certificados TLS)
@@ -2184,6 +2186,11 @@ func (s *Server) setupRoutes() {
 		monitoringReportsGroup.GET("/:id", monitoringReports.Get)
 		monitoringReportsGroup.DELETE("/:id", monitoringReports.Cancel)
 	}
+	// Tempo real do relatório (séries do Dynatrace, consulta síncrona repetida pela tela)
+	api.POST("/monitoring/live", rbacMiddleware.InjectUserEmail(), monitoringReports.Live)
+	monitoringSets := handlers.NewMonitoringSetsHandler(s.localSettingsStore)
+	api.GET("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Get)
+	api.PUT("/monitoring/report-sets", rbacMiddleware.InjectUserEmail(), monitoringSets.Put)
 
 	// Rotas V2 (diretas)
 	monitoringV2 := api.Group("/monitoring/v2")

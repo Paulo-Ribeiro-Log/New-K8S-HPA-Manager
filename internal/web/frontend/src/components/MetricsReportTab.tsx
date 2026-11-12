@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MetricsLivePanel } from "@/components/MetricsLivePanel";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
@@ -19,7 +20,7 @@ import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
 import { buildCSV, buildMarkdown, downloadText, exportReportPDF, fileStamp, type CsvDelimiter } from "@/lib/metricsReportExport";
 import {
-  FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
+  FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, mergeSets, removePickedItem, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
   fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, parsePercentiles, parseSets, parseTargets, percentileValue, pickKey, presetWindow, setTargetCluster, targetItems, targetSummary, togglePercentile,
   setTargetNamespaces, setTargetPicked, upsertSet, zonedLocalToISO, type ReportAlerts, type ReportResult, type ReportRow, type SavedSet, type Target, type WindowPreset,
 } from "@/lib/metricsReport";
@@ -313,6 +314,33 @@ export function MetricsReportTab() {
   useEffect(() => save(TARGETS_KEY, targets), [targets]);
   const [sets, setSets] = useState<SavedSet[]>(() => load(SAVED_SETS_KEY, parseSets));
   const [setName, setSetName] = useState("");
+  // o servidor é a fonte dos conjuntos (o navegador é só cache): ao abrir, junta os dois e sobe o que faltar
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .metricsReportSetsGet()
+      .then((r) => {
+        if (cancelled) return;
+        const server = parseSets(JSON.stringify(r.sets ?? []));
+        setSets((local) => {
+          const merged = mergeSets(server, local);
+          save(SAVED_SETS_KEY, merged);
+          if (merged.length !== server.length) apiClient.metricsReportSetsPut(merged).catch(() => {});
+          return merged;
+        });
+      })
+      .catch(() => {
+        /* servidor indisponível: segue com o cache do navegador */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  function persistSets(next: SavedSet[]) {
+    setSets(next);
+    save(SAVED_SETS_KEY, next);
+    apiClient.metricsReportSetsPut(next).catch(() => toast.error("Não consegui gravar os conjuntos no servidor (ficaram só neste navegador)"));
+  }
 
   const clusters = useQuery({ queryKey: ["metrics-report-clusters"], queryFn: () => apiClient.getClusters(), staleTime: 5 * 60 * 1000, retry: false });
   const info = useMemo<ClusterInfo>(() => {
@@ -335,18 +363,18 @@ export function MetricsReportTab() {
   function saveSet() {
     if (!setName.trim() || items.length === 0) return;
     const next = upsertSet(sets, setName, targets);
-    setSets(next);
-    save(SAVED_SETS_KEY, next);
+    persistSets(next);
     toast.success(`Conjunto "${setName.trim()}" salvo (${items.length})`);
     setSetName("");
   }
   function removeSet(name: string) {
     const next = sets.filter((s) => s.name !== name);
-    setSets(next);
-    save(SAVED_SETS_KEY, next);
+    persistSets(next);
   }
 
   // ── percentis de latência a coletar (P50, P95 e/ou P99; lembrados no navegador) ───
+  // sub-abas: o relatório por janela (coleta única) e o acompanhamento em tempo real
+  const [view, setView] = useState<"report" | "live">("report");
   const [percentiles, setPercentiles] = useState<number[]>(() => load(PERCENTILES_KEY, parsePercentiles));
   useEffect(() => save(PERCENTILES_KEY, percentiles), [percentiles]);
 
@@ -485,6 +513,17 @@ export function MetricsReportTab() {
 
       {/* ── Janela, coleta e relatório ── */}
       <main className="flex-1 min-w-0 overflow-y-auto p-4 space-y-4">
+        <div className="flex gap-1 border-b border-border -mt-1 pb-2">
+          {([["report", "Relatório"], ["live", "Tempo real"]] as const).map(([id, label]) => (
+            <Button key={id} size="sm" variant={view === id ? "default" : "ghost"} className="h-7 text-xs" onClick={() => setView(id)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+        {view === "live" ? (
+          <MetricsLivePanel items={items} percentiles={percentiles} onPercentiles={setPercentiles} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
+        ) : (
+          <>
         <section className="rounded-md border border-border p-3 space-y-2">
           <div className="text-sm font-medium">Janela de tempo</div>
           <div className="flex flex-wrap gap-1.5">
@@ -590,6 +629,8 @@ export function MetricsReportTab() {
             plan={result.plan}
             warnings={result.warnings ?? []}
           />
+        )}
+          </>
         )}
       </main>
     </div>

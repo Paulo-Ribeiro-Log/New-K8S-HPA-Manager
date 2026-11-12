@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
+import { mergeSets, removePickedItem,
   DEFAULT_PERCENTILES, allItems, fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, groupRows, fmtInt, fmtLatency, fmtPct, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, parseSets, parseTargets, pickKey, presetWindow,
   parsePercentiles, percentileValue, togglePercentile, setTargetCluster, setTargetNamespaces, setTargetPicked, targetItems, targetSummary, togglePicked, toggleTargetNamespace, upsertSet,
   zonedLocalToISO, type ReportRow, type ReportTraffic, type Target,
@@ -259,5 +259,26 @@ describe("contexto de node", () => {
     expect(fmtThrottle({ max: 0.00506, min: 0, avg: 0.0007 })).toBe("0.01% / 0.00%");
     expect(fmtThrottle({ max: 12.345, min: 1, avg: 3.2 })).toBe("12.35% / 3.20%");
     expect(fmtThrottle(null)).toBe("sem dado");
+  });
+});
+
+describe("mergeSets", () => {
+  const t = [{ id: "1", cluster: "c", namespaces: ["n"], picked: ["w"] }] as any;
+  it("junta servidor e navegador sem perder nenhum e com o servidor valendo no mesmo nome", () => {
+    const server = [{ name: "b", targets: t }, { name: "a", targets: t }];
+    const local = [{ name: "a", targets: [] as any }, { name: "c", targets: t }];
+    const m = mergeSets(server, local);
+    expect(m.map((s) => s.name)).toEqual(["a", "b", "c"]);
+    expect(m.find((s) => s.name === "a")!.targets).toBe(t);
+  });
+});
+
+describe("removePickedItem", () => {
+  it("tira o deployment da seleção do cluster e não mexe nos outros", () => {
+    const a = { id: "1", cluster: "c1", namespaces: ["n"], picked: ["n/x", "n/y"] };
+    const b = { id: "2", cluster: "c2", namespaces: ["n"], picked: ["n/x"] };
+    const r = removePickedItem([a, b], { cluster: "c1", namespace: "n", workload: "x" });
+    expect(r[0].picked).toEqual(["n/y"]);
+    expect(r[1]).toBe(b);
   });
 });

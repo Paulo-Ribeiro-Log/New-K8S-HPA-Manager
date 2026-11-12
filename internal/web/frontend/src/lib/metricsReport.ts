@@ -165,6 +165,12 @@ export function allItems(targets: Target[]): ReportItem[] {
   return [...seen.values()].sort((a, b) => cmp(a.cluster, b.cluster) || cmp(a.namespace, b.namespace) || cmp(a.workload, b.workload));
 }
 
+/** Tira um deployment da seleção, em todos os alvos do mesmo cluster. Os demais alvos não mudam. */
+export function removePickedItem(targets: Target[], item: ReportItem): Target[] {
+  const key = pickKey(item.namespace, item.workload);
+  return targets.map((t) => (t.cluster === item.cluster && t.picked.includes(key) ? { ...t, picked: t.picked.filter((k) => k !== key) } : t));
+}
+
 /** Troca o cluster do alvo; namespaces e deployments eram do cluster anterior e são descartados. */
 export function setTargetCluster(t: Target, cluster: string): Target {
   return cluster === t.cluster ? t : { ...t, cluster, namespaces: [], picked: [] };
@@ -265,6 +271,15 @@ export function upsertSet(sets: SavedSet[], name: string, targets: Target[]): Sa
   const useful = targets.filter((t) => targetItems(t).length > 0);
   if (!n || useful.length === 0) return sets;
   return [...sets.filter((s) => s.name !== n), { name: n, targets: useful.map((t) => ({ ...t, namespaces: [...t.namespaces], picked: [...t.picked] })) }].sort((a, b) => cmp(a.name, b.name));
+}
+
+/**
+ * Junta os conjuntos do servidor com os do navegador (migração e uso em mais de um navegador): vale o
+ * do servidor quando o nome existe nos dois; o que só existe no navegador entra. Nunca perde conjunto.
+ */
+export function mergeSets(server: SavedSet[], local: SavedSet[]): SavedSet[] {
+  const names = new Set(server.map((s) => s.name));
+  return [...server, ...local.filter((s) => !names.has(s.name))].sort((a, b) => cmp(a.name, b.name));
 }
 
 // ── janela de tempo em fuso ────────────────────────────────────────────────────────────────────────
