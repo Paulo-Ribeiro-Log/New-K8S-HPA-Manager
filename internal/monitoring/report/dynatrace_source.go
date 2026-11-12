@@ -21,9 +21,11 @@ const (
 	selRequests = `builtin:service.requestCount.total:splitBy("dt.entity.service"):sum`
 	sel4xx      = `builtin:service.errors.fourxx.count:splitBy("dt.entity.service"):sum`
 	sel5xx      = `builtin:service.errors.fivexx.count:splitBy("dt.entity.service"):sum`
-	selP50      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(50)`
-	selP95      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(95)`
-	selP99      = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(99)`
+	// média do tempo de resposta (µs; a tela converte para ms). Agregada entre serviços PONDERADA pelas requisições.
+	selAvg = `builtin:service.response.time:splitBy("dt.entity.service"):avg`
+	selP50 = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(50)`
+	selP95 = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(95)`
+	selP99 = `builtin:service.response.time:splitBy("dt.entity.service"):percentile(99)`
 )
 
 func toSeries(n dynatrace.NullableSeries) Series { return Series{Times: n.Times, Values: n.Values} }
@@ -57,6 +59,8 @@ func DynatraceTraffic(api DynatraceAPI, floor float64, percentiles []int) func(c
 			"req": {selRequests, plan.DTResolution, 1},
 			"4xx": {sel4xx, plan.DTResolution, 1},
 			"5xx": {sel5xx, plan.DTResolution, 1},
+			// a média é barata e usa a mesma resolução das requisições (os pesos têm de cair nos mesmos instantes)
+			"avg": {selAvg, plan.DTResolution, 0.001},
 		}
 		// só os percentis escolhidos (microssegundos -> ms; resolução de no mínimo 5 min)
 		for _, p := range percentiles {
@@ -105,7 +109,7 @@ func DynatraceTraffic(api DynatraceAPI, floor float64, percentiles []int) func(c
 		for _, s := range svcs {
 			st = append(st, ServiceTraffic{ID: s.ID, Name: s.Name, Type: s.Type,
 				Requests: pick("req", s.ID), Err4xx: pick("4xx", s.ID), Err5xx: pick("5xx", s.ID),
-				P50Ms: pick("p50", s.ID), P95Ms: pick("p95", s.ID), P99Ms: pick("p99", s.ID)})
+				AvgMs: pick("avg", s.ID), P50Ms: pick("p50", s.ID), P95Ms: pick("p95", s.ID), P99Ms: pick("p99", s.ID)})
 		}
 		tr := AggregateTraffic(st, plan.DTRes.Seconds(), floor)
 		tr.PeakApprox = plan.PeakApprox

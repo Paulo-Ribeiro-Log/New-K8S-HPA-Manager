@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { EXTRAS_COLUMNS } from "./metricsReport";
 import { NODE_COLUMNS, buildCSV, buildReportPDF, buildExportTable, buildMarkdown, csvText, escapeMdCell, fileStamp, fmtWhen, pdfSafe } from "./metricsReportExport";
 import type { ReportResult, ReportRow } from "./metricsReport";
 
 const traffic = (o: Partial<NonNullable<ReportRow["traffic"]>> = {}): NonNullable<ReportRow["traffic"]> => ({
-  source: "dynatrace", requests: 2087668.4, max_rps: 158.74, p50_peak_ms: 45.2, p95_peak_ms: 820, p99_peak_ms: 1501.3, p99_service: "FreteController",
+  source: "dynatrace", requests: 2087668.4, max_rps: 158.74, avg_ms: 120.4, p50_peak_ms: 45.2, p95_peak_ms: 820, p99_peak_ms: 1501.3, p99_service: "FreteController",
   err_4xx: 181344, err_5xx: 9, services: ["CotacaoController", "FreteController"], peak_approx: false, resolution: "1m", ...o,
 });
 const usage = () => ({
@@ -42,7 +43,7 @@ describe("buildExportTable", () => {
 
   it("tem só as colunas dos percentis coletados, na ordem", () => {
     expect(t.columns).toEqual([
-      "Aplicação", "Total Requests", "Max RPS", "Latência P50 (pico)", "Latência P95 (pico)", "Latência P99 (pico)", "Erros 4xx", "Erros 5xx",
+      "Aplicação", "Total Requests", "Max RPS", "Resposta média", "Latência P50 (pico)", "Latência P95 (pico)", "Latência P99 (pico)", "Erros 4xx", "Erros 5xx",
       "CPU % do request (Máx/Mín/Méd)", "CPU % do limit (Máx/Mín/Méd)", "Mem % do request (Máx/Mín/Méd)", "Mem % do limit (Máx/Mín/Méd)",
     ]);
     const so99 = buildExportTable(fixture({ percentiles: [99] }));
@@ -55,14 +56,14 @@ describe("buildExportTable", () => {
     expect(t.groups.map((g) => g.cluster)).toEqual(["c1", "c2"]);
     expect(t.groups[0].rows.map((r) => r.cells[0])).toEqual(["frete-b2c (ns: calculo-de-fretes-prd)", "frete-hub (ns: calculo-de-fretes-prd)"]);
     const hub = t.groups[0].rows[1].cells;
-    expect(hub.slice(0, 8)).toEqual(["frete-hub (ns: calculo-de-fretes-prd)", "2087668", "158.7", "0.045s", "0.820s", "1.501s", "181344", "9"]);
-    expect(hub[8]).toBe("3.3% (Min: 0.4%, Avg: 2.6%)");
+    expect(hub.slice(0, 9)).toEqual(["frete-hub (ns: calculo-de-fretes-prd)", "2087668", "158.7", "0.120s", "0.045s", "0.820s", "1.501s", "181344", "9"]);
+    expect(hub[9]).toBe("3.3% (Min: 0.4%, Avg: 2.6%)");
   });
 
   it("sem dado aparece escrito e nunca vira zero", () => {
     const semDado = t.groups[0].rows[0].cells;
-    expect(semDado.slice(1)).toEqual(Array(11).fill("sem dado"));
-    expect(t.groups[0].rows[1].cells[9]).toBe("sem dado"); // cpu % do limit nulo
+    expect(semDado.slice(1)).toEqual(Array(12).fill("sem dado"));
+    expect(t.groups[0].rows[1].cells[10]).toBe("sem dado"); // cpu % do limit nulo
   });
 
   it("os selos ficam na coluna certa", () => {
@@ -134,20 +135,20 @@ describe("buildCSV", () => {
     expect(csv.charCodeAt(0)).toBe(0xfeff);
     expect(csv.endsWith("\r\n")).toBe(true);
     expect(buildCSV(fixture(), ",").split("\r\n")[0]).toContain('"cluster","namespace"');
-    expect(lines[0]).toContain('"cluster";"namespace";"deployment";"requisicoes";"max_rps";"p50_pico_ms";"p95_pico_ms";"p99_pico_ms";"p99_servico"');
+    expect(lines[0]).toContain('"cluster";"namespace";"deployment";"requisicoes";"max_rps";"resposta_media_ms";"p50_pico_ms";"p95_pico_ms";"p99_pico_ms";"p99_servico"');
   });
 
   it("um registro por aplicação, ordenado, com número cru e ponto decimal", () => {
     expect(lines).toHaveLength(1 + 3);
     const hub = lines.find((l) => l.includes('"frete-hub"'))!.split(";");
-    expect(hub.slice(0, 9)).toEqual(['"c1"', '"calculo-de-fretes-prd"', '"frete-hub"', "2087668", "158.7", "45.2", "820", "1501.3", '"FreteController"']);
-    expect(hub[9]).toBe("181344");
+    expect(hub.slice(0, 10)).toEqual(['"c1"', '"calculo-de-fretes-prd"', '"frete-hub"', "2087668", "158.7", "120.4", "45.2", "820", "1501.3", '"FreteController"']);
+    expect(hub[10]).toBe("181344");
   });
 
   it("sem dado é célula vazia, nunca zero", () => {
     const b2c = lines.find((l) => l.includes('"frete-b2c"'))!.split(";");
-    expect(b2c.slice(3, 9)).toEqual(["", "", "", "", "", '""']);
-    expect(b2c.slice(9, 12)).toEqual(["", "", ""]); // 4xx, 5xx, cpu req max
+    expect(b2c.slice(3, 10)).toEqual(["", "", "", "", "", "", '""']);
+    expect(b2c.slice(10, 13)).toEqual(["", "", ""]); // 4xx, 5xx, cpu req max
   });
 
   it("registra janela, alertas e erros de coleta", () => {
@@ -204,9 +205,10 @@ describe("buildReportPDF", () => {
   it("uma tabela só com os percentis coletados", async () => {
     const raw = (await buildReportPDF(fixture({ percentiles: [95] }))).output();
     // dentro do PDF os parênteses do texto saem escapados
-    expect(raw).toContain("P95 \\(pico\\)");
-    expect(raw).not.toContain("P99 \\(pico\\)");
-    expect(raw).not.toContain("P50 \\(pico\\)");
+    // o cabeçalho pode quebrar linha entre "P95" e "(pico)", então o PDF só confere o percentil escolhido;
+    // que as colunas dos outros percentis não existem está coberto em buildExportTable
+    expect(raw).toContain("P95");
+    expect(buildExportTable(fixture({ percentiles: [95] })).columns.some((c) => c.includes("P99") || c.includes("P50"))).toBe(false);
   });
 });
 
@@ -269,5 +271,54 @@ describe("contexto de node nas exportações", () => {
     expect(raw).toContain("calculofret2");
     expect(raw).toContain("Contexto de node incluido");
     expect(raw).toContain("Throttling CPU");
+  });
+});
+
+describe("extras (réplicas, HPA, restarts e rede) nas exportações", () => {
+  const extras = {
+    source: "prometheus", step: "1m", replicas: { max: 72, min: 10, avg: 40 }, replicas_desired: { max: 72, min: 10, avg: 40 }, hpa_min: 10, hpa_max: 72, restarts: 3,
+    net_rx_bps: { max: 3 * 1024 * 1024, min: 0, avg: 2 * 1024 * 1024 }, net_tx_bps: { max: 1024 * 1024, min: 0, avg: 512 * 1024 }, net_err_ps: { max: 1.5, min: 0, avg: 0.2 }, notes: ["hpa_max: sem série"],
+  };
+  const comExtras = () => {
+    const f = fixture({ extras: true });
+    f.rows = [row("c1", "ns", "frete-hub", { extras }), row("c1", "ns", "sem-extras", { extras: null })];
+    return f;
+  };
+
+  it("sem os extras coletados, nenhuma coluna deles aparece", () => {
+    expect(buildExportTable(fixture()).columns).not.toContain(EXTRAS_COLUMNS[0]);
+    expect(buildCSV(fixture()).split("\r\n")[0]).not.toContain("replicas_max");
+  });
+
+  it("com os extras, a tabela ganha as colunas e 'sem dado' quando a linha não tem", () => {
+    const t = buildExportTable(comExtras());
+    expect(t.columns.slice(-EXTRAS_COLUMNS.length)).toEqual(EXTRAS_COLUMNS);
+    const rows = t.groups[0].rows;
+    const hub = rows.find((r) => r.cells[0].startsWith("frete-hub"))!;
+    const sem = rows.find((r) => r.cells[0].startsWith("sem-extras"))!;
+    expect(hub.cells.length).toBe(t.columns.length);
+    expect(hub.cells.slice(-EXTRAS_COLUMNS.length)).toEqual(["72 (Mín: 10, Méd: 40)", "10-72", "3", "3,0 MB/s / 2,0 MB/s", "1,0 MB/s / 512,0 KB/s", "1,5/s"]);
+    expect(sem.cells.slice(-EXTRAS_COLUMNS.length)).toEqual(Array(EXTRAS_COLUMNS.length).fill("sem dado"));
+    expect(t.meta.extras).toBe(true);
+    expect(t.issues).toContain("c1 / ns / frete-hub (extras): hpa_max: sem série");
+    expect(buildMarkdown(comExtras())).toContain("Réplicas, HPA, restarts e rede");
+  });
+
+  it("no CSV, cabeçalho e linhas têm o mesmo número de colunas e o sem dado é vazio", () => {
+    const lines = buildCSV(comExtras()).replace(/^\uFEFF/, "").split("\r\n").filter(Boolean);
+    const n = lines[0].split(";").length;
+    expect(lines.slice(1).every((l) => l.split(";").length === n)).toBe(true);
+    expect(lines[0]).toContain("hpa_max");
+  });
+});
+
+describe("tempo de resposta médio nas exportações", () => {
+  it("aparece como coluna e como número cru no CSV; sem dado fica vazio", () => {
+    const t = buildExportTable(fixture());
+    const i = t.columns.indexOf("Resposta média");
+    expect(i).toBeGreaterThan(0);
+    expect(t.groups[0].rows[1].cells[i]).toBe("0.120s");
+    expect(t.groups[0].rows[0].cells[i]).toBe("sem dado");
+    expect(buildCSV(fixture()).split("\r\n")[0]).toContain("resposta_media_ms");
   });
 });

@@ -2,7 +2,7 @@
 // Lógica pura e testada em metricsReportExport.test.ts; só `downloadText`/`exportReportPDF` tocam o DOM.
 // O Markdown e o PDF partem da MESMA tabela (buildExportTable), então mostram os mesmos números.
 
-import { REPORT_TZ, fmtLatency, fmtNodeUsage, fmtPct, fmtPctStats, fmtPools, fmtThrottle, percentileValue, type ReportPct, type ReportResult, type ReportRow } from "./metricsReport";
+import { EXTRAS_COLUMNS, REPORT_TZ, extrasCells, fmtLatency, fmtNodeUsage, fmtPct, fmtPctStats, fmtPools, fmtThrottle, percentileValue, type ReportPct, type ReportResult, type ReportRow } from "./metricsReport";
 
 export const NO_DATA = "sem dado";
 
@@ -49,6 +49,7 @@ export interface ExportTable {
     peakApprox: boolean;
     sources: string;
     nodeContext: boolean;
+    extras: boolean;
   };
 }
 
@@ -71,9 +72,10 @@ function usedSources(rows: ReportRow[]): string {
 export function buildExportTable(result: ReportResult): ExportTable {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const columns = [
-    "Aplicação", "Total Requests", "Max RPS", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
+    "Aplicação", "Total Requests", "Max RPS", "Resposta média", ...pcts.map((p) => `Latência P${p} (pico)`), "Erros 4xx", "Erros 5xx",
     "CPU % do request (Máx/Mín/Méd)", "CPU % do limit (Máx/Mín/Méd)", "Mem % do request (Máx/Mín/Méd)", "Mem % do limit (Máx/Mín/Méd)",
     ...(result.node_context ? NODE_COLUMNS : []),
+    ...(result.extras ? EXTRAS_COLUMNS : []),
   ];
   const p99col = columns.indexOf("Latência P99 (pico)");
   const col4 = columns.indexOf("Erros 4xx");
@@ -101,14 +103,16 @@ export function buildExportTable(result: ReportResult): ExportTable {
           const f5 = flagOf(r.flags?.err_5xx);
           if (f5) flags[col5] = f5;
           for (const n of r.node?.notes ?? []) issues.push(`${r.cluster} / ${r.namespace} / ${r.workload} (node): ${n}`);
+          for (const n of r.extras?.notes ?? []) issues.push(`${r.cluster} / ${r.namespace} / ${r.workload} (extras): ${n}`);
           for (const e of r.errors ?? []) issues.push(`${r.cluster} / ${r.namespace} / ${r.workload}: ${e.length > 300 ? `${e.slice(0, 300)}…` : e}`);
           return {
             cells: [
-              `${r.workload} (ns: ${r.namespace})`, int(t?.requests), rps(t?.max_rps),
+              `${r.workload} (ns: ${r.namespace})`, int(t?.requests), rps(t?.max_rps), fmtLatency(t?.avg_ms),
               ...pcts.map((p) => fmtLatency(percentileValue(t, p))),
               int(t?.err_4xx), int(t?.err_5xx),
               fmtPctStats(u?.cpu_req_pct), fmtPctStats(u?.cpu_lim_pct), fmtPctStats(u?.mem_req_pct), fmtPctStats(u?.mem_lim_pct),
               ...(result.node_context ? [fmtPools(r.node?.pools), fmtNodeUsage(r.node?.cpu, r.node?.nodes), fmtNodeUsage(r.node?.mem, r.node?.nodes), fmtThrottle(r.node?.throttle_pct)] : []),
+              ...(result.extras ? extrasCells(r.extras) : []),
             ],
             flags,
           };
@@ -128,6 +132,7 @@ export function buildExportTable(result: ReportResult): ExportTable {
       peakApprox: !!result.plan.peak_approx,
       sources: usedSources(result.rows),
       nodeContext: !!result.node_context,
+      extras: !!result.extras,
     },
   };
 }
@@ -150,6 +155,7 @@ export function buildMarkdown(result: ReportResult): string {
   out.push(`- **Resolução:** ${t.meta.resolution}${t.meta.peakApprox ? " — **pico aproximado**: a resolução disponível suaviza picos curtos" : ""}`);
   out.push(`- **Percentis coletados:** ${t.meta.percentiles.map((p) => `P${p}`).join(", ")}`);
   out.push(`- **Fontes:** ${t.meta.sources}`);
+  if (t.meta.extras) out.push("- **Réplicas, HPA, restarts e rede:** incluídos (Prometheus, ~14 dias de retenção). Réplicas = disponíveis na janela; HPA = limites do HPA do Deployment (vazio se não houver HPA com esse alvo ou nome); restarts = soma na janela; rede = bytes/s somando os pods (pico / média). São contexto, não veredito.");
   if (t.meta.nodeContext) out.push("- **Contexto de node:** incluído (Prometheus, ~14 dias de retenção). \"Pior\" = maior pico entre os nodes que hospedaram a aplicação; \"média\" = média das médias de cada node. É contexto, não veredito.");
   out.push(`- **Gerado em:** ${t.meta.generatedAt}`);
   for (const w of t.meta.warnings) out.push(`- **Aviso:** ${escapeMdCell(w)}`);
@@ -199,12 +205,15 @@ const csvFlag = (f?: string) => (f === "red" ? "vermelho" : f === "warn" ? "avis
 export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): string {
   const pcts = result.percentiles?.length ? result.percentiles : [99];
   const header = [
-    "cluster", "namespace", "deployment", "requisicoes", "max_rps", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
+    "cluster", "namespace", "deployment", "requisicoes", "max_rps", "resposta_media_ms", ...pcts.map((p) => `p${p}_pico_ms`), ...(pcts.includes(99) ? ["p99_servico"] : []),
     "erros_4xx", "erros_5xx",
     "cpu_req_max_pct", "cpu_req_min_pct", "cpu_req_med_pct", "cpu_lim_max_pct", "cpu_lim_min_pct", "cpu_lim_med_pct",
     "mem_req_max_pct", "mem_req_min_pct", "mem_req_med_pct", "mem_lim_max_pct", "mem_lim_min_pct", "mem_lim_med_pct",
     ...(result.node_context
       ? ["node_pool", "nodes", "nodes_com_dado_cpu", "node_cpu_pior_pct", "node_cpu_med_pct", "node_mem_pior_pct", "node_mem_med_pct", "throttling_max_pct", "throttling_med_pct"]
+      : []),
+    ...(result.extras
+      ? ["replicas_max", "replicas_min", "replicas_med", "replicas_desejadas_max", "hpa_min", "hpa_max", "restarts_janela", "rede_rx_pico_bps", "rede_rx_med_bps", "rede_tx_pico_bps", "rede_tx_med_bps", "rede_descartes_erros_pico_ps"]
       : []),
     "alerta_p99", "alerta_4xx", "alerta_5xx", "servicos", "fontes", "resolucao", "pico_aproximado", "erros_de_coleta", "janela_inicio", "janela_fim",
   ];
@@ -216,7 +225,7 @@ export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): s
     const u = r.usage;
     const cells = [
       csvText(r.cluster), csvText(r.namespace), csvText(r.workload),
-      csvNum(t?.requests), csvNum(t?.max_rps, 1),
+      csvNum(t?.requests), csvNum(t?.max_rps, 1), csvNum(t?.avg_ms, 1),
       ...pcts.map((p) => csvNum(percentileValue(t, p), 1)),
       ...(pcts.includes(99) ? [csvText(t?.p99_service ?? "")] : []),
       csvNum(t?.err_4xx), csvNum(t?.err_5xx),
@@ -226,6 +235,14 @@ export function buildCSV(result: ReportResult, delimiter: CsvDelimiter = ";"): s
             csvText((r.node?.pools ?? []).map((p) => p.name).join(", ")), csvNum(r.node?.nodes), csvNum(r.node?.cpu?.nodes_with_data),
             csvNum(r.node?.cpu?.worst_pct, 1), csvNum(r.node?.cpu?.avg_pct, 1), csvNum(r.node?.mem?.worst_pct, 1), csvNum(r.node?.mem?.avg_pct, 1),
             csvNum(r.node?.throttle_pct?.max, 3), csvNum(r.node?.throttle_pct?.avg, 3),
+          ]
+        : []),
+      ...(result.extras
+        ? [
+            csvNum(r.extras?.replicas?.max, 0), csvNum(r.extras?.replicas?.min, 0), csvNum(r.extras?.replicas?.avg, 1), csvNum(r.extras?.replicas_desired?.max, 0),
+            csvNum(r.extras?.hpa_min, 0), csvNum(r.extras?.hpa_max, 0), csvNum(r.extras?.restarts, 0),
+            csvNum(r.extras?.net_rx_bps?.max, 0), csvNum(r.extras?.net_rx_bps?.avg, 0), csvNum(r.extras?.net_tx_bps?.max, 0), csvNum(r.extras?.net_tx_bps?.avg, 0),
+            csvNum(r.extras?.net_err_ps?.max, 2),
           ]
         : []),
       csvText(csvFlag(r.flags?.p99)), csvText(csvFlag(r.flags?.err_4xx)), csvText(csvFlag(r.flags?.err_5xx)),
@@ -273,6 +290,7 @@ export async function buildReportPDF(result: ReportResult) {
   const info = [
     `Resolucao: ${pdfSafe(t.meta.resolution)}${t.meta.peakApprox ? " - PICO APROXIMADO (a resolucao disponivel suaviza picos curtos)" : ""}`,
     `Percentis: ${t.meta.percentiles.map((p) => `P${p}`).join(", ")}   |   Fontes: ${pdfSafe(t.meta.sources)}   |   Gerado em: ${t.meta.generatedAt}`,
+    ...(t.meta.extras ? ["Replicas, HPA, restarts e rede incluidos (Prometheus, ~14 dias). Rede = bytes/s somando os pods (pico / media). E contexto, nao veredito."] : []),
     ...(t.meta.nodeContext ? ["Contexto de node incluido (Prometheus, ~14 dias). Pior = maior pico entre os nodes da aplicacao; media = media das medias. E contexto, nao veredito."] : []),
     ...t.meta.warnings.map((w) => `Aviso: ${pdfSafe(w)}`),
   ];

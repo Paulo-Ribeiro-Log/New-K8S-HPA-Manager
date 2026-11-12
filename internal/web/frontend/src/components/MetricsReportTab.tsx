@@ -9,6 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MetricsLivePanel } from "@/components/MetricsLivePanel";
+import { MetricsEventPicker } from "@/components/MetricsEventPicker";
+import { MetricsComparePanel } from "@/components/MetricsComparePanel";
+import { useReportEvents } from "@/hooks/useReportEvents";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
 import { useClusterEnvFilter } from "@/hooks/useClusterEnvFilter";
@@ -19,7 +23,7 @@ import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
 import { buildCSV, buildMarkdown, downloadText, exportReportPDF, fileStamp, type CsvDelimiter } from "@/lib/metricsReportExport";
 import {
-  FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
+  EXTRAS_COLUMNS, EXTRAS_KEY, extrasCells, parseExtras, FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, mergeSets, removePickedItem, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
   fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, parsePercentiles, parseSets, parseTargets, percentileValue, pickKey, presetWindow, setTargetCluster, targetItems, targetSummary, togglePercentile,
   setTargetNamespaces, setTargetPicked, upsertSet, zonedLocalToISO, type ReportAlerts, type ReportResult, type ReportRow, type SavedSet, type Target, type WindowPreset,
 } from "@/lib/metricsReport";
@@ -313,6 +317,33 @@ export function MetricsReportTab() {
   useEffect(() => save(TARGETS_KEY, targets), [targets]);
   const [sets, setSets] = useState<SavedSet[]>(() => load(SAVED_SETS_KEY, parseSets));
   const [setName, setSetName] = useState("");
+  // o servidor é a fonte dos conjuntos (o navegador é só cache): ao abrir, junta os dois e sobe o que faltar
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .metricsReportSetsGet()
+      .then((r) => {
+        if (cancelled) return;
+        const server = parseSets(JSON.stringify(r.sets ?? []));
+        setSets((local) => {
+          const merged = mergeSets(server, local);
+          save(SAVED_SETS_KEY, merged);
+          if (merged.length !== server.length) apiClient.metricsReportSetsPut(merged).catch(() => {});
+          return merged;
+        });
+      })
+      .catch(() => {
+        /* servidor indisponível: segue com o cache do navegador */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  function persistSets(next: SavedSet[]) {
+    setSets(next);
+    save(SAVED_SETS_KEY, next);
+    apiClient.metricsReportSetsPut(next).catch(() => toast.error("Não consegui gravar os conjuntos no servidor (ficaram só neste navegador)"));
+  }
 
   const clusters = useQuery({ queryKey: ["metrics-report-clusters"], queryFn: () => apiClient.getClusters(), staleTime: 5 * 60 * 1000, retry: false });
   const info = useMemo<ClusterInfo>(() => {
@@ -335,24 +366,27 @@ export function MetricsReportTab() {
   function saveSet() {
     if (!setName.trim() || items.length === 0) return;
     const next = upsertSet(sets, setName, targets);
-    setSets(next);
-    save(SAVED_SETS_KEY, next);
+    persistSets(next);
     toast.success(`Conjunto "${setName.trim()}" salvo (${items.length})`);
     setSetName("");
   }
   function removeSet(name: string) {
     const next = sets.filter((s) => s.name !== name);
-    setSets(next);
-    save(SAVED_SETS_KEY, next);
+    persistSets(next);
   }
 
   // ── percentis de latência a coletar (P50, P95 e/ou P99; lembrados no navegador) ───
+  // sub-abas: o relatório por janela (coleta única) e o acompanhamento em tempo real
+  const [view, setView] = useState<"report" | "live">("report");
   const [percentiles, setPercentiles] = useState<number[]>(() => load(PERCENTILES_KEY, parsePercentiles));
   useEffect(() => save(PERCENTILES_KEY, percentiles), [percentiles]);
 
   // ── contexto de node (pool, uso dos nodes, throttling): opt-in, custa consultas a mais ───
   const [nodeContext, setNodeContext] = useState<boolean>(() => load(NODE_CONTEXT_KEY, parseNodeContext));
   useEffect(() => save(NODE_CONTEXT_KEY, nodeContext), [nodeContext]);
+  const reportEvents = useReportEvents();
+  const [extras, setExtras] = useState<boolean>(() => load(EXTRAS_KEY, parseExtras));
+  useEffect(() => save(EXTRAS_KEY, extras), [extras]);
 
   // ── janela ─────────────────────────────────────────────────────────────────
   const [mode, setMode] = useState<WindowPreset | "custom">("6h");
@@ -388,7 +422,7 @@ export function MetricsReportTab() {
     mutationFn: () => {
       // atalho termina "agora": recalcula no clique (a janela do plano pode ter alguns minutos)
       const w = mode === "custom" ? windowIso! : presetWindow(mode);
-      return apiClient.startMetricsReport({ items, start: w.start, end: w.end, percentiles, node_context: nodeContext });
+      return apiClient.startMetricsReport({ items, start: w.start, end: w.end, percentiles, node_context: nodeContext, extras });
     },
     onSuccess: (r) => {
       setJobId(r.id);
@@ -485,6 +519,17 @@ export function MetricsReportTab() {
 
       {/* ── Janela, coleta e relatório ── */}
       <main className="flex-1 min-w-0 overflow-y-auto p-4 space-y-4">
+        <div className="flex gap-1 border-b border-border -mt-1 pb-2">
+          {([["report", "Relatório"], ["live", "Tempo real"]] as const).map(([id, label]) => (
+            <Button key={id} size="sm" variant={view === id ? "default" : "ghost"} className="h-7 text-xs" onClick={() => setView(id)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+        {view === "live" ? (
+          <MetricsLivePanel items={items} percentiles={percentiles} onPercentiles={setPercentiles} events={reportEvents.events} onSaveEvent={reportEvents.save} onRemoveEvent={reportEvents.remove} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
+        ) : (
+          <>
         <section className="rounded-md border border-border p-3 space-y-2">
           <div className="text-sm font-medium">Janela de tempo</div>
           <div className="flex flex-wrap gap-1.5">
@@ -496,6 +541,18 @@ export function MetricsReportTab() {
             <Button size="sm" variant={mode === "custom" ? "default" : "outline"} className="h-7 text-xs" onClick={() => setMode("custom")}>
               Personalizado
             </Button>
+            <MetricsEventPicker
+              events={reportEvents.events}
+              current={windowIso}
+              disabled={running}
+              onApply={(s, e) => {
+                setMode("custom");
+                setStartLocal(isoToZonedLocal(Date.parse(s)));
+                setEndLocal(isoToZonedLocal(Date.parse(e)));
+              }}
+              onSave={reportEvents.save}
+              onRemove={reportEvents.remove}
+            />
           </div>
           {mode === "custom" && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -530,6 +587,13 @@ export function MetricsReportTab() {
               Contexto de node
             </label>
             <span className="text-[10px] text-muted-foreground">pool, CPU e memória dos nodes, throttling · mais consultas ao Prometheus (dado dos últimos ~14 dias)</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <label className="flex items-center gap-1.5 cursor-pointer" title="Acrescenta réplicas disponíveis (máx/mín/méd), limites do HPA, restarts na janela e rede (bytes/s recebidos e enviados, descartes e erros). Só Prometheus; é contexto, não veredito.">
+              <Checkbox checked={extras} disabled={running} onCheckedChange={(v) => setExtras(v === true)} />
+              Réplicas, HPA e rede
+            </label>
+            <span className="text-[10px] text-muted-foreground">réplicas, teto do HPA, restarts, rede · mais consultas ao Prometheus (dado dos últimos ~14 dias)</span>
           </div>
           <div className="text-xs space-y-1">
             {!windowIso && <div className="text-red-400">Data ou hora inválida.</div>}
@@ -577,6 +641,7 @@ export function MetricsReportTab() {
             rows={result.rows}
             percentiles={result.percentiles?.length ? result.percentiles : [99]}
             nodeContext={!!result.node_context}
+            extras={!!result.extras}
             expanded={expanded}
             onToggle={(k) =>
               setExpanded((prev) => {
@@ -590,6 +655,9 @@ export function MetricsReportTab() {
             plan={result.plan}
             warnings={result.warnings ?? []}
           />
+        )}
+        {result && result.rows.length > 0 && <MetricsComparePanel key={job.data?.id} result={result} events={reportEvents.events} />}
+          </>
         )}
       </main>
     </div>
@@ -684,11 +752,12 @@ function AlertBadges({ a }: { a: ReportAlerts }) {
 // Resultado em árvore: cluster → namespace → deployment. Cada nível recolhe; o resumo de alertas
 // (🔴/⚠️/erros) aparece no cabeçalho para achar o problema sem abrir tudo.
 function ReportTable({
-  rows, percentiles, nodeContext, expanded, onToggle, window, plan, warnings,
+  rows, percentiles, nodeContext, extras, expanded, onToggle, window, plan, warnings,
 }: {
   rows: ReportRow[];
   percentiles: number[];
   nodeContext: boolean;
+  extras: boolean;
   expanded: Set<string>;
   onToggle: (key: string) => void;
   window: { start: string; end: string };
@@ -698,7 +767,7 @@ function ReportTable({
   const fmtDate = (iso: string) => new Date(iso).toLocaleString("pt-BR", { timeZone: REPORT_TZ });
   const flag = (f?: string) => (f ? ` ${FLAG_ICON[f] ?? ""}` : "");
   const groups = useMemo(() => groupRows(rows), [rows]);
-  const cols = 7 + percentiles.length + (nodeContext ? 4 : 0); // Aplicação, Requisições, Max RPS, [percentis], 4xx, 5xx, CPU, Mem, [node: pool, CPU, Mem, throttling]
+  const cols = 8 + percentiles.length + (nodeContext ? 4 : 0) + (extras ? EXTRAS_COLUMNS.length : 0); // Aplicação, Requisições, Max RPS, [percentis], 4xx, 5xx, CPU, Mem, [node: pool, CPU, Mem, throttling]
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const toggleGroup = (id: string) =>
     setClosed((prev) => {
@@ -714,7 +783,7 @@ function ReportTable({
     const open = expanded.has(key);
     const t = r.traffic;
     const u = r.usage;
-    const notes = [...(t?.notes ?? []), ...(u?.notes ?? []), ...(r.node?.notes ?? [])];
+    const notes = [...(t?.notes ?? []), ...(u?.notes ?? []), ...(r.node?.notes ?? []), ...(r.extras?.notes ?? [])];
     return (
       <Fragment key={key}>
         <tr className="border-t border-border/60 hover:bg-muted/30 cursor-pointer align-top" onClick={() => onToggle(key)}>
@@ -724,6 +793,7 @@ function ReportTable({
           </td>
           <td className="px-2 py-1.5 whitespace-nowrap">{fmtInt(t?.requests)}</td>
           <td className="px-2 py-1.5 whitespace-nowrap">{fmtRps(t?.max_rps)}{t?.peak_approx && <span title="pico aproximado"> ≈</span>}</td>
+          <td className="px-2 py-1.5 whitespace-nowrap" title="Média do tempo de resposta na janela, ponderada pelas requisições (não é pico)">{fmtLatency(t?.avg_ms)}</td>
           {percentiles.map((p) => (
             <td key={p} className="px-2 py-1.5 whitespace-nowrap">
               {fmtLatency(percentileValue(t, p))}
@@ -748,6 +818,7 @@ function ReportTable({
               <td className="px-2 py-1.5 whitespace-nowrap">{fmtThrottle(r.node?.throttle_pct)}</td>
             </>
           )}
+          {extras && extrasCells(r.extras).map((c, i) => <td key={i} className="px-2 py-1.5 whitespace-nowrap">{c}</td>)}
         </tr>
         {open && (
           <tr className="bg-muted/20">
@@ -755,7 +826,7 @@ function ReportTable({
               {t?.services && <div><b>Serviços usados:</b> {t.services.join(", ")}</div>}
               {t?.p99_service && <div><b>P99 de pico vem de:</b> {t.p99_service}</div>}
               {r.node && <div><b>Node:</b> {r.node.nodes} node(s) hospedaram a aplicação{r.node.pool_label ? ` · pool pelo rótulo ${r.node.pool_label}` : ""}</div>}
-              <div><b>Fontes:</b> {[t?.source, u?.source, r.node?.source].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(" + ") || "nenhuma"}</div>
+              <div><b>Fontes:</b> {[t?.source, u?.source, r.node?.source, r.extras?.source].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(" + ") || "nenhuma"}</div>
               {r.errors?.map((e) => (
                 <div key={e} className="text-red-400 break-words">{e.length > 400 ? `${e.slice(0, 400)}…` : e}</div>
               ))}
@@ -786,7 +857,7 @@ function ReportTable({
         <table className="w-full text-xs">
           <thead className="bg-muted/50 text-left">
             <tr>
-              {["Aplicação", "Requisições", "Max RPS", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : [])].map((h) => (
+              {["Aplicação", "Requisições", "Max RPS", "Resposta média", ...percentiles.map((p) => `P${p} (pico)`), "4xx", "5xx", "CPU % (máx/mín/méd)", "Mem % (máx/mín/méd)", ...(nodeContext ? ["Node pool", "Node CPU % (pior/média)", "Node Mem % (pior/média)", "Throttling CPU % (máx/méd)"] : []), ...(extras ? EXTRAS_COLUMNS : [])].map((h) => (
                 <th key={h} className="px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>
