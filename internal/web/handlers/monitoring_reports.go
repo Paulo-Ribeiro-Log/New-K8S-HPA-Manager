@@ -70,6 +70,8 @@ type startReportRequest struct {
 	Thresholds *report.Thresholds `json:"thresholds,omitempty"`
 	// Percentiles de latência a coletar: 50, 95 e/ou 99 (vazio = só P99).
 	Percentiles []int `json:"percentiles,omitempty"`
+	// NodeContext liga o contexto de node (pool, uso dos nodes, throttling). Opt-in: custa consultas a mais.
+	NodeContext bool `json:"node_context,omitempty"`
 }
 
 func newJobID() string {
@@ -117,7 +119,7 @@ func (h *MonitoringReportHandler) Start(c *gin.Context) {
 	col := &report.Collector{Deps: h.deps(user, pcts)}
 
 	// valida antes de abrir o job: erro de pedido volta na hora, com 400
-	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds, Percentiles: pcts}
+	creq := report.Request{Items: req.Items, Window: report.Window{Start: req.Start, End: req.End}, Thresholds: req.Thresholds, Percentiles: pcts, NodeContext: req.NodeContext}
 	if _, err := col.Prepare(creq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -241,6 +243,13 @@ func (h *MonitoringReportHandler) deps(user string, pcts []int) report.Deps {
 		return q, err
 	}
 	return report.Deps{
+		Node: func(ctx context.Context, it report.Item, w report.Window, plan report.Plan) (*report.NodeContext, error) {
+			q, err := prom(it.Cluster)
+			if err != nil {
+				return nil, err
+			}
+			return report.CollectNodeContext(ctx, q, it.Namespace, it.Workload, w, plan)
+		},
 		Traffic: func(ctx context.Context, it report.Item, w report.Window, plan report.Plan) (*report.Traffic, error) {
 			api, err := dt(it.Cluster)
 			if err != nil {

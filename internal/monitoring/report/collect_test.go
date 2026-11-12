@@ -141,3 +141,79 @@ func TestRunCancelado(t *testing.T) {
 		}
 	}
 }
+
+func TestPrepareWindowAvisaRetencaoDoPrometheus(t *testing.T) {
+	c := &Collector{Now: fixedNow}
+	dia := 24 * time.Hour
+	aviso := func(start, end time.Duration) []string {
+		_, warns, _, err := c.PrepareWindow(Window{Start: now.Add(-start), End: now.Add(-end)})
+		if err != nil {
+			t.Fatalf("janela %v..%v: %v", start, end, err)
+		}
+		return warns
+	}
+	// dentro dos 14 dias: sem aviso
+	if w := aviso(6*time.Hour, time.Hour); len(w) != 0 {
+		t.Errorf("janela recente: %v", w)
+	}
+	if w := aviso(13*dia, 12*dia); len(w) != 0 {
+		t.Errorf("13 dias atrás ainda tem dado: %v", w)
+	}
+	// começa antes e termina depois do limite: parte dos dados existe
+	w := aviso(20*dia, time.Hour)
+	if len(w) != 1 || !strings.Contains(w[0], "só têm dado a partir de") || !strings.Contains(w[0], "14 dias") {
+		t.Errorf("janela que atravessa o limite: %v", w)
+	}
+	// toda antes do limite: nada de CPU, memória e node, mas o tráfego continua
+	w = aviso(30*dia, 29*dia)
+	if len(w) != 1 || !strings.Contains(w[0], "mais antiga que a retenção do Prometheus") || !strings.Contains(w[0], "o tráfego (Dynatrace) continua") {
+		t.Errorf("janela antiga: %v", w)
+	}
+	// o aviso não impede a coleta (só informa): a janela de 30 dias atrás é válida
+	if _, _, _, err := c.PrepareWindow(Window{Start: now.Add(-30 * dia), End: now.Add(-29 * dia)}); err != nil {
+		t.Errorf("janela antiga continua válida: %v", err)
+	}
+}
+
+func TestRunContextoDeNodeSoQuandoPedido(t *testing.T) {
+	var mu sync.Mutex
+	nodeCalls := 0
+	deps := Deps{
+		Node: func(_ context.Context, it Item, _ Window, _ Plan) (*NodeContext, error) {
+			mu.Lock()
+			nodeCalls++
+			mu.Unlock()
+			if it.Workload == "sem-node" {
+				return nil, errors.New("falha de node")
+			}
+			return &NodeContext{Source: "prometheus", Nodes: 3}, nil
+		},
+		Usage: func(_ context.Context, _ Item, _ Window, _ Plan) (*Usage, error) {
+			return &Usage{Source: "prometheus"}, nil
+		},
+	}
+	c := &Collector{Deps: deps, Now: fixedNow}
+	req := Request{
+		Items:  []Item{{"c", "ns", "ok"}, {"c", "ns", "sem-node"}},
+		Window: Window{Start: now.Add(-6 * time.Hour), End: now.Add(-time.Hour)},
+	}
+
+	// sem pedir: nenhuma consulta de node e o resultado diz isso
+	res, err := c.Run(context.Background(), req, nil)
+	if err != nil || nodeCalls != 0 || res.NodeContext || res.Rows[0].Node != nil {
+		t.Fatalf("sem node_context: chamadas=%d resultado=%+v err=%v", nodeCalls, res, err)
+	}
+
+	// pedindo: roda por aplicação; falha de uma não derruba a linha nem as outras
+	req.NodeContext = true
+	res, err = c.Run(context.Background(), req, nil)
+	if err != nil || nodeCalls != 2 || !res.NodeContext {
+		t.Fatalf("com node_context: chamadas=%d err=%v", nodeCalls, err)
+	}
+	if r := res.Rows[0]; r.Node == nil || r.Node.Nodes != 3 || r.Usage == nil || len(r.Errors) != 0 {
+		t.Errorf("linha ok: %+v", r)
+	}
+	if r := res.Rows[1]; r.Node != nil || r.Usage == nil || len(r.Errors) != 1 || !strings.HasPrefix(r.Errors[0], "Prometheus (node):") {
+		t.Errorf("node falhou, o resto fica: %+v", r)
+	}
+}

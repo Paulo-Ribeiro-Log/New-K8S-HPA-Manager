@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildCSV, buildReportPDF, buildExportTable, buildMarkdown, csvText, escapeMdCell, fileStamp, fmtWhen, pdfSafe } from "./metricsReportExport";
+import { NODE_COLUMNS, buildCSV, buildReportPDF, buildExportTable, buildMarkdown, csvText, escapeMdCell, fileStamp, fmtWhen, pdfSafe } from "./metricsReportExport";
 import type { ReportResult, ReportRow } from "./metricsReport";
 
 const traffic = (o: Partial<NonNullable<ReportRow["traffic"]>> = {}): NonNullable<ReportRow["traffic"]> => ({
@@ -207,5 +207,67 @@ describe("buildReportPDF", () => {
     expect(raw).toContain("P95 \\(pico\\)");
     expect(raw).not.toContain("P99 \\(pico\\)");
     expect(raw).not.toContain("P50 \\(pico\\)");
+  });
+});
+
+describe("contexto de node nas exportações", () => {
+  const node = {
+    source: "prometheus", nodes: 27, pools: [{ name: "calculofret2", nodes: 27, instance_type: "Standard_D4s_v5" }], pool_label: "label_agentpool",
+    cpu: { nodes_with_data: 27, worst_pct: 76.4, avg_pct: 22.14 }, mem: { nodes_with_data: 27, worst_pct: 42.2, avg_pct: 36.8 },
+    throttle_pct: { max: 0.00506, min: 0, avg: 0.0007 }, step: "1m", notes: ["uso de CPU de 9 dos 27 nodes"],
+  };
+  const comNode = () => {
+    const f = fixture({ node_context: true });
+    f.rows = [row("c1", "ns", "frete-hub", { node }), row("c1", "ns", "sem-node", { node: null })];
+    return f;
+  };
+
+  it("sem o contexto coletado, nenhuma coluna de node aparece", () => {
+    const t = buildExportTable(fixture());
+    expect(t.columns.some((c) => c.startsWith("Node") || c.startsWith("Throttling"))).toBe(false);
+    expect(buildCSV(fixture()).split("\r\n")[0]).not.toContain("node_pool");
+    expect(buildMarkdown(fixture())).not.toContain("Contexto de node");
+  });
+
+  it("com o contexto, a tabela ganha as 4 colunas no fim, e 'sem dado' quando a linha não tem", () => {
+    const t = buildExportTable(comNode());
+    expect(t.columns.slice(-4)).toEqual(NODE_COLUMNS);
+    const rows = t.groups[0].rows;
+    const hub = rows.find((r) => r.cells[0].startsWith("frete-hub"))!;
+    const semNode = rows.find((r) => r.cells[0].startsWith("sem-node"))!;
+    expect(hub.cells.slice(-4)).toEqual(["calculofret2 (27 nodes, Standard_D4s_v5)", "76.4% / 22.1%", "42.2% / 36.8%", "0.01% / 0.00%"]);
+    expect(semNode.cells.slice(-4)).toEqual(Array(4).fill("sem dado"));
+    expect(t.meta.nodeContext).toBe(true);
+    expect(t.issues).toContain("c1 / ns / frete-hub (node): uso de CPU de 9 dos 27 nodes");
+  });
+
+  it("o Markdown explica o que é pior e média e traz as colunas", () => {
+    const md = buildMarkdown(comNode());
+    expect(md).toContain("- **Contexto de node:** incluído");
+    expect(md).toContain("Node CPU % (pior/média)");
+    const linha = md.split("\n").find((l) => l.startsWith("| frete-hub"))!;
+    expect(linha).toContain("calculofret2 (27 nodes, Standard_D4s_v5) | 76.4% / 22.1% | 42.2% / 36.8% | 0.01% / 0.00% |");
+  });
+
+  it("o CSV tem as colunas de node com número cru e vazio no que não tem dado", () => {
+    const csv = buildCSV(comNode());
+    const lines = csv.split("\r\n").filter(Boolean);
+    expect(lines[0]).toContain('"node_pool";"nodes";"nodes_com_dado_cpu";"node_cpu_pior_pct";"node_cpu_med_pct";"node_mem_pior_pct";"node_mem_med_pct";"throttling_max_pct";"throttling_med_pct"');
+    const header = lines[0].split(";");
+    const hub = lines.find((l) => l.includes('"frete-hub"'))!.split(";");
+    const at = (c: string) => hub[header.indexOf(`"${c}"`)];
+    expect([at("node_pool"), at("nodes"), at("nodes_com_dado_cpu"), at("node_cpu_pior_pct"), at("node_cpu_med_pct"), at("throttling_max_pct")]).toEqual(['"calculofret2"', "27", "27", "76.4", "22.1", "0.005"]);
+    const sem = lines.find((l) => l.includes('"sem-node"'))!.split(";");
+    for (const c of ["nodes", "node_cpu_pior_pct", "node_mem_med_pct", "throttling_max_pct"]) expect(sem[header.indexOf(`"${c}"`)], c).toBe(""); // vazio, nunca 0
+    expect(sem[header.indexOf('"node_pool"')]).toBe('""');
+    // todas as linhas têm o mesmo número de colunas do cabeçalho
+    for (const l of lines) expect(l.split(";").length).toBe(header.length);
+  });
+
+  it("o PDF também sai com o contexto de node", async () => {
+    const raw = (await buildReportPDF(comNode())).output();
+    expect(raw).toContain("calculofret2");
+    expect(raw).toContain("Contexto de node incluido");
+    expect(raw).toContain("Throttling CPU");
   });
 });

@@ -44,9 +44,35 @@ export interface ReportUsage {
 
 export type ReportFlag = "" | "warn" | "red";
 
+export interface ReportPool {
+  name: string;
+  nodes: number;
+  instance_type?: string;
+}
+
+export interface ReportNodeUsage {
+  nodes_with_data: number;
+  worst_pct: number | null;
+  avg_pct: number | null;
+}
+
+/** Contexto de node: em que pool a aplicação rodou, quão cheios estavam os nodes e o throttling de CPU. */
+export interface ReportNodeContext {
+  source: string;
+  nodes: number;
+  pools: ReportPool[] | null;
+  pool_label?: string;
+  cpu: ReportNodeUsage | null;
+  mem: ReportNodeUsage | null;
+  throttle_pct: ReportPct | null;
+  step: string;
+  notes?: string[];
+}
+
 export interface ReportRow extends ReportItem {
   traffic: ReportTraffic | null;
   usage: ReportUsage | null;
+  node?: ReportNodeContext | null;
   flags: { p99?: ReportFlag; err_4xx?: ReportFlag; err_5xx?: ReportFlag };
   errors?: string[];
 }
@@ -62,6 +88,8 @@ export interface ReportResult {
   window: { start: string; end: string };
   /** Percentis de latência coletados (50, 95 e/ou 99). */
   percentiles: number[];
+  /** O contexto de node foi coletado (colunas de node na tabela e nas exportações). */
+  node_context?: boolean;
   plan: ReportPlan;
   warnings?: string[];
   rows: ReportRow[];
@@ -333,6 +361,37 @@ export function percentileValue(t: ReportTraffic | null | undefined, p: number):
   if (!t) return null;
   const v = p === 50 ? t.p50_peak_ms : p === 95 ? t.p95_peak_ms : p === 99 ? t.p99_peak_ms : null;
   return v ?? null;
+}
+
+// ── contexto de node (opt-in) ───────────────────────────────────────────────────────────────────────
+
+export const NODE_CONTEXT_KEY = "metrics_report_node_context";
+
+/** Lê a escolha gravada do contexto de node: só "true" liga (padrão desligado: custa consultas a mais). */
+export function parseNodeContext(raw: string | null): boolean {
+  return raw === "true";
+}
+
+/** "calculofret2 (27 nodes, Standard_D4s_v5)"; vários pools separados por "; ". */
+export function fmtPools(pools: ReportPool[] | null | undefined): string {
+  if (!pools || pools.length === 0) return NO_DATA;
+  return pools
+    .map((p) => `${p.name} (${p.nodes} node${p.nodes === 1 ? "" : "s"}${p.instance_type ? `, ${p.instance_type}` : ""})`)
+    .join("; ");
+}
+
+/** "76.4% / 22.1%" (pior node / média dos nodes); cobertura parcial aparece como "(N nodes)". */
+export function fmtNodeUsage(u: ReportNodeUsage | null | undefined, totalNodes?: number): string {
+  if (!u || u.worst_pct == null) return NO_DATA;
+  const partial = totalNodes != null && u.nodes_with_data < totalNodes ? ` (${u.nodes_with_data} de ${totalNodes} nodes)` : "";
+  return `${fmtPct(u.worst_pct)} / ${fmtPct(u.avg_pct)}${partial}`;
+}
+
+/** Throttling é pequeno (frações de %): duas casas, "0.51% / 0.04%" (máx / média). */
+export function fmtThrottle(p: ReportPct | null | undefined): string {
+  if (!p) return NO_DATA;
+  const f = (v: number) => `${(Math.round(v * 100) / 100).toFixed(2)}%`;
+  return `${f(p.max)} / ${f(p.avg)}`;
 }
 
 // ── resultado agrupado: cluster → namespace → deployment ─────────────────────────────────────────────
