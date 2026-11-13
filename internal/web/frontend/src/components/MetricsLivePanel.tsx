@@ -12,7 +12,7 @@ import { PERCENTILE_CHOICES, REPORT_TZ, fmtInt, fmtLatency, fmtRps, togglePercen
 import {
   DEFAULT_LIVE_RANGE, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
   buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, podsLevel, fmtRestartReasons, netLevel, fmtBytesPerSec, usageLevel, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
-  normalizeLive, buildNetworkRows, projectedPercentile, assessSeries, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
+  normalizeLive, fmtCacheStats, buildNetworkRows, projectedPercentile, assessSeries, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
 } from "@/lib/metricsLive";
 
 // Tempo real do Relatório de Métricas: as mesmas métricas do relatório (Dynatrace), num cartão por
@@ -382,6 +382,11 @@ export function MetricsLivePanel({
           <div className="text-[11px] text-muted-foreground">
             {items.length} aplicação(ões) · cada ponto = {fmtStep(data.step_seconds)} (Dynatrace {data.resolution}) · {new Date(data.window.start).toLocaleString("pt-BR", { timeZone: REPORT_TZ })} → {new Date(data.window.end).toLocaleString("pt-BR", { timeZone: REPORT_TZ })}
             {data.warnings?.map((w) => <span key={w} className="ml-2 text-amber-400">{w}</span>)}
+            {fmtCacheStats(data.cache) && (
+              <span className="ml-2 cursor-help" title="O servidor guarda, por alguns minutos, quais serviços do Dynatrace pertencem a cada aplicação e as séries já buscadas, e a cada atualização busca só o trecho novo (com uma sobreposição que corrige os pontos recentes; a cada 30 min refaz tudo). O resultado é o mesmo de uma busca completa.">
+                · cache: {fmtCacheStats(data.cache)}
+              </span>
+            )}
           </div>
         )}
         {!running && items.length > 0 && <div className="text-[11px] text-muted-foreground">Parado: mudanças de período, latência e seleção só valem ao iniciar ou ao clicar em Atualizar agora.</div>}

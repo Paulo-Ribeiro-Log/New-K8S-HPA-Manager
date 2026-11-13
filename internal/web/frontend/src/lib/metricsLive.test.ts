@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  normalizeLive, assessSeries, fmtRestartReasons, podsLevel, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
+  normalizeLive, fmtCacheStats, assessSeries, fmtRestartReasons, podsLevel, buildNetworkRows, hpaLevel, throttleLevel, netLevel, fmtBytesPerSec, summarizeStatus, worstLevel, seriesLevel, projectSeasonal, projectWithBaseline, DAY_MS, DEFAULT_LIVE_REFRESH, DEFAULT_LIVE_RANGE, buildChartData, errorLevel, fmtCores, fmtMemMB, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, usageLevel, latencyLevel, sparkHeights, groupLive, lastValue, liveRangeMs, liveWindow, minutesToThreshold,
   parseLiveRange, parseLiveRefresh, parseProjection, projectTrend, projectedPercentile, type LiveSeries,
 } from "./metricsLive";
 
@@ -514,5 +514,20 @@ describe("latência por percentil", () => {
     expect(assessSeries(s, [50]).level).toBe("warn"); // 300 ms é alerta para o P50 (maior marcado)
     expect(assessSeries(s, [50, 95]).level).toBe("ok"); // o maior marcado é o P95: 300 ms é normal
     expect(assessSeries(s, [50, 95, 99]).level).toBe("ok");
+  });
+});
+
+describe("fmtCacheStats (quanto o cache do servidor economizou)", () => {
+  it("sem cache ou sem atividade, nada", () => {
+    expect(fmtCacheStats(null)).toBe("");
+    expect(fmtCacheStats(undefined)).toBe("");
+    expect(fmtCacheStats({ resolve_hits: 0, resolve_misses: 0, series_full: 0, series_incremental: 0, series_cached: 0 })).toBe("");
+  });
+  it("1ª consulta: tudo busca; consultas seguintes: serviços do cache e só o trecho novo", () => {
+    expect(fmtCacheStats({ resolve_hits: 0, resolve_misses: 13, series_full: 39, series_incremental: 0, series_cached: 0 })).toBe("serviços 0/13 do cache · séries: 39 completas");
+    expect(fmtCacheStats({ resolve_hits: 13, resolve_misses: 0, series_full: 0, series_incremental: 39, series_cached: 0 })).toBe("serviços 13/13 do cache · séries: 39 só o trecho novo");
+  });
+  it("mistura e singular", () => {
+    expect(fmtCacheStats({ resolve_hits: 12, resolve_misses: 1, series_full: 1, series_incremental: 30, series_cached: 2 })).toBe("serviços 12/13 do cache · séries: 30 só o trecho novo, 2 do cache, 1 completa");
   });
 });

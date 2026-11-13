@@ -95,6 +95,33 @@ export interface LiveResult {
   warnings?: string[];
   series: LiveSeries[];
   generated_at: string;
+  /** O quanto do Dynatrace veio do cache do servidor nesta consulta (ausente = sem cache). */
+  cache?: LiveCacheStats | null;
+}
+
+export interface LiveCacheStats {
+  resolve_hits: number;
+  resolve_misses: number;
+  series_full: number;
+  series_incremental: number;
+  series_cached: number;
+}
+
+/**
+ * Resumo do cache numa frase curta ("serviços 13/13 do cache · séries: 39 só o trecho novo"), ou "" quando não há
+ * cache ou nada passou por ele. Mostra só o que não é zero.
+ */
+export function fmtCacheStats(c: LiveCacheStats | null | undefined): string {
+  if (!c) return "";
+  const parts: string[] = [];
+  const svc = c.resolve_hits + c.resolve_misses;
+  if (svc > 0) parts.push(`serviços ${c.resolve_hits}/${svc} do cache`);
+  const ser: string[] = [];
+  if (c.series_incremental > 0) ser.push(`${c.series_incremental} só o trecho novo`);
+  if (c.series_cached > 0) ser.push(`${c.series_cached} do cache`);
+  if (c.series_full > 0) ser.push(`${c.series_full} completa${c.series_full === 1 ? "" : "s"}`);
+  if (ser.length > 0) parts.push(`séries: ${ser.join(", ")}`);
+  return parts.join(" · ");
 }
 
 // ── faixa de tempo ─────────────────────────────────────────────────────────────────────────────────

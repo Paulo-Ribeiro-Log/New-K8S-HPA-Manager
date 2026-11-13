@@ -47,13 +47,17 @@ type MonitoringReportHandler struct {
 	newDynatrace  func(userEmail, cluster string) (report.DynatraceAPI, error)
 	newPrometheus func(cluster string) (report.RangeQuerier, error)
 
+	// dtCache guarda, entre as requisições do Tempo real, o mapa aplicação -> serviços e as séries do Dynatrace
+	// (só em memória, separado por usuário e cluster). Nulo desliga o cache.
+	dtCache *report.DTCache
+
 	mu   sync.Mutex
 	jobs map[string]*reportJob
 }
 
 // NewMonitoringReportHandler cria o handler com as fontes reais.
 func NewMonitoringReportHandler(tokensStore *storage.UserTokensStore) *MonitoringReportHandler {
-	h := &MonitoringReportHandler{tokensStore: tokensStore, jobs: map[string]*reportJob{}}
+	h := &MonitoringReportHandler{tokensStore: tokensStore, jobs: map[string]*reportJob{}, dtCache: report.NewDTCache()}
 	h.newDynatrace = func(userEmail, cluster string) (report.DynatraceAPI, error) {
 		return dynatraceClientForCluster(h.tokensStore, userEmail, cluster)
 	}
