@@ -3,6 +3,14 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: limites de alerta configuráveis (Novembro 2026)
+
+Os limites que eram fixos no código (latência 500 ms/1 s, 5xx e 4xx acima de 0/s, CPU e memória 70%/85%, throttling 10%/25%, rede 0,5/s, restarts acima de 0, teto do HPA e pods) passaram a ser **por usuário**, editáveis em Opções > "Configurar limites…" (`MetricsThresholdsDialog`) e salvos no servidor (`GET/PUT /api/v1/monitoring/live-thresholds`, lista de um objeto, mesmo armazenamento dos eventos e marcadores). `Thresholds` e `DEFAULT_THRESHOLDS` em `metricsThresholds.ts`; as funções de nível (`latencyLevel`, `errorLevel`, `usageLevel`, ...) e `assessSeries` recebem os limites e, sem eles, usam o padrão, então quem não configura vê exatamente o mesmo de antes. Os cartões e a tabela leem os limites por contexto (`useThresholds`), então pintam pelas mesmas regras da situação. Validação no formulário (alerta não passa do erro, nada negativo, tetos) e `normalizeThresholds` completa o que faltar. **Mudança de comportamento:** as linhas "Erros 5xx" e "Erros 4xx" do cartão agora julgam a taxa de agora, como a faixa de resumo e a tabela, e não o total do período.
+
+### Tempo real: só o maior percentil é colorido (Novembro 2026)
+
+Na tabela e na linha "Latências" do cartão, a cor por limite (0,5 s alerta, 1 s erro) passou a valer só para o **maior percentil marcado**, o mesmo que a regra da situação usa (`assessSeries`). Antes P50 e P95 eram pintados com limites pensados para o P99, e um P50 de 600 ms parecia problema sem a aplicação estar em alerta. Os outros percentis ficam sem cor, com um tooltip dizendo por quê.
+
 ### Tempo real: marcadores pontuais ("Marcar agora") (Novembro 2026)
 
 Botão **Marcar** na barra: guarda o instante de agora com um nome. Linha vertical com o nome nos gráficos do modal (`ReferenceLine`, só quando a hora cai dentro do período) e seção "Marcadores" no resumo da sessão. Por usuário, no servidor (`GET/PUT /api/v1/monitoring/live-markers`, mesmo armazenamento dos eventos e conjuntos, `MonitoringSetsHandler` com outro prefixo), com cópia no navegador; até 200 marcadores e 30 dias. Lógica pura em `metricsMarkers.ts`. Só o "agora": não há campo para digitar a hora.

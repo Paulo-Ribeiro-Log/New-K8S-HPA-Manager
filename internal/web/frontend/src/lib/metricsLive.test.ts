@@ -433,3 +433,59 @@ describe("assessSeries (a mesma regra dos cartões, selos e tabela)", () => {
     expect(assessSeries(vazio, [99])).toEqual({ level: "info", reasons: ["sem dados no período"] });
   });
 });
+
+import { DEFAULT_THRESHOLDS as DT } from "./metricsThresholds";
+describe("limites de alerta personalizados", () => {
+  const t = (o: object) => ({ ...DT, ...o });
+  it("o padrão é o comportamento de sempre", () => {
+    expect(latencyLevel(500)).toBe("ok");
+    expect(latencyLevel(501)).toBe("warn");
+    expect(latencyLevel(1001)).toBe("red");
+    expect(errorLevel(0.0001, "5xx")).toBe("red");
+    expect(errorLevel(0.0001, "4xx")).toBe("warn");
+    expect(usageLevel(86)).toBe("red");
+    expect(throttleLevel(11)).toBe("warn");
+    expect(netLevel(0.6)).toBe("warn");
+    expect(restartsLevel(1)).toBe("warn");
+  });
+  it("latência: os limites do usuário mandam", () => {
+    const x = t({ latWarnMs: 200, latRedMs: 300 });
+    expect(latencyLevel(250, x)).toBe("warn");
+    expect(latencyLevel(350, x)).toBe("red");
+    expect(latencyLevel(200, x)).toBe("ok");
+    expect(latencyLevel(250)).toBe("ok"); // sem os limites, continua o padrão
+  });
+  it("erros: aceitar uma taxa de 5xx e 4xx antes de alertar", () => {
+    const x = t({ err5Rate: 1, err4Rate: 5 });
+    expect(errorLevel(0.5, "5xx", x)).toBe("ok");
+    expect(errorLevel(1.5, "5xx", x)).toBe("red");
+    expect(errorLevel(3, "4xx", x)).toBe("ok");
+    expect(errorLevel(6, "4xx", x)).toBe("warn");
+    expect(errorLevel(null, "5xx", x)).toBe("info");
+  });
+  it("CPU/memória, throttling, rede e restarts", () => {
+    expect(usageLevel(80, t({ usageWarn: 80, usageRed: 95 }))).toBe("ok");
+    expect(usageLevel(96, t({ usageWarn: 80, usageRed: 95 }))).toBe("red");
+    expect(throttleLevel(30, t({ throttleWarn: 40, throttleRed: 60 }))).toBe("ok");
+    expect(netLevel(2, t({ netWarn: 5 }))).toBe("ok");
+    expect(restartsLevel(2, t({ restartsWarn: 2 }))).toBe("ok");
+    expect(restartsLevel(3, t({ restartsWarn: 2 }))).toBe("warn");
+  });
+  it("o teto do HPA e os pods podem ser ignorados", () => {
+    expect(hpaLevel(10, 10)).toBe("warn");
+    expect(hpaLevel(10, 10, t({ hpaCeiling: false }))).toBe("ok");
+    expect(hpaLevel(null, 10, t({ hpaCeiling: false }))).toBe("info");
+    expect(podsLevel(2, 0)).toBe("warn");
+    expect(podsLevel(2, 0, t({ pods: false }))).toBe("ok");
+  });
+  it("assessSeries usa os limites: a mesma aplicação muda de situação", () => {
+    const s = { cluster: "c", namespace: "n", workload: "w", times: [1], rps: [10], err_4xx_rps: [2], err_5xx_rps: [0], p99_ms: [600], resources: { replicas_available: 10, replicas_desired: 10, restarts_15m: 0, cpu_lim_pct: 75, mem_lim_pct: 30, pods: 10 } } as any;
+    const padrao = assessSeries(s, [99]);
+    expect(padrao.level).toBe("warn");
+    expect(padrao.reasons.sort()).toEqual(["4xx 2/s", "CPU 75% do limit", "P99 600 ms"].sort());
+    const folgado = assessSeries(s, [99], t({ latWarnMs: 800, latRedMs: 1500, err4Rate: 5, usageWarn: 90, usageRed: 95 }));
+    expect(folgado).toEqual({ level: "ok", reasons: [] });
+    const rigido = assessSeries(s, [99], t({ latWarnMs: 100, latRedMs: 500 }));
+    expect(rigido.level).toBe("red");
+  });
+});

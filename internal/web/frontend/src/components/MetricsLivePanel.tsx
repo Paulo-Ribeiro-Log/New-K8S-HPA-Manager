@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { apiClient } from "@/lib/api/client";
 import { PERCENTILE_CHOICES, REPORT_TZ, fmtInt, fmtLatency, fmtRps, togglePercentile, zonedLocalToISO, isoToZonedLocal, type ReportItem } from "@/lib/metricsReport";
 import {
-  DEFAULT_LIVE_RANGE, LATENCY_RED_MS, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
+  DEFAULT_LIVE_RANGE, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
   buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, podsLevel, fmtRestartReasons, netLevel, fmtBytesPerSec, usageLevel, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
   normalizeLive, buildNetworkRows, projectedPercentile, assessSeries, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
 } from "@/lib/metricsLive";
@@ -41,11 +41,14 @@ function savePref(key: string, value: unknown) {
 
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
 import { MetricsMarkerButton } from "@/components/MetricsMarkerButton";
+import { MetricsThresholdsDialog } from "@/components/MetricsThresholdsDialog";
+import { useLiveThresholds } from "@/hooks/useLiveThresholds";
+import { changedThresholds } from "@/lib/metricsThresholds";
 import { useLiveMarkers } from "@/hooks/useLiveMarkers";
 import { markersInRange, shortName, type Marker } from "@/lib/metricsMarkers";
 import { MetricsLiveSummary } from "@/components/MetricsLiveSummary";
 import { MetricsLiveTable } from "@/components/MetricsLiveTable";
-import { COLORS, LEVEL_CLASS, LevelIcon, Spark, fmtClock } from "@/components/metricsLiveShared";
+import { COLORS, LEVEL_CLASS, LevelIcon, Spark, ThresholdsProvider, fmtClock, useThresholds } from "@/components/metricsLiveShared";
 import { DEFAULT_SORT, SORT_KEY, VIEW_KEY, buildKpis, effectiveView, filterRows, groupRows, parseSort, parseViewMode, rowModel, sortRows, type SortKey, type SortState, type ViewMode } from "@/lib/metricsLiveView";
 import type { SavedEvent } from "@/lib/metricsEvents";
 import { eventAtWindow, fileSlug } from "@/lib/metricsEvents";
@@ -123,6 +126,9 @@ export function MetricsLivePanel({
   onPercentiles: (next: number[]) => void;
 }) {
   const liveMarkers = useLiveMarkers();
+  const liveThresholds = useLiveThresholds();
+  const thresholds = liveThresholds.thresholds;
+  const [thresholdsOpen, setThresholdsOpen] = useState(false);
   const [range, setRange] = useState<LiveRangeId | "custom">(() => loadPref(LIVE_RANGE_KEY, parseLiveRange));
   const [refresh, setRefresh] = useState<number>(() => loadPref(LIVE_REFRESH_KEY, parseLiveRefresh));
   const [horizon, setHorizon] = useState<number>(() => loadPref(PROJECTION_KEY, parseProjection));
@@ -169,7 +175,7 @@ export function MetricsLivePanel({
   const data = q.data;
 
   const pctsNow = data?.percentiles ?? percentiles;
-  const status = useMemo(() => (data ? summarizeStatus(data.series, pctsNow) : null), [data, pctsNow]);
+  const status = useMemo(() => (data ? summarizeStatus(data.series, pctsNow, thresholds) : null), [data, pctsNow, thresholds]);
 
   // visão: tabela (padrão com muitas aplicações) ou cartões; ordenação; filtros. Tudo lembrado, menos o filtro por nível.
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadPref(VIEW_KEY, parseViewMode));
@@ -242,7 +248,7 @@ export function MetricsLivePanel({
     for (const b of bq.data?.series ?? []) m.set(`${b.cluster}|${b.namespace}|${b.workload}`, b);
     return m;
   }, [bq.data]);
-  const allRows = useMemo(() => (data ? data.series.map((s) => rowModel(s, pctsNow)) : []), [data, pctsNow]);
+  const allRows = useMemo(() => (data ? data.series.map((s) => rowModel(s, pctsNow, thresholds)) : []), [data, pctsNow, thresholds]);
   const kpis = useMemo(() => buildKpis(allRows), [allRows]);
   const shown = useMemo(() => sortRows(filterRows(allRows, { onlyProblems, level: levelFilter }), sort), [allRows, onlyProblems, levelFilter, sort]);
   const groups = useMemo(() => groupRows(shown), [shown]);
@@ -253,6 +259,7 @@ export function MetricsLivePanel({
   const [detail, setDetail] = useState<LiveSeries | null>(null);
 
   return (
+    <ThresholdsProvider value={thresholds}>
     <div className="space-y-3">
       {data && allRows.length > 0 && <MetricsLiveSummary kpis={kpis} status={status} level={levelFilter} onLevel={setLevelFilter} />}
       <section className="rounded-md border border-border p-3 space-y-2">
@@ -335,6 +342,13 @@ export function MetricsLivePanel({
                     Réplicas, HPA, restarts, CPU, memória, throttling e rede
                   </label>
                   <div className="text-[10px] text-muted-foreground">Várias consultas ao Prometheus por cluster a cada atualização. Desligue se estiver lento; tráfego e latência continuam do Dynatrace.</div>
+                </div>
+                <div className="space-y-1 border-t border-border pt-2">
+                  <div className="font-medium">Limites de alerta</div>
+                  <div className="text-muted-foreground" title={changedThresholds(thresholds).join("\n") || undefined}>
+                    {changedThresholds(thresholds).length === 0 ? "Padrão" : `${changedThresholds(thresholds).length} limite(s) personalizado(s)`}
+                  </div>
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setThresholdsOpen(true)}>Configurar limites…</Button>
                 </div>
                 <div className="space-y-1 border-t border-border pt-2">
                   <div className="font-medium">Resumo da sessão</div>
@@ -460,7 +474,9 @@ export function MetricsLivePanel({
           {detail && <DetailCharts markers={liveMarkers.markers} s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} win={data?.window} />}
         </DialogContent>
       </Dialog>
+      <MetricsThresholdsDialog open={thresholdsOpen} onOpenChange={setThresholdsOpen} value={thresholds} onSave={liveThresholds.save} onReset={liveThresholds.reset} />
     </div>
+    </ThresholdsProvider>
   );
 }
 
@@ -518,10 +534,11 @@ const LiveCard = memo(function LiveCard({
   const latP = projectedPercentile(percentiles);
   const rpsProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, s.rps, base ? { times: base.times, values: base.rps } : null, horizon) : null), [s, base, horizon]);
   const latProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, (latP === 99 ? s.p99_ms : latP === 95 ? s.p95_ms : s.p50_ms) ?? [], base ? { times: base.times, values: (latP === 99 ? base.p99_ms : latP === 95 ? base.p95_ms : base.p50_ms) ?? [] } : null, horizon) : null), [s, base, horizon, latP]);
-  const toLimit = latP === 99 ? minutesToThreshold(latProj, LATENCY_RED_MS, horizon) : null;
+  const th = useThresholds();
+  const toLimit = latP === 99 ? minutesToThreshold(latProj, th.latRedMs, horizon) : null;
 
   const r = s.resources;
-  const assessed = useMemo(() => assessSeries(s, percentiles), [s, percentiles]);
+  const assessed = useMemo(() => assessSeries(s, percentiles, th), [s, percentiles, th]);
   const latValue = lastValue(latP === 99 ? s.p99_ms : latP === 95 ? s.p95_ms : s.p50_ms);
   if (s.error && !r) {
     return (
@@ -550,9 +567,9 @@ const LiveCard = memo(function LiveCard({
       {/* o essencial na frente: quatro números grandes; o resto fica em "Detalhes" */}
       <div className="my-2 grid grid-cols-2 gap-x-2 gap-y-3 rounded-lg bg-muted/40 px-3 py-2.5 font-sans ring-1 ring-inset ring-border/60 sm:grid-cols-4 sm:gap-y-0 sm:divide-x sm:divide-border/50">
         <Hero label="RPS" value={s.error && !r ? "—" : fmtRps(rpsNow)} unit="req/s" />
-        <Hero label={`P${latP}`} value={fmtLatency(latValue)} level={latencyLevel(latValue)} />
-        <Hero label="Erros 5xx" value={fmtInt(s.err_5xx_total)} unit="no período" level={errorLevel(s.err_5xx_total, "5xx")} />
-        <Hero label="Réplicas" value={r?.replicas_available != null ? `${r.replicas_available}/${r.replicas_desired ?? "?"}` : "—"} unit={hpaLevel(r?.replicas_desired, r?.hpa_max) === "warn" ? "no teto do HPA" : undefined} level={replicasLevel(r?.replicas_available, r?.replicas_desired) === "red" ? "red" : hpaLevel(r?.replicas_desired, r?.hpa_max) === "warn" ? "warn" : undefined} />
+        <Hero label={`P${latP}`} value={fmtLatency(latValue)} level={latencyLevel(latValue, th)} />
+        <Hero label="Erros 5xx" value={fmtInt(s.err_5xx_total)} unit="no período" level={errorLevel(e5, "5xx", th)} />
+        <Hero label="Réplicas" value={r?.replicas_available != null ? `${r.replicas_available}/${r.replicas_desired ?? "?"}` : "—"} unit={hpaLevel(r?.replicas_desired, r?.hpa_max, th) === "warn" ? "no teto do HPA" : undefined} level={replicasLevel(r?.replicas_available, r?.replicas_desired) === "red" ? "red" : hpaLevel(r?.replicas_desired, r?.hpa_max, th) === "warn" ? "warn" : undefined} />
       </div>
       {showToggle && (
         <button type="button" className="mb-1 inline-flex items-center gap-1 font-sans text-[11px] text-muted-foreground hover:text-foreground" onClick={onToggleDetails}>
@@ -566,33 +583,33 @@ const LiveCard = memo(function LiveCard({
           <Row label="Réplicas" level={replicasLevel(r.replicas_available, r.replicas_desired)} source="Prometheus">
             {r.replicas_available != null && r.replicas_desired != null ? <><b>{r.replicas_available}</b> / {r.replicas_desired} <span className="text-muted-foreground">(disp / des)</span></> : "sem dado"}
           </Row>
-          <Row label="Restarts 15m" level={restartsLevel(r.restarts_15m)} source="Prometheus">
+          <Row label="Restarts 15m" level={restartsLevel(r.restarts_15m, th)} source="Prometheus">
             {r.restarts_15m == null ? "sem dado" : <b>{r.restarts_15m}</b>}
             {fmtRestartReasons(r.restart_reasons) && <span className={`ml-1 ${fmtRestartReasons(r.restart_reasons).includes("OOMKilled") ? "text-red-400" : "text-muted-foreground"}`}>({fmtRestartReasons(r.restart_reasons)})</span>}
           </Row>
           {((r.pods_pending ?? 0) > 0 || (r.pods_not_ready ?? 0) > 0) && (
-            <Row label="Pods" level={podsLevel(r.pods_pending, r.pods_not_ready)} source="Prometheus">
+            <Row label="Pods" level={podsLevel(r.pods_pending, r.pods_not_ready, th)} source="Prometheus">
               <b>{r.pods_pending ?? 0}</b> pendente(s) · <b>{r.pods_not_ready ?? 0}</b> não pronto(s)
             </Row>
           )}
           {r.hpa_max != null && (
-            <Row label="HPA" level={hpaLevel(r.replicas_desired, r.hpa_max)} source="Prometheus">
-              <b>{r.hpa_min ?? "?"}–{r.hpa_max}</b> <span className="text-muted-foreground">réplicas (mín–máx){hpaLevel(r.replicas_desired, r.hpa_max) === "warn" ? " · no teto: não escala mais" : ""}</span>
+            <Row label="HPA" level={hpaLevel(r.replicas_desired, r.hpa_max, th)} source="Prometheus">
+              <b>{r.hpa_min ?? "?"}–{r.hpa_max}</b> <span className="text-muted-foreground">réplicas (mín–máx){hpaLevel(r.replicas_desired, r.hpa_max, th) === "warn" ? " · no teto: não escala mais" : ""}</span>
             </Row>
           )}
-          <Row label="CPU" level={usageLevel(r.cpu_lim_pct)} source="Prometheus">
+          <Row label="CPU" level={usageLevel(r.cpu_lim_pct, th)} source="Prometheus">
             <b>{fmtCores(r.cpu_cores)}</b> <span className="text-muted-foreground">{fmtUsagePcts(r.cpu_lim_pct, r.cpu_req_pct)}</span>
           </Row>
           {r.cpu_throttle_pct != null && (
-            <Row label="Throttling" level={throttleLevel(r.cpu_throttle_pct)} source="Prometheus">
+            <Row label="Throttling" level={throttleLevel(r.cpu_throttle_pct, th)} source="Prometheus">
               <b>{r.cpu_throttle_pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</b> <span className="text-muted-foreground">dos períodos de CPU limitados</span>
             </Row>
           )}
-          <Row label="Memória" level={usageLevel(r.mem_lim_pct)} source="Prometheus">
+          <Row label="Memória" level={usageLevel(r.mem_lim_pct, th)} source="Prometheus">
             <b>{fmtMemMB(r.mem_mb)}</b> <span className="text-muted-foreground">{fmtUsagePcts(r.mem_lim_pct, r.mem_req_pct)}</span>
           </Row>
           {(r.net_rx_bps != null || r.net_tx_bps != null) && (
-            <Row label="Rede" level={netLevel(r.net_err_ps)} source="Prometheus">
+            <Row label="Rede" level={netLevel(r.net_err_ps, th)} source="Prometheus">
               <b>↓ {fmtBytesPerSec(r.net_rx_bps)}</b> <b>↑ {fmtBytesPerSec(r.net_tx_bps)}</b>
               {r.net_err_ps != null && r.net_err_ps > 0 && <span className="text-muted-foreground"> · {r.net_err_ps.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}/s descartes/erros</span>}
             </Row>
@@ -605,10 +622,10 @@ const LiveCard = memo(function LiveCard({
         <>
       <Row label="RPS" level="info"><b>{fmtRps(rpsNow)}</b> req/s</Row>
       <Row label={`RPS ${spanLabel}`} level="info"><Spark times={s.times} values={s.rps} /></Row>
-      <Row label="Erros 5xx" level={errorLevel(s.err_5xx_total, "5xx")}>
+      <Row label="Erros 5xx" level={errorLevel(e5, "5xx", th)}>
         <b>{fmtInt(s.err_5xx_total)}</b> <span className="text-muted-foreground">no período · {fmtRps(e5)}/s agora</span>
       </Row>
-      <Row label="Erros 4xx" level={errorLevel(s.err_4xx_total, "4xx")}>
+      <Row label="Erros 4xx" level={errorLevel(e4, "4xx", th)}>
         <b>{fmtInt(s.err_4xx_total)}</b> <span className="text-muted-foreground">no período · {fmtRps(e4)}/s agora</span>
       </Row>
       {hasAvg && (
@@ -617,10 +634,10 @@ const LiveCard = memo(function LiveCard({
         </Row>
       )}
       {hasLatency && (
-        <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v)}>
+        <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v, th)}>
           {lat.map((l, i) => (
             <span key={l.p}>
-              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={LEVEL_CLASS[latencyLevel(l.v)]}>{fmtLatency(l.v)}</b>
+              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={l.p === latP ? LEVEL_CLASS[latencyLevel(l.v, th)] : ""} title={l.p === latP ? undefined : `Sem cor: os limites de latência valem para o P${latP}, o maior percentil marcado`}>{fmtLatency(l.v)}</b>
             </span>
           ))}
         </Row>
@@ -630,7 +647,7 @@ const LiveCard = memo(function LiveCard({
           <div className="flex flex-col font-sans text-[11px]">
             <Trend label="RPS" p={rpsProj} horizon={horizon} fmt={fmtRps} />
             {hasLatency && <Trend label={`P${latP}`} p={latProj} horizon={horizon} fmt={fmtLatency} />}
-            {toLimit != null && <span className="text-red-400">P99 deve passar de {fmtLatency(LATENCY_RED_MS)} em ~{Math.max(1, Math.round(toLimit))} min</span>}
+            {toLimit != null && <span className="text-red-400">P99 deve passar de {fmtLatency(th.latRedMs)} em ~{Math.max(1, Math.round(toLimit))} min</span>}
           </div>
         </Row>
       )}
@@ -646,6 +663,7 @@ const LiveCard = memo(function LiveCard({
 
 // Gráficos completos de uma aplicação (RPS, latência e erros com a projeção): montados só no modal.
 function DetailCharts({ s, base, percentiles, horizon, spanMs, win, markers }: { markers: Marker[]; s: LiveSeries; base?: LiveSeries; percentiles: number[]; horizon: number; spanMs: number; win?: { start: string; end: string } }) {
+  const th = useThresholds();
   // a rede só é pedida quando o modal abre (uma consulta por abertura e por atualização), não em todo cartão
   const netQ = useQuery({
     queryKey: ["metrics-live-net", s.cluster, s.namespace, s.workload, win?.start, win?.end],
@@ -669,7 +687,7 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs, win, markers }: {
       <MiniChart markers={markers} title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
         lines={[{ key: "rps", color: COLORS.rps, name: "RPS" }, { key: "rpsProj", color: COLORS.proj, name: "projeção", dashed: true }]} />
       {(d.hasLatency || d.hasAvg) && (
-        <MiniChart markers={markers} title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? LATENCY_RED_MS : undefined}
+        <MiniChart markers={markers} title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? th.latRedMs : undefined}
           lines={[
             ...(d.hasAvg ? [{ key: "avg", color: COLORS.avg, name: "Média" }] : []),
             ...(percentiles.includes(50) ? [{ key: "p50", color: COLORS.p50, name: "P50" }] : []),

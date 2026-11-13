@@ -6052,6 +6052,14 @@ class APIClient {
   async metricsReportSetsGet(): Promise<{ sets: unknown }> {
     return this.request("/monitoring/report-sets");
   }
+  // Limites de alerta do Tempo real, por usuário, no servidor (lista de um objeto).
+  async metricsLiveThresholdsGet(): Promise<{ thresholds: unknown }> {
+    return this.request("/monitoring/live-thresholds");
+  }
+  async metricsLiveThresholdsPut(thresholds: unknown[]): Promise<{ saved: number }> {
+    return this.request("/monitoring/live-thresholds", { method: "PUT", body: JSON.stringify({ thresholds }) });
+  }
+
   // Marcadores pontuais do Tempo real ("Marcar agora"), por usuário, no servidor.
   async metricsLiveMarkersGet(): Promise<{ markers: unknown }> {
     return this.request("/monitoring/live-markers");

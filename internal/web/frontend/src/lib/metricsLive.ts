@@ -3,6 +3,7 @@
 // chamada de rede aqui.
 
 import { fmtDurationMs } from "./fmtDuration";
+import { DEFAULT_THRESHOLDS, type Thresholds } from "./metricsThresholds";
 import type { ReportItem } from "@/lib/metricsReport";
 
 // ── tipos da API (espelham report.LiveResult) ──────────────────────────────────────────────────────
@@ -462,19 +463,22 @@ export const LIVE_MAX_POINTS = 120;
 export type Level = "ok" | "warn" | "red" | "info";
 export const LEVEL_LABEL: Record<Level, string> = { ok: "OK", warn: "ALERTA", red: "ERRO", info: "INFO" };
 
-/** Limites de latência: os do selo do relatório (P99 acima de 1 s é vermelho); metade disso já chama atenção. */
-export const LATENCY_WARN_MS = 500;
-export const LATENCY_RED_MS = 1000;
+/**
+ * Limites de latência PADRÃO (os do selo do relatório: P99 acima de 1 s é vermelho; metade disso já chama
+ * atenção). Cada usuário pode trocar em Opções; as funções abaixo recebem os limites e, sem eles, usam estes.
+ */
+export const LATENCY_WARN_MS = DEFAULT_THRESHOLDS.latWarnMs;
+export const LATENCY_RED_MS = DEFAULT_THRESHOLDS.latRedMs;
 
-export function latencyLevel(ms: number | null | undefined): Level {
+export function latencyLevel(ms: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (ms == null) return "info";
-  return ms > LATENCY_RED_MS ? "red" : ms > LATENCY_WARN_MS ? "warn" : "ok";
+  return ms > t.latRedMs ? "red" : ms > t.latWarnMs ? "warn" : "ok";
 }
 
-/** Erros por segundo: qualquer 5xx é vermelho e qualquer 4xx é alerta (mesma regra do relatório). Sem dado = info. */
-export function errorLevel(rate: number | null | undefined, kind: "4xx" | "5xx"): Level {
+/** Erros por segundo: 5xx acima do limite é vermelho e 4xx acima do limite é alerta (padrão: qualquer um). Sem dado = info. */
+export function errorLevel(rate: number | null | undefined, kind: "4xx" | "5xx", t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (rate == null) return "info";
-  return rate > 0 ? (kind === "5xx" ? "red" : "warn") : "ok";
+  return kind === "5xx" ? (rate > t.err5Rate ? "red" : "ok") : rate > t.err4Rate ? "warn" : "ok";
 }
 
 const LEVEL_RANK: Record<Level, number> = { info: 0, ok: 1, warn: 2, red: 3 };
@@ -500,17 +504,17 @@ const pct1 = (v: number) => `${v.toLocaleString("pt-BR", { maximumFractionDigits
  * Prometheus respondeu, réplicas, restarts, pods, teto do HPA, throttling, CPU/memória e rede, com o motivo
  * de cada item fora do normal. Falha de coleta é ERRO. É a mesma regra dos cartões, dos selos e da tabela.
  */
-export function assessSeries(s: LiveSeries, percentiles: number[]): { level: Level; reasons: string[] } {
+export function assessSeries(s: LiveSeries, percentiles: number[], t: Thresholds = DEFAULT_THRESHOLDS): { level: Level; reasons: string[] } {
   if (s.error && !s.resources) return { level: "red", reasons: [`falha na coleta: ${s.error}`] };
   const p = projectedPercentile(percentiles);
   const lat = lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms);
   const e5 = lastValue(s.err_5xx_rps);
   const e4 = lastValue(s.err_4xx_rps);
-  const levels: Level[] = [latencyLevel(lat), errorLevel(e5, "5xx"), errorLevel(e4, "4xx")];
+  const levels: Level[] = [latencyLevel(lat, t), errorLevel(e5, "5xx", t), errorLevel(e4, "4xx", t)];
   const reasons: string[] = [];
-  if (latencyLevel(lat) === "red" || latencyLevel(lat) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
-  if (errorLevel(e5, "5xx") === "red") reasons.push(`5xx ${perSec(e5 as number)}${s.err_5xx_total != null ? ` (${Math.round(s.err_5xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
-  if (errorLevel(e4, "4xx") === "warn") reasons.push(`4xx ${perSec(e4 as number)}${s.err_4xx_total != null ? ` (${Math.round(s.err_4xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
+  if (latencyLevel(lat, t) === "red" || latencyLevel(lat, t) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
+  if (errorLevel(e5, "5xx", t) === "red") reasons.push(`5xx ${perSec(e5 as number)}${s.err_5xx_total != null ? ` (${Math.round(s.err_5xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
+  if (errorLevel(e4, "4xx", t) === "warn") reasons.push(`4xx ${perSec(e4 as number)}${s.err_4xx_total != null ? ` (${Math.round(s.err_4xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
 
   const r = s.resources;
   if (r) {
@@ -520,13 +524,13 @@ export function assessSeries(s: LiveSeries, percentiles: number[]): { level: Lev
     };
     add(replicasLevel(r.replicas_available, r.replicas_desired), `réplicas ${r.replicas_available}/${r.replicas_desired}`);
     const why = fmtRestartReasons(r.restart_reasons);
-    add(why.includes("OOMKilled") && (r.restarts_15m ?? 0) > 0 ? "red" : restartsLevel(r.restarts_15m), `${r.restarts_15m} restart(s) em 15 min${why ? ` (${why})` : ""}`);
-    add(podsLevel(r.pods_pending, r.pods_not_ready), `${r.pods_pending ?? 0} pod(s) pendente(s), ${r.pods_not_ready ?? 0} não pronto(s)`);
-    add(hpaLevel(r.replicas_desired, r.hpa_max), `HPA no teto (${r.hpa_max} réplicas)`);
-    add(throttleLevel(r.cpu_throttle_pct), `throttling de CPU ${pct1(r.cpu_throttle_pct ?? 0)}`);
-    add(usageLevel(r.cpu_lim_pct), `CPU ${pct1(r.cpu_lim_pct ?? 0)} do limit`);
-    add(usageLevel(r.mem_lim_pct), `memória ${pct1(r.mem_lim_pct ?? 0)} do limit`);
-    add(netLevel(r.net_err_ps), `rede: ${perSec(r.net_err_ps ?? 0)} descartes/erros`);
+    add(why.includes("OOMKilled") && (r.restarts_15m ?? 0) > 0 ? "red" : restartsLevel(r.restarts_15m, t), `${r.restarts_15m} restart(s) em 15 min${why ? ` (${why})` : ""}`);
+    add(podsLevel(r.pods_pending, r.pods_not_ready, t), `${r.pods_pending ?? 0} pod(s) pendente(s), ${r.pods_not_ready ?? 0} não pronto(s)`);
+    add(hpaLevel(r.replicas_desired, r.hpa_max, t), `HPA no teto (${r.hpa_max} réplicas)`);
+    add(throttleLevel(r.cpu_throttle_pct, t), `throttling de CPU ${pct1(r.cpu_throttle_pct ?? 0)}`);
+    add(usageLevel(r.cpu_lim_pct, t), `CPU ${pct1(r.cpu_lim_pct ?? 0)} do limit`);
+    add(usageLevel(r.mem_lim_pct, t), `memória ${pct1(r.mem_lim_pct ?? 0)} do limit`);
+    add(netLevel(r.net_err_ps, t), `rede: ${perSec(r.net_err_ps ?? 0)} descartes/erros`);
   }
   const level = worstLevel(levels);
   if (level === "info") reasons.push("sem dados no período");
@@ -534,15 +538,15 @@ export function assessSeries(s: LiveSeries, percentiles: number[]): { level: Lev
 }
 
 /** Nível resumido de uma aplicação (cabeçalho do cluster, selos e tabela). */
-export function seriesLevel(s: LiveSeries, percentiles: number[]): Level {
-  return assessSeries(s, percentiles).level;
+export function seriesLevel(s: LiveSeries, percentiles: number[], t: Thresholds = DEFAULT_THRESHOLDS): Level {
+  return assessSeries(s, percentiles, t).level;
 }
 
 /** Resumo para os selos do topo: aplicações agrupadas pelo nível, com o motivo de cada uma. Falha de coleta conta como ERRO. */
-export function summarizeStatus(series: LiveSeries[], percentiles: number[]): StatusSummary {
+export function summarizeStatus(series: LiveSeries[], percentiles: number[], t: Thresholds = DEFAULT_THRESHOLDS): StatusSummary {
   const out: StatusSummary = { red: [], warn: [], ok: [], info: [] };
   for (const s of series) {
-    const a = assessSeries(s, percentiles);
+    const a = assessSeries(s, percentiles, t);
     out[a.level].push({ name: `${s.cluster} · ${s.workload}`, reasons: a.reasons });
   }
   return out;
@@ -579,16 +583,16 @@ export function replicasLevel(avail: number | null | undefined, desired: number 
   return avail >= desired ? "ok" : "red";
 }
 
-/** Restarts nos últimos 15 min: qualquer um é alerta. */
-export function restartsLevel(n: number | null | undefined): Level {
+/** Restarts nos últimos 15 min acima do limite (padrão: qualquer um) é alerta. */
+export function restartsLevel(n: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (n == null) return "info";
-  return n > 0 ? "warn" : "ok";
+  return n > t.restartsWarn ? "warn" : "ok";
 }
 
-/** Uso em % do limit: acima de 85% é ERRO, acima de 70% é ALERTA. Sem limit definido não há veredito (info). */
-export function usageLevel(limPct: number | null | undefined): Level {
+/** Uso em % do limit (padrão: acima de 85% é ERRO, acima de 70% é ALERTA). Sem limit definido não há veredito (info). */
+export function usageLevel(limPct: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (limPct == null) return "info";
-  return limPct > 85 ? "red" : limPct > 70 ? "warn" : "ok";
+  return limPct > t.usageRed ? "red" : limPct > t.usageWarn ? "warn" : "ok";
 }
 
 /** "OOMKilled ×2, Error ×1": as razões dos restarts, da mais frequente para a menos (empate por nome). */
@@ -598,28 +602,28 @@ export function fmtRestartReasons(m: Record<string, number> | null | undefined):
   return e.map(([r, n]) => `${r} ×${n}`).join(", ");
 }
 
-/** Pods pendentes ou não prontos: qualquer um é alerta (rollout, scale-out em andamento ou falta de capacidade). */
-export function podsLevel(pending: number | null | undefined, notReady: number | null | undefined): Level {
+/** Pods pendentes ou não prontos: qualquer um é alerta (rollout, scale-out em andamento ou falta de capacidade). Desligável. */
+export function podsLevel(pending: number | null | undefined, notReady: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (pending == null && notReady == null) return "info";
-  return (pending ?? 0) > 0 || (notReady ?? 0) > 0 ? "warn" : "ok";
+  return t.pods && ((pending ?? 0) > 0 || (notReady ?? 0) > 0) ? "warn" : "ok";
 }
 
-/** HPA no teto (réplicas desejadas >= máximo): a aplicação não escala mais e a latência tende a subir. Sem HPA = info. */
-export function hpaLevel(desired: number | null | undefined, max: number | null | undefined): Level {
+/** HPA no teto (réplicas desejadas >= máximo): a aplicação não escala mais e a latência tende a subir. Sem HPA = info. Desligável. */
+export function hpaLevel(desired: number | null | undefined, max: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (max == null || desired == null) return "info";
-  return max > 0 && desired >= max ? "warn" : "ok";
+  return t.hpaCeiling && max > 0 && desired >= max ? "warn" : "ok";
 }
 
-/** Throttling de CPU (% dos períodos limitados): acima de 25% é ERRO, acima de 10% é ALERTA. */
-export function throttleLevel(pct: number | null | undefined): Level {
+/** Throttling de CPU, % dos períodos limitados (padrão: acima de 25% é ERRO, acima de 10% é ALERTA). */
+export function throttleLevel(pct: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (pct == null) return "info";
-  return pct > 25 ? "red" : pct > 10 ? "warn" : "ok";
+  return pct > t.throttleRed ? "red" : pct > t.throttleWarn ? "warn" : "ok";
 }
 
-/** Rede: pacotes descartados + erros acima de 0,5/s é ALERTA. O volume em si não tem veredito. */
-export function netLevel(errPs: number | null | undefined): Level {
+/** Rede: pacotes descartados + erros acima do limite (padrão 0,5/s) é ALERTA. O volume em si não tem veredito. */
+export function netLevel(errPs: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
   if (errPs == null) return "info";
-  return errPs > 0.5 ? "warn" : "ok";
+  return errPs > t.netWarn ? "warn" : "ok";
 }
 
 /** Bytes por segundo em B, KB, MB ou GB (base 1024), com uma casa. */
