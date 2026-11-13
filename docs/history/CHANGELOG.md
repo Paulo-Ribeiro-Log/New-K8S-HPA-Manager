@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: relatórios salvos, só ao clicar em Salvar (Novembro 2026)
+
+O relatório coletado vive 1 hora no servidor (`reportJobTTL`) e some ao reiniciá-lo. O botão **Relatórios salvos** (`MetricsSavedReports`), na linha do Coletar, guarda o resultado completo com um nome (padrão: a janela), por usuário, em `~/.k8s-hpa-manager/saved-reports.db` (`storage.SavedReportsStore`, JSON gzip). **Nada é salvo sozinho.** Rotas: `POST /monitoring/reports/:id/save` (só job concluído do próprio usuário), `GET /monitoring/saved-reports`, `GET/DELETE /monitoring/saved-reports/:id`. Limites: 50 por usuário e 16 MB por relatório, sem descarte silencioso (estourou, o erro pede para apagar algum). Abrir um salvo mostra uma faixa azul e alimenta tela, exportação (com escopo) e comparação; coletar de novo sai dele.
+
 ### Relatório: exportação por escopo, um cluster ou alguns namespaces (Novembro 2026)
 
 Botão **Escopo** na barra Exportar (`MetricsExportScopePicker`, lógica pura em `metricsExportScope.ts`): marca cluster inteiro ou só alguns namespaces do que foi coletado, e Markdown, CSV, PDF, Markdown copiado e código mostrado saem só com isso. É um filtro das linhas antes dos geradores (`filterByScope`), então a tabela da tela e a coleta não mudam. Parcial leva `scope_note` (frontend, não vai ao servidor), que vira a linha "Escopo: exportação parcial" no Markdown e no PDF; o nome do arquivo leva o cluster (`scopeSlug`, via `fileSlug`) ou "parcial". O escopo reinicia em "tudo" a cada coleta; sem nada marcado os botões ficam desabilitados.

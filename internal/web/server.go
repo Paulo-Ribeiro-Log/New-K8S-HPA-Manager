@@ -91,6 +91,7 @@ type Server struct {
 	// AI Tokens Store (compartilhado com Dynatrace handler)
 	aiTokensStore      *storage.UserTokensStore
 	localSettingsStore *storage.LocalSettingsStore // conjuntos salvos do Relatório de Métricas
+	savedReportsStore  *storage.SavedReportsStore  // relatórios salvos de propósito (saved-reports.db)
 
 	// AI History Store (compartilhado com Dynatrace handler)
 	aiHistoryStore *storage.AIHistoryStore
@@ -482,6 +483,15 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ SNAT History Store inicializado (projeção de crescimento SNAT)")
 	}
 
+	// Relatórios salvos do Relatório de Métricas (só ao clicar em "Salvar")
+	var savedReportsStore *storage.SavedReportsStore
+	if store, err := storage.NewSavedReportsStore(filepath.Join(baseDir, "saved-reports.db")); err != nil {
+		fmt.Printf("⚠️  Saved Reports Store: falha ao criar store: %v\n", err)
+	} else {
+		savedReportsStore = store
+		fmt.Println("✅ Saved Reports Store inicializado (relatórios salvos do Relatório de Métricas)")
+	}
+
 	// Notes Store (anotações Markdown por cluster+aba)
 	var notesHandler *handlers.NotesHandler
 	notesDBPath := filepath.Join(baseDir, "notes.db")
@@ -561,6 +571,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		cloudAccountHintsHandler:  cloudAccountHintsHandler, // Lembrete de conta .ca por provider
 		aiTokensStore:             aiTokensStore,            // Compartilhado com Dynatrace handler
 		localSettingsStore:        localSettingsStore,
+		savedReportsStore:         savedReportsStore,
 		aiHistoryStore:            aiHistoryStore,            // Compartilhado com Dynatrace handler
 		kubeManagerWrapper:        kubeManagerWrapper,        // Para predictions RBAC
 		awxHandler:                awxHandler,                // AWX Integration (certificados TLS)
@@ -2185,6 +2196,15 @@ func (s *Server) setupRoutes() {
 		monitoringReportsGroup.POST("", monitoringReports.Start)
 		monitoringReportsGroup.GET("/:id", monitoringReports.Get)
 		monitoringReportsGroup.DELETE("/:id", monitoringReports.Cancel)
+	}
+	// Relatórios salvos de propósito (reabrir depois de 1 h ou de reiniciar o servidor)
+	savedReports := handlers.NewMonitoringSavedReportsHandler(s.savedReportsStore, monitoringReports)
+	monitoringReportsGroup.POST("/:id/save", savedReports.Save)
+	savedReportsGroup := api.Group("/monitoring/saved-reports", rbacMiddleware.InjectUserEmail())
+	{
+		savedReportsGroup.GET("", savedReports.List)
+		savedReportsGroup.GET("/:id", savedReports.Get)
+		savedReportsGroup.DELETE("/:id", savedReports.Delete)
 	}
 	// Tempo real do relatório (séries do Dynatrace, consulta síncrona repetida pela tela)
 	api.POST("/monitoring/live", rbacMiddleware.InjectUserEmail(), monitoringReports.Live)
