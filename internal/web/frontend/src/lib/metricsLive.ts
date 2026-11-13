@@ -3,7 +3,7 @@
 // chamada de rede aqui.
 
 import { fmtDurationMs } from "./fmtDuration";
-import { DEFAULT_THRESHOLDS, type Thresholds } from "./metricsThresholds";
+import { DEFAULT_THRESHOLDS, latencyLimits, type Thresholds } from "./metricsThresholds";
 import type { ReportItem } from "@/lib/metricsReport";
 
 // ── tipos da API (espelham report.LiveResult) ──────────────────────────────────────────────────────
@@ -494,12 +494,14 @@ export const LEVEL_LABEL: Record<Level, string> = { ok: "OK", warn: "ALERTA", re
  * Limites de latência PADRÃO (os do selo do relatório: P99 acima de 1 s é vermelho; metade disso já chama
  * atenção). Cada usuário pode trocar em Opções; as funções abaixo recebem os limites e, sem eles, usam estes.
  */
-export const LATENCY_WARN_MS = DEFAULT_THRESHOLDS.latWarnMs;
-export const LATENCY_RED_MS = DEFAULT_THRESHOLDS.latRedMs;
+export const LATENCY_WARN_MS = DEFAULT_THRESHOLDS.p99WarnMs;
+export const LATENCY_RED_MS = DEFAULT_THRESHOLDS.p99RedMs;
 
-export function latencyLevel(ms: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS): Level {
+/** Situação de uma latência pela escala do PRÓPRIO percentil (padrão: o P99, que é a escala de 0,5 s e 1 s). */
+export function latencyLevel(ms: number | null | undefined, t: Thresholds = DEFAULT_THRESHOLDS, percentile: 50 | 95 | 99 = 99): Level {
   if (ms == null) return "info";
-  return ms > t.latRedMs ? "red" : ms > t.latWarnMs ? "warn" : "ok";
+  const lim = latencyLimits(t, percentile);
+  return ms > lim.red ? "red" : ms > lim.warn ? "warn" : "ok";
 }
 
 /** Erros por segundo: 5xx acima do limite é vermelho e 4xx acima do limite é alerta (padrão: qualquer um). Sem dado = info. */
@@ -537,9 +539,9 @@ export function assessSeries(s: LiveSeries, percentiles: number[], t: Thresholds
   const lat = lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms);
   const e5 = lastValue(s.err_5xx_rps);
   const e4 = lastValue(s.err_4xx_rps);
-  const levels: Level[] = [latencyLevel(lat, t), errorLevel(e5, "5xx", t), errorLevel(e4, "4xx", t)];
+  const levels: Level[] = [latencyLevel(lat, t, p), errorLevel(e5, "5xx", t), errorLevel(e4, "4xx", t)];
   const reasons: string[] = [];
-  if (latencyLevel(lat, t) === "red" || latencyLevel(lat, t) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
+  if (latencyLevel(lat, t, p) === "red" || latencyLevel(lat, t, p) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
   if (errorLevel(e5, "5xx", t) === "red") reasons.push(`5xx ${perSec(e5 as number)}${s.err_5xx_total != null ? ` (${Math.round(s.err_5xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
   if (errorLevel(e4, "4xx", t) === "warn") reasons.push(`4xx ${perSec(e4 as number)}${s.err_4xx_total != null ? ` (${Math.round(s.err_4xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
 
