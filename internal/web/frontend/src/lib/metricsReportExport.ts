@@ -50,6 +50,8 @@ export interface ExportTable {
     sources: string;
     nodeContext: boolean;
     extras: boolean;
+    /** Exportação parcial: o que foi incluído (vazio = tudo o que foi coletado). */
+    scope: string;
   };
 }
 
@@ -133,6 +135,7 @@ export function buildExportTable(result: ReportResult): ExportTable {
       sources: usedSources(result.rows),
       nodeContext: !!result.node_context,
       extras: !!result.extras,
+      scope: result.scope_note ?? "",
     },
   };
 }
@@ -152,6 +155,7 @@ export function buildMarkdown(result: ReportResult): string {
   const out: string[] = [];
   out.push("# Relatório de Métricas", "");
   out.push(`- **Janela:** ${t.meta.window}`);
+  if (t.meta.scope) out.push(`- **Escopo:** exportação **parcial** — ${escapeMdCell(t.meta.scope)}`);
   out.push(`- **Resolução:** ${t.meta.resolution}${t.meta.peakApprox ? " — **pico aproximado**: a resolução disponível suaviza picos curtos" : ""}`);
   out.push(`- **Percentis coletados:** ${t.meta.percentiles.map((p) => `P${p}`).join(", ")}`);
   out.push(`- **Fontes:** ${t.meta.sources}`);
@@ -288,6 +292,7 @@ export async function buildReportPDF(result: ReportResult) {
   doc.setFont("helvetica", "normal");
   doc.setTextColor(60, 60, 60);
   const info = [
+    ...(t.meta.scope ? [`Escopo: exportacao PARCIAL - ${pdfSafe(t.meta.scope)}`] : []),
     `Resolucao: ${pdfSafe(t.meta.resolution)}${t.meta.peakApprox ? " - PICO APROXIMADO (a resolucao disponivel suaviza picos curtos)" : ""}`,
     `Percentis: ${t.meta.percentiles.map((p) => `P${p}`).join(", ")}   |   Fontes: ${pdfSafe(t.meta.sources)}   |   Gerado em: ${t.meta.generatedAt}`,
     ...(t.meta.extras ? ["Replicas, HPA, restarts e rede incluidos (Prometheus, ~14 dias). Rede = bytes/s somando os pods (pico / media). E contexto, nao veredito."] : []),
@@ -363,9 +368,10 @@ export async function buildReportPDF(result: ReportResult) {
 }
 
 /** Gera e baixa o PDF do relatório. */
-export async function exportReportPDF(result: ReportResult): Promise<void> {
+/** `nameSlug` (ex.: o cluster escolhido) entra no nome do arquivo quando a exportação é parcial. */
+export async function exportReportPDF(result: ReportResult, nameSlug = ""): Promise<void> {
   const doc = await buildReportPDF(result);
-  doc.save(`relatorio-metricas_${fileStamp(result.generated_at)}.pdf`);
+  doc.save(`relatorio-metricas${nameSlug ? `_${nameSlug}` : ""}_${fileStamp(result.generated_at)}.pdf`);
 }
 
 // ── download de texto (CSV, Markdown) ────────────────────────────────────────────────────────────────

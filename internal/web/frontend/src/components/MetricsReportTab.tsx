@@ -12,6 +12,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { MetricsLivePanel } from "@/components/MetricsLivePanel";
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
 import { MetricsComparePanel } from "@/components/MetricsComparePanel";
+import { MetricsExportScopePicker } from "@/components/MetricsExportScopePicker";
+import { allKeys, describeScope, filterByScope, scopeSlug, scopeTree } from "@/lib/metricsExportScope";
+import { fileSlug } from "@/lib/metricsEvents";
 import { useReportEvents } from "@/hooks/useReportEvents";
 import { ClusterFilterBar } from "@/components/ClusterFilterBar";
 import { ClusterJourneyCombobox } from "@/components/ClusterJourneyCombobox";
@@ -687,13 +690,20 @@ function ReportExportBar({ result }: { result: ReportResult }) {
   const [showMd, setShowMd] = useState(false);
   const [delimiter, setDelimiter] = useState<CsvDelimiter>(";");
   const [pdfBusy, setPdfBusy] = useState(false);
-  const md = useMemo(() => buildMarkdown(result), [result]);
-  const stamp = fileStamp(result.generated_at);
+  // escopo da exportação: tudo (padrão), um cluster ou só alguns namespaces; a tabela da tela não muda
+  const tree = useMemo(() => scopeTree(result.rows), [result.rows]);
+  const [selected, setSelected] = useState<Set<string>>(() => allKeys(tree));
+  useEffect(() => setSelected(allKeys(tree)), [tree]); // relatório novo: volta a tudo
+  const scoped = useMemo(() => filterByScope(result, selected), [result, selected]);
+  const empty = describeScope(tree, selected).apps === 0;
+  const slug = scopeSlug(tree, selected, fileSlug);
+  const md = useMemo(() => buildMarkdown(scoped), [scoped]);
+  const stamp = `${slug ? `${slug}_` : ""}${fileStamp(result.generated_at)}`;
 
   async function pdf() {
     setPdfBusy(true);
     try {
-      await exportReportPDF(result);
+      await exportReportPDF(scoped, slug);
     } catch (e) {
       toast.error(`Falha ao gerar o PDF: ${errText(e)}`);
     } finally {
@@ -705,17 +715,18 @@ function ReportExportBar({ result }: { result: ReportResult }) {
     <section className="rounded-md border border-border p-2 space-y-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs font-medium mr-1">Exportar</span>
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => copyText(md, "Markdown do relatório")}>
+        {(tree.length > 1 || (tree[0]?.namespaces.length ?? 0) > 1) && <MetricsExportScopePicker tree={tree} selected={selected} onChange={setSelected} />}
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={empty} onClick={() => copyText(md, "Markdown do relatório")}>
           <Copy className="h-3.5 w-3.5" />Copiar Markdown
         </Button>
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => setShowMd(true)}>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={empty} onClick={() => setShowMd(true)}>
           <FileText className="h-3.5 w-3.5" />Ver código Markdown
         </Button>
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={empty} onClick={() => downloadText(md, "text/markdown", `relatorio-metricas_${stamp}.md`)}>
           <FileDown className="h-3.5 w-3.5" />.md
         </Button>
         <span className="mx-1 h-4 w-px bg-border" />
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => downloadText(buildCSV(result, delimiter), "text/csv", `relatorio-metricas_${stamp}.csv`)}>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={empty} onClick={() => downloadText(buildCSV(scoped, delimiter), "text/csv", `relatorio-metricas_${stamp}.csv`)}>
           <FileSpreadsheet className="h-3.5 w-3.5" />CSV
         </Button>
         <select
@@ -728,7 +739,7 @@ function ReportExportBar({ result }: { result: ReportResult }) {
           <option value=",">separador ,</option>
         </select>
         <span className="mx-1 h-4 w-px bg-border" />
-        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={pdfBusy} onClick={pdf}>
+        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={pdfBusy || empty} onClick={pdf}>
           {pdfBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}PDF
         </Button>
       </div>

@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: exportação por escopo, um cluster ou alguns namespaces (Novembro 2026)
+
+Botão **Escopo** na barra Exportar (`MetricsExportScopePicker`, lógica pura em `metricsExportScope.ts`): marca cluster inteiro ou só alguns namespaces do que foi coletado, e Markdown, CSV, PDF, Markdown copiado e código mostrado saem só com isso. É um filtro das linhas antes dos geradores (`filterByScope`), então a tabela da tela e a coleta não mudam. Parcial leva `scope_note` (frontend, não vai ao servidor), que vira a linha "Escopo: exportação parcial" no Markdown e no PDF; o nome do arquivo leva o cluster (`scopeSlug`, via `fileSlug`) ou "parcial". O escopo reinicia em "tudo" a cada coleta; sem nada marcado os botões ficam desabilitados.
+
 ### Tempo real: limites de latência por percentil (Novembro 2026)
 
 Os limites de latência passaram de um par só (que valia para o maior percentil marcado) para **um par por percentil**: P50 alerta 200 ms / erro 500 ms, P95 400 ms / 800 ms, P99 500 ms / 1 s (o P99 é o padrão de sempre). Um P50 de 600 ms e um P99 de 600 ms não são a mesma coisa, e antes só o maior percentil recebia cor. Agora **todos** os percentis marcados são coloridos, cada um pela escala do próprio percentil, na tabela e na linha "Latências" do cartão, e o tooltip diz os limites. `latencyLevel(ms, t, percentil)` (padrão P99), `latencyLimits` e os campos `p50WarnMs`...`p99RedMs` em `Thresholds`; o formulário de limites ganhou os 3 pares. A situação da aplicação continua usando só o maior percentil marcado, agora pela escala dele. **Migração:** limites salvos antes (`latWarnMs`/`latRedMs`) viram os do P99 e o P50 e o P95 ficam no padrão; o campo antigo não volta a ser gravado. Isto desfaz o `4d36fbd2` ("só o maior percentil é colorido").

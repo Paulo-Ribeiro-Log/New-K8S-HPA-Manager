@@ -113,6 +113,8 @@ export interface ReportResult {
   node_context?: boolean;
   /** Réplicas, HPA, restarts e rede foram coletados (colunas na tabela e nas exportações). */
   extras?: boolean;
+  /** Só no navegador: a exportação é parcial (um cluster ou alguns namespaces); texto do cabeçalho dos documentos. */
+  scope_note?: string;
   plan: ReportPlan;
   warnings?: string[];
   rows: ReportRow[];
