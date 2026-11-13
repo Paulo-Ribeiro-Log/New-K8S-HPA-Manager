@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: exportação por escopo, um cluster ou alguns namespaces (Novembro 2026)
+
+Botão **Escopo** na barra Exportar (`MetricsExportScopePicker`, lógica pura em `metricsExportScope.ts`): marca cluster inteiro ou só alguns namespaces do que foi coletado, e Markdown, CSV, PDF, Markdown copiado e código mostrado saem só com isso. É um filtro das linhas antes dos geradores (`filterByScope`), então a tabela da tela e a coleta não mudam. Parcial leva `scope_note` (frontend, não vai ao servidor), que vira a linha "Escopo: exportação parcial" no Markdown e no PDF; o nome do arquivo leva o cluster (`scopeSlug`, via `fileSlug`) ou "parcial". O escopo reinicia em "tudo" a cada coleta; sem nada marcado os botões ficam desabilitados.
+
 ### Relatório: exportar a comparação com um evento (Novembro 2026)
 
 Botões **Markdown** e **CSV** na seção "Comparar com um evento" (`metricsCompareExport.ts`). Markdown: as duas janelas, o evento, a latência comparada, os avisos e uma tabela por cluster, com "atual / evento (variação)" em cada célula e o veredito (pior/melhor) quando passa de 5%. CSV: um registro por aplicação com, por métrica, `_atual`, `_evento` e `_variacao_pct` (números crus, latência em ms, vazio sem dado), coluna `evento` e BOM para o Excel. O nome do evento vai no título e no nome do arquivo (`comparacao_<evento>_<data>`).
