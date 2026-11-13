@@ -81,6 +81,10 @@ A caixa **Contexto de node** acrescenta quatro colunas, para ajudar a interpreta
 
 **Retenção:** CPU, memória e o contexto de node vêm do **Prometheus, que guarda cerca de 14 dias**. Numa janela mais antiga essas colunas saem "sem dado" (o tráfego, que vem do Dynatrace, continua). A tela avisa **antes de coletar**, logo abaixo da janela.
 
+## Relatórios salvos
+
+O relatório coletado some do servidor depois de 1 hora (ou ao reiniciá-lo). Para guardá-lo, abra **Relatórios salvos**, dê um nome e clique em **Salvar**: nada é salvo automaticamente. Cada usuário vê só os seus (até 50, de até 16 MB cada; ao atingir o limite, apague algum). **Abrir** mostra o relatório como foi coletado, e você pode exportar (com o escopo) e comparar normalmente. Colete de novo para sair dele.
+
 ## Tempo real
 
 A sub-aba **Tempo real** (ao lado de **Relatório**, no topo) acompanha as aplicações marcadas no painel de alvos, com as métricas do Dynatrace, num **cartão por aplicação**, agrupado por cluster: **RPS** atual, **barras do RPS** no período (com o máximo), **erros 5xx e 4xx** (contagem no período, como 19.197, mais a taxa por segundo de agora), **latências** (P50, P95 e P99, os mesmos percentis marcados no relatório) e a **tendência**. Cada linha tem a situação à direita: OK, ALERTA ou ERRO (P99 acima de 1 s, qualquer 5xx é ERRO e qualquer 4xx é ALERTA, a mesma regra do relatório). O ícone de gráfico no cartão abre os **gráficos completos** (RPS, latência e erros, com a projeção).

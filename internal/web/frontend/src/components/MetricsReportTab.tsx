@@ -16,6 +16,8 @@ import { MetricsExportScopePicker } from "@/components/MetricsExportScopePicker"
 import { MetricsThresholdsDialog } from "@/components/MetricsThresholdsDialog";
 import { useLiveThresholds } from "@/hooks/useLiveThresholds";
 import { reportThresholds, type ReportThresholds } from "@/lib/metricsThresholds";
+import { MetricsSavedReports } from "@/components/MetricsSavedReports";
+import { savedAt, type SavedReport } from "@/lib/metricsSavedReports";
 import { allKeys, describeScope, filterByScope, scopeSlug, scopeTree } from "@/lib/metricsExportScope";
 import { fileSlug } from "@/lib/metricsEvents";
 import { useReportEvents } from "@/hooks/useReportEvents";
@@ -435,6 +437,7 @@ export function MetricsReportTab() {
     },
     onSuccess: (r) => {
       setJobId(r.id);
+      setOpened(null); // coletar de novo sai do relatório salvo que estava aberto
       setExpanded(new Set());
     },
     onError: (e: Error) => toast.error(e.message || "Falha ao iniciar o relatório"),
@@ -454,7 +457,9 @@ export function MetricsReportTab() {
 
   const canCollect = !running && items.length > 0 && items.length <= MAX_ITEMS && !!windowIso && !plan.isError && !plan.isLoading;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const result = job.data?.result;
+  // relatório salvo aberto (ou o coletado agora): é o que a tela, a exportação e a comparação usam
+  const [opened, setOpened] = useState<SavedReport | null>(null);
+  const result = opened ? opened.result : job.data?.result;
 
   return (
     <div className="flex h-full overflow-hidden bg-background">
@@ -639,6 +644,16 @@ export function MetricsReportTab() {
                 </div>
               </PopoverContent>
             </Popover>
+            <MetricsSavedReports
+              jobId={job.data?.state === "done" ? jobId : null}
+              current={!opened && job.data?.state === "done" ? job.data.result ?? null : null}
+              opened={!!opened}
+              disabled={running}
+              onOpen={(r) => {
+                setOpened(r);
+                setExpanded(new Set());
+              }}
+            />
             <span className="text-[11px] text-muted-foreground" title="O que será coletado, além de tráfego, erros, CPU e memória">
               {[percentiles.map((p) => `P${p}`).join("/"), nodeContext && "node", extras && "réplicas/HPA/rede"].filter(Boolean).join(" · ")}
             </span>
@@ -668,6 +683,12 @@ export function MetricsReportTab() {
         {job.data?.state === "failed" && <div className="text-xs text-red-400">Falhou: {job.data.error}</div>}
         {job.data?.state === "cancelled" && <div className="text-xs text-amber-400">Coleta cancelada.</div>}
 
+        {opened && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs">
+            <span>Relatório salvo: <b>{opened.meta.name}</b> · {savedAt(opened.meta)}. A janela e os dados são os da coleta original.</span>
+            <Button size="sm" variant="outline" className="h-6 text-[11px] ml-auto" onClick={() => setOpened(null)}>{job.data?.result ? "Voltar ao relatório coletado" : "Fechar"}</Button>
+          </div>
+        )}
         {result && <ReportExportBar result={result} />}
 
         {result && (
@@ -691,7 +712,7 @@ export function MetricsReportTab() {
             warnings={result.warnings ?? []}
           />
         )}
-        {result && result.rows.length > 0 && <MetricsComparePanel key={job.data?.id} result={result} events={reportEvents.events} />}
+        {result && result.rows.length > 0 && <MetricsComparePanel key={opened?.meta.id ?? job.data?.id} result={result} events={reportEvents.events} />}
           </>
         )}
       </main>

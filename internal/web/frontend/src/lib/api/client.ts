@@ -4,6 +4,7 @@
 
 import type { ReportItem, ReportJob, ReportPlanResponse } from "@/lib/metricsReport";
 import type { LiveResult, NetworkSeries } from "@/lib/metricsLive";
+import type { SavedReport, SavedReportMeta } from "@/lib/metricsSavedReports";
 import type {
   Cluster,
   ClusterInfo,
@@ -6028,6 +6029,20 @@ class APIClient {
   // Inicia a coleta (job em memória no servidor) e devolve o id; o andamento vem de metricsReportJob.
   async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; node_context?: boolean; extras?: boolean; thresholds?: { p99_red_ms: number; err_4xx: number; err_5xx: number } }): Promise<{ id: string; total: number }> {
     return this.request("/monitoring/reports", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  // Relatórios salvos de propósito (reabrir depois de 1 h ou de reiniciar o servidor), por usuário.
+  async saveMetricsReport(jobId: string, name: string): Promise<SavedReportMeta> {
+    return this.request(`/monitoring/reports/${encodeURIComponent(jobId)}/save`, { method: "POST", body: JSON.stringify({ name }) });
+  }
+  async listSavedReports(): Promise<{ reports: SavedReportMeta[] }> {
+    return this.request("/monitoring/saved-reports");
+  }
+  async getSavedReport(id: number): Promise<SavedReport> {
+    return this.request(`/monitoring/saved-reports/${id}`);
+  }
+  async deleteSavedReport(id: number): Promise<{ deleted: number }> {
+    return this.request(`/monitoring/saved-reports/${id}`, { method: "DELETE" });
   }
 
   async metricsReportJob(id: string): Promise<ReportJob> {

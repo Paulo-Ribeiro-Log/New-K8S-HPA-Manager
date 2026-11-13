@@ -22,7 +22,7 @@ type StorageInfo struct {
 	Protocol       string            `json:"protocol,omitempty"`
 	Account        string            `json:"account,omitempty"`
 	ResourceGroup  string            `json:"resource_group,omitempty"`
-	Share          string            `json:"share,omitempty"` // share (Files) ou container (Blob)
+	Share          string            `json:"share,omitempty"`       // share (Files) ou container (Blob)
 	ResourceID     string            `json:"resource_id,omitempty"` // Azure Disk: ID completo do recurso (vem do volumeHandle)
 	Params         map[string]string `json:"params,omitempty"`
 }
