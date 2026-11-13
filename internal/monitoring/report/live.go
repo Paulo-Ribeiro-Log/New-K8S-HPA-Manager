@@ -112,6 +112,8 @@ type LiveResult struct {
 	Warnings    []string     `json:"warnings,omitempty"`
 	Series      []LiveSeries `json:"series"`
 	GeneratedAt time.Time    `json:"generated_at"`
+	// Cache diz quanto do Dynatrace veio do cache nesta consulta (o servidor preenche; nulo = sem cache).
+	Cache *CacheStats `json:"cache,omitempty"`
 }
 
 // byTime indexa uma série por instante.

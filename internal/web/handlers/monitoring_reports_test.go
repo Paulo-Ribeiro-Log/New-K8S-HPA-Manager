@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -463,5 +464,111 @@ func TestTempoRealComRecursosDoPrometheus(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &sem)
 	if sem.Series[0].Resources != nil {
 		t.Error("sem resources o Prometheus não deve ser consultado")
+	}
+}
+
+// countingDT conta o que chega ao Dynatrace de verdade (o que o cache deixou passar).
+type countingDT struct {
+	fakeDTAPI
+	resolves, series *atomic.Int64
+}
+
+func (c countingDT) ResolveEntryServices(ctx context.Context, cluster, ns, wl string) ([]dynatrace.ServiceRef, []string, error) {
+	c.resolves.Add(1)
+	return c.fakeDTAPI.ResolveEntryServices(ctx, cluster, ns, wl)
+}
+
+// QueryServiceSeries devolve um ponto por intervalo DENTRO da janela pedida (o fake de baixo devolve sempre dois
+// pontos em 1970, o que não serve para testar o que o cache faz com a janela).
+func (c countingDT) QueryServiceSeries(ctx context.Context, sel string, ids []string, from, to time.Time, res string, scale float64) (map[string]dynatrace.NullableSeries, error) {
+	c.series.Add(1)
+	base, err := c.fakeDTAPI.QueryServiceSeries(ctx, sel, ids, from, to, res, scale)
+	if err != nil {
+		return nil, err
+	}
+	step := map[string]int64{"1m": 60000, "5m": 300000, "1h": 3600000}[res]
+	if step == 0 {
+		return base, nil
+	}
+	v := base["S1"].Values[0]
+	var s dynatrace.NullableSeries
+	for t := from.UnixMilli() / step * step; t <= to.UnixMilli(); t += step {
+		s.Times = append(s.Times, t)
+		s.Values = append(s.Values, v)
+	}
+	return map[string]dynatrace.NullableSeries{"S1": s}, nil
+}
+
+func liveBody(now time.Time) map[string]any {
+	return map[string]any{
+		"percentiles": []int{99},
+		"items":       []map[string]string{{"cluster": "c1", "namespace": "ns", "workload": "frete-hub"}},
+		"start":       now.Add(-time.Hour).Format(time.RFC3339),
+		"end":         now.Format(time.RFC3339),
+	}
+}
+
+func chamarLive(t *testing.T, r *gin.Engine, user string, now time.Time) report.LiveResult {
+	t.Helper()
+	w := chamar(r, http.MethodPost, "/live", user, liveBody(now))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var res report.LiveResult
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// A segunda consulta do Tempo real (a repetição de 1 a 5 min) não repete a resolução dos serviços e busca só o
+// trecho novo das séries; a resposta diz o quanto o cache ajudou.
+func TestTempoRealSegundaConsultaUsaOCache(t *testing.T) {
+	cdt := countingDT{resolves: &atomic.Int64{}, series: &atomic.Int64{}}
+	r, h := montaRelatorios(t, cdt, nil)
+	r.POST("/live", func(c *gin.Context) { c.Set("user_email", c.GetHeader("X-User")); h.Live(c) })
+	now := time.Now().UTC().Truncate(time.Second)
+
+	first := chamarLive(t, r, "u@x", now)
+	if first.Cache == nil || first.Cache.ResolveMisses != 1 || first.Cache.ResolveHits != 0 || first.Cache.SeriesFull == 0 || first.Cache.SeriesIncremental != 0 {
+		t.Fatalf("1ª consulta: tudo deve vir do Dynatrace, cache=%+v", first.Cache)
+	}
+	resolves1, series1 := cdt.resolves.Load(), cdt.series.Load()
+
+	second := chamarLive(t, r, "u@x", now.Add(time.Minute))
+	if cdt.resolves.Load() != resolves1 {
+		t.Errorf("a resolução dos serviços foi repetida (%d chamadas a mais)", cdt.resolves.Load()-resolves1)
+	}
+	if second.Cache == nil || second.Cache.ResolveHits != 1 || second.Cache.SeriesIncremental == 0 || second.Cache.SeriesFull != 0 {
+		t.Errorf("2ª consulta: esperado serviços do cache e séries incrementais, cache=%+v", second.Cache)
+	}
+	if cdt.series.Load() == series1 {
+		t.Error("a 2ª consulta deveria buscar o trecho novo das séries")
+	}
+	if len(second.Series) != 1 || len(second.Series[0].Times) == 0 || second.Resolution != first.Resolution {
+		t.Errorf("a resposta do cache deve ter a mesma forma: %+v", second.Series)
+	}
+}
+
+func TestTempoRealOCacheNaoCruzaUsuarioEPodeSerDesligado(t *testing.T) {
+	cdt := countingDT{resolves: &atomic.Int64{}, series: &atomic.Int64{}}
+	r, h := montaRelatorios(t, cdt, nil)
+	r.POST("/live", func(c *gin.Context) { c.Set("user_email", c.GetHeader("X-User")); h.Live(c) })
+	now := time.Now().UTC().Truncate(time.Second)
+
+	chamarLive(t, r, "u1@x", now)
+	if res := chamarLive(t, r, "u2@x", now); res.Cache == nil || res.Cache.ResolveHits != 0 || res.Cache.SeriesIncremental != 0 {
+		t.Errorf("outro usuário não pode aproveitar o cache do primeiro: %+v", res.Cache)
+	}
+	if cdt.resolves.Load() != 2 {
+		t.Errorf("%d resoluções, esperado 2 (uma por usuário)", cdt.resolves.Load())
+	}
+
+	// cache desligado: tudo como antes, sem o campo na resposta
+	h.dtCache = nil
+	before := cdt.resolves.Load()
+	res := chamarLive(t, r, "u1@x", now.Add(time.Minute))
+	if res.Cache != nil || cdt.resolves.Load() != before+1 {
+		t.Errorf("sem cache: cache=%+v, resoluções a mais=%d (esperado nulo e 1)", res.Cache, cdt.resolves.Load()-before)
 	}
 }
