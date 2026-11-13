@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: exportar a comparação com um evento (Novembro 2026)
+
+Botões **Markdown** e **CSV** na seção "Comparar com um evento" (`metricsCompareExport.ts`). Markdown: as duas janelas, o evento, a latência comparada, os avisos e uma tabela por cluster, com "atual / evento (variação)" em cada célula e o veredito (pior/melhor) quando passa de 5%. CSV: um registro por aplicação com, por métrica, `_atual`, `_evento` e `_variacao_pct` (números crus, latência em ms, vazio sem dado), coluna `evento` e BOM para o Excel. O nome do evento vai no título e no nome do arquivo (`comparacao_<evento>_<data>`).
+
 ### Tempo real: limites de alerta configuráveis (Novembro 2026)
 
 Os limites que eram fixos no código (latência 500 ms/1 s, 5xx e 4xx acima de 0/s, CPU e memória 70%/85%, throttling 10%/25%, rede 0,5/s, restarts acima de 0, teto do HPA e pods) passaram a ser **por usuário**, editáveis em Opções > "Configurar limites…" (`MetricsThresholdsDialog`) e salvos no servidor (`GET/PUT /api/v1/monitoring/live-thresholds`, lista de um objeto, mesmo armazenamento dos eventos e marcadores). `Thresholds` e `DEFAULT_THRESHOLDS` em `metricsThresholds.ts`; as funções de nível (`latencyLevel`, `errorLevel`, `usageLevel`, ...) e `assessSeries` recebem os limites e, sem eles, usam o padrão, então quem não configura vê exatamente o mesmo de antes. Os cartões e a tabela leem os limites por contexto (`useThresholds`), então pintam pelas mesmas regras da situação. Validação no formulário (alerta não passa do erro, nada negativo, tetos) e `normalizeThresholds` completa o que faltar. **Mudança de comportamento:** as linhas "Erros 5xx" e "Erros 4xx" do cartão agora julgam a taxa de agora, como a faixa de resumo e a tabela, e não o total do período.
