@@ -4,6 +4,7 @@
 
 import { fmtBytesPerSec } from "./metricsLive";
 import { fmtDurationMs } from "./fmtDuration";
+import type { ReportThresholds } from "./metricsThresholds";
 
 // ── tipos da API (espelham internal/monitoring/report) ─────────────────────────────────────────────
 
@@ -115,6 +116,8 @@ export interface ReportResult {
   extras?: boolean;
   /** Só no navegador: a exportação é parcial (um cluster ou alguns namespaces); texto do cabeçalho dos documentos. */
   scope_note?: string;
+  /** Limites que decidiram os selos desta coleta (ausente em relatório de servidor antigo = padrão). */
+  thresholds?: ReportThresholds;
   plan: ReportPlan;
   warnings?: string[];
   rows: ReportRow[];
@@ -541,6 +544,16 @@ export function fmtRps(v: number | null | undefined): string {
 }
 
 /** Latência na unidade que cabe no valor ("30 µs", "268 ms", "1,3 s"); ver fmtDuration.ts. */
+/** Legenda dos selos, montada com os limites que valeram: { red: "P99 acima de 1 s ... ou qualquer 5xx", warn: "qualquer 4xx" }. */
+export function reportLegend(th: ReportThresholds | undefined): { red: string; warn: string } {
+  const t = th ?? { p99_red_ms: 1000, err_4xx: 0, err_5xx: 0 };
+  const n = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+  return {
+    red: `P99 acima de ${fmtLatency(t.p99_red_ms)} (só quando o P99 foi coletado) ou ${t.err_5xx === 0 ? "qualquer 5xx" : `5xx acima de ${n(t.err_5xx)} no período`}`,
+    warn: t.err_4xx === 0 ? "qualquer 4xx" : `4xx acima de ${n(t.err_4xx)} no período`,
+  };
+}
+
 export function fmtLatency(ms: number | null | undefined): string {
   if (ms == null) return NO_DATA;
   return fmtDurationMs(ms) || NO_DATA;

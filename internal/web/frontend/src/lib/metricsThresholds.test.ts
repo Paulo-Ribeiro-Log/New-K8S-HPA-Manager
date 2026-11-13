@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_THRESHOLDS, changedThresholds, latencyLimits, isDefaultThresholds, normalizeThresholds, validateThresholds } from "./metricsThresholds";
+import { DEFAULT_REPORT_THRESHOLDS, DEFAULT_THRESHOLDS, changedThresholds, latencyLimits, reportThresholds, isDefaultThresholds, normalizeThresholds, validateThresholds } from "./metricsThresholds";
 
 describe("normalizeThresholds", () => {
   it("sem nada devolve o padrão (os valores que eram fixos no código)", () => {
@@ -81,5 +81,26 @@ describe("escala de latência por percentil", () => {
   });
   it("migração com par inválido volta ao padrão do P99", () => {
     expect(latencyLimits(normalizeThresholds({ latWarnMs: 900, latRedMs: 100 }), 99)).toEqual({ warn: 500, red: 1000 });
+  });
+});
+
+describe("limites do Relatório a partir dos do Tempo real", () => {
+  it("o padrão do Tempo real dá exatamente o padrão de sempre do Relatório", () => {
+    expect(reportThresholds(DEFAULT_THRESHOLDS, 3600)).toEqual(DEFAULT_REPORT_THRESHOLDS);
+    expect(reportThresholds(DEFAULT_THRESHOLDS, 86400)).toEqual(DEFAULT_REPORT_THRESHOLDS);
+  });
+  it("o P99 vermelho é o limite de erro do P99", () => {
+    expect(reportThresholds({ ...DEFAULT_THRESHOLDS, p99RedMs: 800 }, 3600).p99_red_ms).toBe(800);
+  });
+  it("erros por segundo viram total da janela: taxa média acima do limite", () => {
+    const t = { ...DEFAULT_THRESHOLDS, err5Rate: 0.5, err4Rate: 2 };
+    expect(reportThresholds(t, 3600)).toMatchObject({ err_5xx: 1800, err_4xx: 7200 });
+    expect(reportThresholds(t, 600)).toMatchObject({ err_5xx: 300, err_4xx: 1200 }); // janela menor, total menor
+  });
+  it("janela inválida não vira NaN nem negativo", () => {
+    for (const w of [0, -5, NaN, Infinity]) {
+      const r = reportThresholds({ ...DEFAULT_THRESHOLDS, err5Rate: 3 }, w);
+      expect(Number.isFinite(r.err_5xx) && r.err_5xx >= 0).toBe(true);
+    }
   });
 });

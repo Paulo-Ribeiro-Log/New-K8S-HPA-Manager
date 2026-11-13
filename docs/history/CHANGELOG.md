@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: selos 🔴/⚠️ usam os limites de alerta do usuário (Novembro 2026)
+
+Os limites configuráveis só valiam para o Tempo real: o Relatório marcava 🔴/⚠️ com limites fixos no servidor (P99 acima de 1 s, qualquer 5xx, qualquer 4xx), e as duas telas julgavam a mesma aplicação por critérios diferentes. Agora a coleta envia `thresholds` (`reportThresholds`: o P99 vermelho é o limite de erro do P99 e erros/s viram total da janela, taxa média x segundos) e o servidor **valida** (`Thresholds.validate`: negativo, NaN e acima de 1e9 são recusados) e **devolve** os limites usados em `Result.Thresholds`, para a legenda da tela, do Markdown e do PDF dizer os que valeram (`reportLegend`). O padrão do Tempo real dá exatamente o padrão antigo do Relatório. O hook `useLiveThresholds` passou a viver em `MetricsReportTab`, e o painel do Tempo real recebe os limites por props (uma fonte só). Valem a partir da próxima coleta.
+
 ### Relatório: exportação por escopo, um cluster ou alguns namespaces (Novembro 2026)
 
 Botão **Escopo** na barra Exportar (`MetricsExportScopePicker`, lógica pura em `metricsExportScope.ts`): marca cluster inteiro ou só alguns namespaces do que foi coletado, e Markdown, CSV, PDF, Markdown copiado e código mostrado saem só com isso. É um filtro das linhas antes dos geradores (`filterByScope`), então a tabela da tela e a coleta não mudam. Parcial leva `scope_note` (frontend, não vai ao servidor), que vira a linha "Escopo: exportação parcial" no Markdown e no PDF; o nome do arquivo leva o cluster (`scopeSlug`, via `fileSlug`) ou "parcial". O escopo reinicia em "tudo" a cada coleta; sem nada marcado os botões ficam desabilitados.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXTRAS_COLUMNS, extrasCells, fmtHPA, fmtNetErr, fmtNetStats, fmtReplicasStats, parseExtras, mergeSets, removePickedItem,
+import { reportLegend, EXTRAS_COLUMNS, extrasCells, fmtHPA, fmtNetErr, fmtNetStats, fmtReplicasStats, parseExtras, mergeSets, removePickedItem,
   DEFAULT_PERCENTILES, allItems, fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, groupRows, fmtInt, fmtLatency, fmtPct, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, parseSets, parseTargets, pickKey, presetWindow,
   parsePercentiles, percentileValue, togglePercentile, setTargetCluster, setTargetNamespaces, setTargetPicked, targetItems, targetSummary, togglePicked, toggleTargetNamespace, upsertSet,
   zonedLocalToISO, type ReportRow, type ReportTraffic, type Target,
@@ -308,5 +308,17 @@ describe("extras do relatório (réplicas, HPA, restarts e rede)", () => {
     expect(parseExtras(null)).toBe(false);
     expect(parseExtras("false")).toBe(false);
     expect(parseExtras("true")).toBe(true);
+  });
+});
+
+describe("legenda dos selos com os limites que valeram", () => {
+  it("padrão: o texto de sempre", () => {
+    expect(reportLegend(undefined)).toEqual({ red: "P99 acima de 1 s (só quando o P99 foi coletado) ou qualquer 5xx", warn: "qualquer 4xx" });
+    expect(reportLegend({ p99_red_ms: 1000, err_4xx: 0, err_5xx: 0 })).toEqual(reportLegend(undefined));
+  });
+  it("limites do usuário aparecem na legenda", () => {
+    const lg = reportLegend({ p99_red_ms: 800, err_4xx: 7200, err_5xx: 1800 });
+    expect(lg.red).toBe("P99 acima de 800 ms (só quando o P99 foi coletado) ou 5xx acima de 1.800 no período");
+    expect(lg.warn).toBe("4xx acima de 7.200 no período");
   });
 });
