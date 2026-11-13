@@ -34,8 +34,9 @@ func (h *MonitoringReportHandler) Live(c *gin.Context) {
 	}
 	user := c.GetString("user_email")
 	var (
-		mu  sync.Mutex
-		dts = map[string]dtEntry{}
+		mu       sync.Mutex
+		dts      = map[string]dtEntry{}
+		wrappers []*report.CachedDynatrace // um por cluster, para somar o que o cache economizou
 	)
 	proms := map[string]promEntry{}
 	prom := func(cluster string) (report.RangeQuerier, error) {
@@ -55,6 +56,12 @@ func (h *MonitoringReportHandler) Live(c *gin.Context) {
 			return e.api, e.err
 		}
 		api, err := h.newDynatrace(user, cluster)
+		if err == nil && h.dtCache != nil {
+			// o cache é por usuário e cluster: o que cada um enxerga no Dynatrace depende do token dele
+			w := h.dtCache.Wrap(user+"|"+cluster, api)
+			wrappers = append(wrappers, w)
+			api = w
+		}
 		dts[cluster] = dtEntry{api, err}
 		return api, err
 	}
@@ -64,6 +71,15 @@ func (h *MonitoringReportHandler) Live(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	var stats report.CacheStats
+	mu.Lock()
+	for _, w := range wrappers {
+		stats = stats.Add(w.Stats())
+	}
+	mu.Unlock()
+	if !stats.Empty() {
+		res.Cache = &stats
 	}
 	c.JSON(http.StatusOK, res)
 }
