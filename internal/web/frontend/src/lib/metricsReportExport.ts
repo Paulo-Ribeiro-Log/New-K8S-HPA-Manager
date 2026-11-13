@@ -2,7 +2,7 @@
 // Lógica pura e testada em metricsReportExport.test.ts; só `downloadText`/`exportReportPDF` tocam o DOM.
 // O Markdown e o PDF partem da MESMA tabela (buildExportTable), então mostram os mesmos números.
 
-import { EXTRAS_COLUMNS, REPORT_TZ, extrasCells, fmtLatency, fmtNodeUsage, fmtPct, fmtPctStats, fmtPools, fmtThrottle, percentileValue, type ReportPct, type ReportResult, type ReportRow } from "./metricsReport";
+import { EXTRAS_COLUMNS, REPORT_TZ, extrasCells, fmtLatency, fmtNodeUsage, fmtPct, fmtPctStats, fmtPools, fmtThrottle, percentileValue, reportLegend, type ReportPct, type ReportResult, type ReportRow } from "./metricsReport";
 
 export const NO_DATA = "sem dado";
 
@@ -176,7 +176,8 @@ export function buildMarkdown(result: ReportResult): string {
     out.push("");
   }
 
-  out.push('> 🔴 P99 acima de 1 s ou qualquer 5xx · ⚠️ qualquer 4xx · "sem dado" = a fonte não devolveu o valor (não é zero).', "");
+  const lg = reportLegend(result.thresholds);
+  out.push(`> 🔴 ${lg.red} · ⚠️ ${lg.warn} · "sem dado" = a fonte não devolveu o valor (não é zero).`, "");
   if (t.issues.length > 0) {
     out.push("### Observações", "");
     for (const i of t.issues) out.push(`- ${escapeMdCell(i)}`);
@@ -339,7 +340,8 @@ export async function buildReportPDF(result: ReportResult) {
   doc.setFontSize(7);
   doc.setFont("helvetica", "italic");
   doc.setTextColor(90, 90, 90);
-  doc.text('Fundo vermelho: P99 acima de 1 s ou qualquer 5xx  |  Fundo amarelo: qualquer 4xx  |  "sem dado": a fonte nao devolveu o valor (nao e zero).', M, y);
+  const lg = reportLegend(result.thresholds);
+  doc.text(pdfSafe(`Fundo vermelho: ${lg.red}  |  Fundo amarelo: ${lg.warn}  |  "sem dado": a fonte nao devolveu o valor (nao e zero).`), M, y);
   y += 5;
   if (t.issues.length > 0) {
     doc.setFont("helvetica", "bold");

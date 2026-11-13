@@ -322,3 +322,16 @@ describe("tempo de resposta médio nas exportações", () => {
     expect(buildCSV(fixture()).split("\r\n")[0]).toContain("response_time_medio_ms");
   });
 });
+
+describe("legenda dos selos nas exportações", () => {
+  it("sem limites no resultado (servidor antigo) ou com os padrões, o texto de sempre", () => {
+    expect(buildMarkdown(fixture())).toContain("🔴 P99 acima de 1 s (só quando o P99 foi coletado) ou qualquer 5xx · ⚠️ qualquer 4xx");
+  });
+  it("com limites personalizados, o Markdown e o PDF dizem os que valeram", async () => {
+    const r = fixture({ thresholds: { p99_red_ms: 800, err_4xx: 7200, err_5xx: 1800 } });
+    expect(buildMarkdown(r)).toContain("🔴 P99 acima de 800 ms (só quando o P99 foi coletado) ou 5xx acima de 1.800 no período · ⚠️ 4xx acima de 7.200 no período");
+    expect(buildMarkdown(r)).not.toContain("acima de 1 s");
+    const raw = (await buildReportPDF(r)).output();
+    expect(raw).toContain("P99 acima de 800 ms");
+  });
+});

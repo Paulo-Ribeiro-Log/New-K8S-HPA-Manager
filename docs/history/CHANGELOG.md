@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Relatório: selos 🔴/⚠️ usam os limites de alerta do usuário (Novembro 2026)
+
+Os limites configuráveis só valiam para o Tempo real: o Relatório marcava 🔴/⚠️ com limites fixos no servidor (P99 acima de 1 s, qualquer 5xx, qualquer 4xx), e as duas telas julgavam a mesma aplicação por critérios diferentes. Agora a coleta envia `thresholds` (`reportThresholds`: o P99 vermelho é o limite de erro do P99 e erros/s viram total da janela, taxa média x segundos) e o servidor **valida** (`Thresholds.validate`: negativo, NaN e acima de 1e9 são recusados) e **devolve** os limites usados em `Result.Thresholds`, para a legenda da tela, do Markdown e do PDF dizer os que valeram (`reportLegend`). O padrão do Tempo real dá exatamente o padrão antigo do Relatório. O hook `useLiveThresholds` passou a viver em `MetricsReportTab`, e o painel do Tempo real recebe os limites por props (uma fonte só). Valem a partir da próxima coleta.
+
 ### Relatório: relatórios salvos, só ao clicar em Salvar (Novembro 2026)
 
 O relatório coletado vive 1 hora no servidor (`reportJobTTL`) e some ao reiniciá-lo. O botão **Relatórios salvos** (`MetricsSavedReports`), na linha do Coletar, guarda o resultado completo com um nome (padrão: a janela), por usuário, em `~/.k8s-hpa-manager/saved-reports.db` (`storage.SavedReportsStore`, JSON gzip). **Nada é salvo sozinho.** Rotas: `POST /monitoring/reports/:id/save` (só job concluído do próprio usuário), `GET /monitoring/saved-reports`, `GET/DELETE /monitoring/saved-reports/:id`. Limites: 50 por usuário e 16 MB por relatório, sem descarte silencioso (estourou, o erro pede para apagar algum). Abrir um salvo mostra uma faixa azul e alimenta tela, exportação (com escopo) e comparação; coletar de novo sai dele.

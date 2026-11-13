@@ -46,6 +46,10 @@ Depois da coleta, a barra **Exportar** gera o relatório **no seu navegador** (n
 
 Todos levam a **janela de tempo e o fuso**, a **resolução**, os **percentis coletados**, as **fontes** (Dynatrace e Prometheus) e o aviso de **pico aproximado**, para o número continuar rastreável fora da ferramenta.
 
+## Limites dos selos 🔴 e ⚠️
+
+Os selos do Relatório usam **os mesmos limites do Tempo real** (Opções → Limites de alerta, ou o botão **Configurar limites…** em **Opções de coleta**): cada usuário tem os seus, salvos no servidor. O **P99 vermelho** usa o limite de **erro do P99**. Os **erros** são julgados pelo **total da janela**: o limite em erros por segundo vira (limite × segundos da janela), ou seja, a taxa **média** da janela acima do limite; com 0, o padrão, qualquer 5xx é 🔴 e qualquer 4xx é ⚠️, como sempre foi. Os limites valem **a partir da próxima coleta** (o relatório já coletado não é refeito). A legenda abaixo da tabela, no Markdown e no PDF diz os limites que **realmente valeram** naquela coleta. O servidor recusa limites negativos ou fora de escala.
+
 ## Exportar só uma parte (escopo)
 
 Com mais de um cluster ou namespace coletados, a barra **Exportar** ganha o botão **Escopo**, que mostra "tudo" ou "2 de 5 cluster(s) · 14 de 38 aplicações". Nele você marca **um cluster, vários, ou só alguns namespaces** de cada um (a seta ao lado do cluster abre a lista de namespaces; um cluster com só parte marcada aparece com o traço no meio). **Marcar tudo** e **Limpar** ajudam. O escopo vale para **Markdown, CSV e PDF**, para o Markdown copiado e para o código mostrado; a **tabela da tela** e o que foi coletado **não mudam**. Quando a exportação é parcial, o Markdown e o PDF dizem no cabeçalho "exportação parcial" e o que foi incluído, e o **nome do arquivo** leva o cluster (`relatorio-metricas_aks-calculo-prd_2026-11-13_1030.pdf`) ou "parcial" quando são vários. Sem nada marcado os botões ficam desabilitados. Coletar de novo volta o escopo para "tudo".

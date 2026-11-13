@@ -6027,7 +6027,7 @@ class APIClient {
   }
 
   // Inicia a coleta (job em memória no servidor) e devolve o id; o andamento vem de metricsReportJob.
-  async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; node_context?: boolean; extras?: boolean }): Promise<{ id: string; total: number }> {
+  async startMetricsReport(body: { items: ReportItem[]; start: string; end: string; percentiles?: number[]; node_context?: boolean; extras?: boolean; thresholds?: { p99_red_ms: number; err_4xx: number; err_5xx: number } }): Promise<{ id: string; total: number }> {
     return this.request("/monitoring/reports", { method: "POST", body: JSON.stringify(body) });
   }
 

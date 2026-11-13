@@ -52,6 +52,31 @@ export function latencyLimits(t: Thresholds, percentile: 50 | 95 | 99): { warn: 
   return percentile === 50 ? { warn: t.p50WarnMs, red: t.p50RedMs } : percentile === 95 ? { warn: t.p95WarnMs, red: t.p95RedMs } : { warn: t.p99WarnMs, red: t.p99RedMs };
 }
 
+// ── limites do Relatório ───────────────────────────────────────────────────────────────────────────
+
+/** Limites que o servidor usa nos selos do Relatório (🔴/⚠️). Erros são julgados pelo TOTAL da janela. */
+export interface ReportThresholds {
+  p99_red_ms: number;
+  err_4xx: number;
+  err_5xx: number;
+}
+
+export const DEFAULT_REPORT_THRESHOLDS: ReportThresholds = { p99_red_ms: 1000, err_4xx: 0, err_5xx: 0 };
+
+/**
+ * Os limites do Tempo real, no formato do Relatório. O Tempo real julga a taxa de agora (erros por segundo) e o
+ * Relatório julga o total da janela, então o limite em erros/s vira (limite x segundos da janela): "taxa média
+ * acima do limite". Com 0 (o padrão) qualquer erro conta, como sempre foi. O P99 vermelho usa o limite de erro do P99.
+ */
+export function reportThresholds(t: Thresholds, windowSeconds: number): ReportThresholds {
+  const secs = Number.isFinite(windowSeconds) && windowSeconds > 0 ? windowSeconds : 0;
+  return {
+    p99_red_ms: t.p99RedMs,
+    err_5xx: Math.round(t.err5Rate * secs * 100) / 100,
+    err_4xx: Math.round(t.err4Rate * secs * 100) / 100,
+  };
+}
+
 export const THRESHOLDS_KEY = "metrics_live_thresholds";
 
 const NUM_KEYS = ["p50WarnMs", "p50RedMs", "p95WarnMs", "p95RedMs", "p99WarnMs", "p99RedMs", "err5Rate", "err4Rate", "usageWarn", "usageRed", "throttleWarn", "throttleRed", "netWarn", "restartsWarn"] as const;

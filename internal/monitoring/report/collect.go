@@ -23,6 +23,19 @@ type Thresholds struct {
 	Err5xx   float64 `json:"err_5xx"`    // 5xx acima disto: vermelho
 }
 
+// maxThreshold barra valor absurdo vindo do pedido (um tempo de 1 h em ms; uma contagem de erros de 1 bilhão).
+const maxThreshold = 1e9
+
+// validate recusa limite negativo ou fora de escala: um negativo marcaria toda linha de vermelho.
+func (t Thresholds) validate() error {
+	for name, v := range map[string]float64{"p99_red_ms": t.P99RedMs, "err_4xx": t.Err4xx, "err_5xx": t.Err5xx} {
+		if v < 0 || v > maxThreshold || v != v { // v != v: NaN
+			return fmt.Errorf("limite %s inválido (%v): use um número entre 0 e %g", name, v, maxThreshold)
+		}
+	}
+	return nil
+}
+
 // DefaultThresholds: ver Thresholds.
 var DefaultThresholds = Thresholds{P99RedMs: 1000, Err4xx: 0, Err5xx: 0}
 
@@ -63,14 +76,16 @@ type Row struct {
 
 // Result é o relatório completo.
 type Result struct {
-	Window      Window    `json:"window"`
-	Plan        Plan      `json:"plan"`
-	Percentiles []int     `json:"percentiles"`  // os percentis coletados (50, 95 e/ou 99)
-	NodeContext bool      `json:"node_context"` // o contexto de node foi coletado
-	Extras      bool      `json:"extras"`       // réplicas, HPA, restarts e rede foram coletados
-	Warnings    []string  `json:"warnings,omitempty"`
-	Rows        []Row     `json:"rows"`
-	GeneratedAt time.Time `json:"generated_at"`
+	Window      Window `json:"window"`
+	Plan        Plan   `json:"plan"`
+	Percentiles []int  `json:"percentiles"`  // os percentis coletados (50, 95 e/ou 99)
+	NodeContext bool   `json:"node_context"` // o contexto de node foi coletado
+	// Thresholds são os limites que decidiram os selos (🔴/⚠️) desta coleta: os do usuário ou os padrões.
+	Thresholds  Thresholds `json:"thresholds"`
+	Extras      bool       `json:"extras"` // réplicas, HPA, restarts e rede foram coletados
+	Warnings    []string   `json:"warnings,omitempty"`
+	Rows        []Row      `json:"rows"`
+	GeneratedAt time.Time  `json:"generated_at"`
 }
 
 // Request é o pedido de um relatório.
@@ -175,6 +190,9 @@ func (c *Collector) Prepare(req Request) (Prepared, error) {
 	}
 	th := DefaultThresholds
 	if req.Thresholds != nil {
+		if err := req.Thresholds.validate(); err != nil {
+			return Prepared{}, err
+		}
 		th = *req.Thresholds
 	}
 	pcts, err := NormalizePercentiles(req.Percentiles)
@@ -230,7 +248,7 @@ func (c *Collector) Run(ctx context.Context, req Request, onProgress func(done, 
 		}(i, it)
 	}
 	wg.Wait()
-	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, Percentiles: pre.Percentiles, NodeContext: pre.NodeContext, Extras: pre.Extras, GeneratedAt: c.now().UTC()}, nil
+	return &Result{Window: w, Plan: plan, Warnings: warns, Rows: rows, Percentiles: pre.Percentiles, NodeContext: pre.NodeContext, Extras: pre.Extras, Thresholds: pre.Thresholds, GeneratedAt: c.now().UTC()}, nil
 }
 
 func (c *Collector) collectItem(ctx context.Context, it Item, w Window, plan Plan, th Thresholds, timeout time.Duration, nodeOn, extrasOn bool) Row {

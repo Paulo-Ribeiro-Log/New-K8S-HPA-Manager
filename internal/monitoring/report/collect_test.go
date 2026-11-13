@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -215,5 +216,66 @@ func TestRunContextoDeNodeSoQuandoPedido(t *testing.T) {
 	}
 	if r := res.Rows[1]; r.Node != nil || r.Usage == nil || len(r.Errors) != 1 || !strings.HasPrefix(r.Errors[0], "Prometheus (node):") {
 		t.Errorf("node falhou, o resto fica: %+v", r)
+	}
+}
+
+func TestPrepareValidaOsLimitesDoPedido(t *testing.T) {
+	c := &Collector{Now: func() time.Time { return time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC) }}
+	base := Request{Items: []Item{{"c", "n", "w"}}, Window: Window{Start: time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC), End: time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC)}}
+	for name, th := range map[string]Thresholds{
+		"p99 negativo": {P99RedMs: -1}, "4xx negativo": {P99RedMs: 1000, Err4xx: -0.5}, "5xx negativo": {P99RedMs: 1000, Err5xx: -1},
+		"absurdo": {P99RedMs: 1e12}, "nan": {P99RedMs: math.NaN()},
+	} {
+		th := th
+		req := base
+		req.Thresholds = &th
+		if _, err := c.Prepare(req); err == nil || !strings.Contains(err.Error(), "limite") {
+			t.Errorf("%s: deveria recusar, veio %v", name, err)
+		}
+	}
+	ok := base
+	ok.Thresholds = &Thresholds{P99RedMs: 800, Err4xx: 12, Err5xx: 3.5}
+	pre, err := c.Prepare(ok)
+	if err != nil || pre.Thresholds.P99RedMs != 800 || pre.Thresholds.Err5xx != 3.5 {
+		t.Errorf("limites válidos: %+v %v", pre.Thresholds, err)
+	}
+	// zero é válido e significa "qualquer": é o padrão para 4xx e 5xx
+	zero := base
+	zero.Thresholds = &Thresholds{P99RedMs: 1000}
+	if _, err := c.Prepare(zero); err != nil {
+		t.Errorf("zero deve valer: %v", err)
+	}
+	// sem limites no pedido valem os padrões
+	pre, err = c.Prepare(base)
+	if err != nil || pre.Thresholds != DefaultThresholds {
+		t.Errorf("padrão: %+v %v", pre.Thresholds, err)
+	}
+}
+
+func TestResultadoLevaOsLimitesQueDecidiramOsSelos(t *testing.T) {
+	deps := Deps{Traffic: func(_ context.Context, _ Item, _ Window, _ Plan) (*Traffic, error) {
+		p := 600.0
+		e := 5.0
+		return &Traffic{P99PeakMs: &p, Err5xx: &e}, nil
+	}}
+	c := &Collector{Deps: deps, Concurrency: 1, Now: func() time.Time { return time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC) }}
+	req := Request{Items: []Item{{"c", "n", "w"}}, Window: Window{Start: time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC), End: time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC)}}
+
+	res, err := c.Run(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Thresholds != DefaultThresholds || res.Rows[0].Flags.Err5 != "red" || res.Rows[0].Flags.P99 != "" {
+		t.Errorf("padrão: %+v %+v", res.Thresholds, res.Rows[0].Flags)
+	}
+
+	// com os limites do usuário o mesmo dado muda de selo: P99 de 600 ms passa de 500 ms; 5 erros não passam de 10
+	req.Thresholds = &Thresholds{P99RedMs: 500, Err5xx: 10}
+	res, err = c.Run(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Thresholds.P99RedMs != 500 || res.Rows[0].Flags.P99 != "red" || res.Rows[0].Flags.Err5 != "" {
+		t.Errorf("personalizado: %+v %+v", res.Thresholds, res.Rows[0].Flags)
 	}
 }

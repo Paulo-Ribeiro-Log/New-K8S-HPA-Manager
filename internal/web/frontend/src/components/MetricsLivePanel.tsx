@@ -42,8 +42,7 @@ function savePref(key: string, value: unknown) {
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
 import { MetricsMarkerButton } from "@/components/MetricsMarkerButton";
 import { MetricsThresholdsDialog } from "@/components/MetricsThresholdsDialog";
-import { useLiveThresholds } from "@/hooks/useLiveThresholds";
-import { changedThresholds, latencyLimits } from "@/lib/metricsThresholds";
+import { changedThresholds, latencyLimits, type Thresholds } from "@/lib/metricsThresholds";
 import { useLiveMarkers } from "@/hooks/useLiveMarkers";
 import { markersInRange, shortName, type Marker } from "@/lib/metricsMarkers";
 import { MetricsLiveSummary } from "@/components/MetricsLiveSummary";
@@ -115,8 +114,11 @@ function Countdown({ updatedAt, refreshSec, fetching }: { updatedAt: number; ref
 }
 
 export function MetricsLivePanel({
-  items, percentiles, onPercentiles, onRemove, events, onSaveEvent, onRemoveEvent,
+  items, percentiles, onPercentiles, onRemove, events, onSaveEvent, onRemoveEvent, thresholds, onSaveThresholds, onResetThresholds,
 }: {
+  thresholds: Thresholds;
+  onSaveThresholds: (t: Thresholds) => void;
+  onResetThresholds: () => void;
   events: SavedEvent[];
   onSaveEvent: (name: string, start: string, end: string) => boolean;
   onRemoveEvent: (name: string) => void;
@@ -126,8 +128,7 @@ export function MetricsLivePanel({
   onPercentiles: (next: number[]) => void;
 }) {
   const liveMarkers = useLiveMarkers();
-  const liveThresholds = useLiveThresholds();
-  const thresholds = liveThresholds.thresholds;
+  // os limites vêm do pai (MetricsReportTab), que os usa também nos selos do Relatório: uma fonte só
   const [thresholdsOpen, setThresholdsOpen] = useState(false);
   const [range, setRange] = useState<LiveRangeId | "custom">(() => loadPref(LIVE_RANGE_KEY, parseLiveRange));
   const [refresh, setRefresh] = useState<number>(() => loadPref(LIVE_REFRESH_KEY, parseLiveRefresh));
@@ -479,7 +480,7 @@ export function MetricsLivePanel({
           {detail && <DetailCharts markers={liveMarkers.markers} s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} win={data?.window} />}
         </DialogContent>
       </Dialog>
-      <MetricsThresholdsDialog open={thresholdsOpen} onOpenChange={setThresholdsOpen} value={thresholds} onSave={liveThresholds.save} onReset={liveThresholds.reset} />
+      <MetricsThresholdsDialog open={thresholdsOpen} onOpenChange={setThresholdsOpen} value={thresholds} onSave={onSaveThresholds} onReset={onResetThresholds} />
     </div>
     </ThresholdsProvider>
   );

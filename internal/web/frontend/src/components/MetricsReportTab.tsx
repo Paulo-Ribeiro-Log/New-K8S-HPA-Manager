@@ -13,6 +13,9 @@ import { MetricsLivePanel } from "@/components/MetricsLivePanel";
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
 import { MetricsComparePanel } from "@/components/MetricsComparePanel";
 import { MetricsExportScopePicker } from "@/components/MetricsExportScopePicker";
+import { MetricsThresholdsDialog } from "@/components/MetricsThresholdsDialog";
+import { useLiveThresholds } from "@/hooks/useLiveThresholds";
+import { reportThresholds, type ReportThresholds } from "@/lib/metricsThresholds";
 import { MetricsSavedReports } from "@/components/MetricsSavedReports";
 import { savedAt, type SavedReport } from "@/lib/metricsSavedReports";
 import { allKeys, describeScope, filterByScope, scopeSlug, scopeTree } from "@/lib/metricsExportScope";
@@ -28,7 +31,7 @@ import { apiClient } from "@/lib/api/client";
 import { copyText } from "@/lib/clipboard";
 import { buildCSV, buildMarkdown, downloadText, exportReportPDF, fileStamp, type CsvDelimiter } from "@/lib/metricsReportExport";
 import {
-  EXTRAS_COLUMNS, EXTRAS_KEY, extrasCells, parseExtras, FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, mergeSets, removePickedItem, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget,
+  EXTRAS_COLUMNS, EXTRAS_KEY, extrasCells, parseExtras, FLAG_ICON, NODE_CONTEXT_KEY, PERCENTILES_KEY, PERCENTILE_CHOICES, REPORT_TZ, SAVED_SETS_KEY, TARGETS_KEY, mergeSets, removePickedItem, allItems, fmtInt, groupRows, fmtLatency, fmtPctStats, fmtRps, isoToZonedLocal, newTarget, reportLegend,
   fmtNodeUsage, fmtPools, fmtThrottle, parseNodeContext, parsePercentiles, parseSets, parseTargets, percentileValue, pickKey, presetWindow, setTargetCluster, targetItems, targetSummary, togglePercentile,
   setTargetNamespaces, setTargetPicked, upsertSet, zonedLocalToISO, type ReportAlerts, type ReportResult, type ReportRow, type SavedSet, type Target, type WindowPreset,
 } from "@/lib/metricsReport";
@@ -390,6 +393,9 @@ export function MetricsReportTab() {
   const [nodeContext, setNodeContext] = useState<boolean>(() => load(NODE_CONTEXT_KEY, parseNodeContext));
   useEffect(() => save(NODE_CONTEXT_KEY, nodeContext), [nodeContext]);
   const reportEvents = useReportEvents();
+  // limites de alerta (os mesmos do Tempo real): decidem os selos 🔴/⚠️ desta coleta
+  const liveThresholds = useLiveThresholds();
+  const [thresholdsOpen, setThresholdsOpen] = useState(false);
   const [extras, setExtras] = useState<boolean>(() => load(EXTRAS_KEY, parseExtras));
   useEffect(() => save(EXTRAS_KEY, extras), [extras]);
 
@@ -427,7 +433,7 @@ export function MetricsReportTab() {
     mutationFn: () => {
       // atalho termina "agora": recalcula no clique (a janela do plano pode ter alguns minutos)
       const w = mode === "custom" ? windowIso! : presetWindow(mode);
-      return apiClient.startMetricsReport({ items, start: w.start, end: w.end, percentiles, node_context: nodeContext, extras });
+      return apiClient.startMetricsReport({ items, start: w.start, end: w.end, percentiles, node_context: nodeContext, extras, thresholds: reportThresholds(liveThresholds.thresholds, (Date.parse(w.end) - Date.parse(w.start)) / 1000) });
     },
     onSuccess: (r) => {
       setJobId(r.id);
@@ -535,7 +541,7 @@ export function MetricsReportTab() {
           ))}
         </div>
         {view === "live" ? (
-          <MetricsLivePanel items={items} percentiles={percentiles} onPercentiles={setPercentiles} events={reportEvents.events} onSaveEvent={reportEvents.save} onRemoveEvent={reportEvents.remove} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
+          <MetricsLivePanel thresholds={liveThresholds.thresholds} onSaveThresholds={liveThresholds.save} onResetThresholds={liveThresholds.reset} items={items} percentiles={percentiles} onPercentiles={setPercentiles} events={reportEvents.events} onSaveEvent={reportEvents.save} onRemoveEvent={reportEvents.remove} onRemove={(it) => setTargets((prev) => removePickedItem(prev, it))} />
         ) : (
           <>
         <section className="rounded-md border border-border p-3 space-y-2">
@@ -628,6 +634,14 @@ export function MetricsReportTab() {
                   </label>
                   <div className="text-[10px] text-muted-foreground">Réplicas, teto do HPA, restarts e rede. Mais consultas ao Prometheus (dado dos últimos ~14 dias).</div>
                 </div>
+                <div className="space-y-1 border-t border-border pt-2">
+                  <div className="font-medium">Limites dos selos 🔴 e ⚠️</div>
+                  <div className="text-muted-foreground">
+                    🔴 {reportLegend(reportThresholds(liveThresholds.thresholds, 3600)).red.replace(" (só quando o P99 foi coletado)", "")} · ⚠️ {reportLegend(reportThresholds(liveThresholds.thresholds, 3600)).warn}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">São os mesmos limites do Tempo real (Opções → Limites de alerta). Valem a partir da próxima coleta. O P99 usa o limite de erro do P99; os erros são julgados pela taxa média da janela (erros/s × segundos).</div>
+                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled={running} onClick={() => setThresholdsOpen(true)}>Configurar limites…</Button>
+                </div>
               </PopoverContent>
             </Popover>
             <MetricsSavedReports
@@ -683,6 +697,7 @@ export function MetricsReportTab() {
             percentiles={result.percentiles?.length ? result.percentiles : [99]}
             nodeContext={!!result.node_context}
             extras={!!result.extras}
+            thresholds={result.thresholds}
             expanded={expanded}
             onToggle={(k) =>
               setExpanded((prev) => {
@@ -701,6 +716,7 @@ export function MetricsReportTab() {
           </>
         )}
       </main>
+      <MetricsThresholdsDialog open={thresholdsOpen} onOpenChange={setThresholdsOpen} value={liveThresholds.thresholds} onSave={liveThresholds.save} onReset={liveThresholds.reset} />
     </div>
   );
 }
@@ -801,8 +817,9 @@ function AlertBadges({ a }: { a: ReportAlerts }) {
 // Resultado em árvore: cluster → namespace → deployment. Cada nível recolhe; o resumo de alertas
 // (🔴/⚠️/erros) aparece no cabeçalho para achar o problema sem abrir tudo.
 function ReportTable({
-  rows, percentiles, nodeContext, extras, expanded, onToggle, window, plan, warnings,
+  rows, percentiles, nodeContext, extras, thresholds, expanded, onToggle, window, plan, warnings,
 }: {
+  thresholds?: ReportThresholds;
   rows: ReportRow[];
   percentiles: number[];
   nodeContext: boolean;
@@ -951,7 +968,7 @@ function ReportTable({
           </tbody>
         </table>
       </div>
-      <div className="text-[10px] text-muted-foreground">🔴 P99 acima de 1 s (só quando o P99 foi coletado) ou qualquer 5xx · ⚠️ qualquer 4xx · "sem dado" = a fonte não devolveu o valor (não é zero).</div>
+      <div className="text-[10px] text-muted-foreground">🔴 {reportLegend(thresholds).red} · ⚠️ {reportLegend(thresholds).warn} · "sem dado" = a fonte não devolveu o valor (não é zero).</div>
     </section>
   );
 }
