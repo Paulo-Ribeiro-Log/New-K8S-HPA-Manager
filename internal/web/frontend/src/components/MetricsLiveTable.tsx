@@ -44,7 +44,14 @@ export function MetricsLiveTable({
     { key: "nome", label: "Aplicação" },
     { key: "rps", label: "RPS", align: "right", title: "Requisições por segundo agora, com as barras do período" },
     { key: "avg", label: "Response time", align: "right", title: "Response time médio (ponderado pelas requisições)" },
-    ...pcts.map((p): Col => ({ key: p === 99 ? "p99" : p === 95 ? "p95" : "p50", label: `P${p}`, align: "right", title: `Latência P${p} agora (cor: acima de 0,5 s é alerta e de 1 s é erro)` })),
+    // a cor segue a regra da situação, que usa só o MAIOR percentil marcado: pintar também o P50 e o P95 com limites
+    // pensados para o P99 faria um P50 de 600 ms parecer problema sem que a aplicação esteja em alerta
+    ...pcts.map((p): Col => ({
+      key: p === 99 ? "p99" : p === 95 ? "p95" : "p50",
+      label: `P${p}`,
+      align: "right",
+      title: p === pcts[pcts.length - 1] ? `Latência P${p} agora. Cor: acima de 0,5 s é alerta e de 1 s é erro (é o percentil que define a situação)` : `Latência P${p} agora. Sem cor: os limites de 0,5 s e 1 s valem para o P${pcts[pcts.length - 1]}, o maior percentil marcado`,
+    })),
     { key: "err5", label: "5xx", align: "right", title: "Erros 5xx no período (e por segundo agora)" },
     { key: "err4", label: "4xx", align: "right", title: "Erros 4xx no período (e por segundo agora)" },
     ...(showResources
@@ -152,7 +159,8 @@ const TableRow = memo(function TableRow({
         <td className={NUM}>{r.avg == null ? dash : fmtLatency(r.avg)}</td>
         {pcts.map((p) => {
           const v = p === 99 ? r.p99 : p === 95 ? r.p95 : r.p50;
-          return <td key={p} className={`${NUM} ${v == null ? "" : LEVEL_CLASS[latencyLevel(v)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
+          const primary = p === pcts[pcts.length - 1];
+          return <td key={p} className={`${NUM} ${v == null || !primary ? "" : LEVEL_CLASS[latencyLevel(v)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
         })}
         <td className={`${NUM} ${errorLevel(r.e5Rate, "5xx") === "red" ? LEVEL_CLASS.red : ""}`}>
           {r.e5Total == null ? dash : <><b>{fmtInt(r.e5Total)}</b><div className="text-[10px] font-normal text-muted-foreground">{fmtRps(r.e5Rate)}/s</div></>}

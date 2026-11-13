@@ -620,7 +620,7 @@ const LiveCard = memo(function LiveCard({
         <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v)}>
           {lat.map((l, i) => (
             <span key={l.p}>
-              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={LEVEL_CLASS[latencyLevel(l.v)]}>{fmtLatency(l.v)}</b>
+              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={l.p === latP ? LEVEL_CLASS[latencyLevel(l.v)] : ""} title={l.p === latP ? undefined : `Sem cor: os limites de 0,5 s e 1 s valem para o P${latP}, o maior percentil marcado`}>{fmtLatency(l.v)}</b>
             </span>
           ))}
         </Row>

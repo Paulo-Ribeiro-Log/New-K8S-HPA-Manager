@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: só o maior percentil é colorido (Novembro 2026)
+
+Na tabela e na linha "Latências" do cartão, a cor por limite (0,5 s alerta, 1 s erro) passou a valer só para o **maior percentil marcado**, o mesmo que a regra da situação usa (`assessSeries`). Antes P50 e P95 eram pintados com limites pensados para o P99, e um P50 de 600 ms parecia problema sem a aplicação estar em alerta. Os outros percentis ficam sem cor, com um tooltip dizendo por quê.
+
 ### Tempo real: marcadores pontuais ("Marcar agora") (Novembro 2026)
 
 Botão **Marcar** na barra: guarda o instante de agora com um nome. Linha vertical com o nome nos gráficos do modal (`ReferenceLine`, só quando a hora cai dentro do período) e seção "Marcadores" no resumo da sessão. Por usuário, no servidor (`GET/PUT /api/v1/monitoring/live-markers`, mesmo armazenamento dos eventos e conjuntos, `MonitoringSetsHandler` com outro prefixo), com cópia no navegador; até 200 marcadores e 30 dias. Lógica pura em `metricsMarkers.ts`. Só o "agora": não há campo para digitar a hora.
