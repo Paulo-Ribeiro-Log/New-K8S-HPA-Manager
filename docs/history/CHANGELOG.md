@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: marcadores pontuais ("Marcar agora") (Novembro 2026)
+
+Botão **Marcar** na barra: guarda o instante de agora com um nome. Linha vertical com o nome nos gráficos do modal (`ReferenceLine`, só quando a hora cai dentro do período) e seção "Marcadores" no resumo da sessão. Por usuário, no servidor (`GET/PUT /api/v1/monitoring/live-markers`, mesmo armazenamento dos eventos e conjuntos, `MonitoringSetsHandler` com outro prefixo), com cópia no navegador; até 200 marcadores e 30 dias. Lógica pura em `metricsMarkers.ts`. Só o "agora": não há campo para digitar a hora.
+
 ### Latência na unidade que cabe no valor (Novembro 2026)
 
 As latências e o response time passaram de "0.268s" (segundos com 3 casas) para a unidade que cabe no valor, com vírgula decimal: `30 µs`, `4,3 ms`, `268 ms`, `1,3 s`, `42 s` (`fmtDurationMs`, `fmtDuration.ts`). Vale no Tempo real, no Relatório e nas exportações em Markdown e PDF, no resumo da sessão e na comparação. Os CSVs continuam em número cru em milissegundos (`p99_pico_ms`, `response_time_medio_ms`), para planilha. Na fronteira de 1 s não aparece "1000 ms" (999,6 ms vira "1 s"). Outras abas do programa têm formatadores próprios e não foram alteradas.

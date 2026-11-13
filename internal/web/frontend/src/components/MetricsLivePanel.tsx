@@ -40,6 +40,9 @@ function savePref(key: string, value: unknown) {
 }
 
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
+import { MetricsMarkerButton } from "@/components/MetricsMarkerButton";
+import { useLiveMarkers } from "@/hooks/useLiveMarkers";
+import { markersInRange, shortName, type Marker } from "@/lib/metricsMarkers";
 import { MetricsLiveSummary } from "@/components/MetricsLiveSummary";
 import { MetricsLiveTable } from "@/components/MetricsLiveTable";
 import { COLORS, LEVEL_CLASS, LevelIcon, Spark, fmtClock } from "@/components/metricsLiveShared";
@@ -119,6 +122,7 @@ export function MetricsLivePanel({
   percentiles: number[];
   onPercentiles: (next: number[]) => void;
 }) {
+  const liveMarkers = useLiveMarkers();
   const [range, setRange] = useState<LiveRangeId | "custom">(() => loadPref(LIVE_RANGE_KEY, parseLiveRange));
   const [refresh, setRefresh] = useState<number>(() => loadPref(LIVE_REFRESH_KEY, parseLiveRefresh));
   const [horizon, setHorizon] = useState<number>(() => loadPref(PROJECTION_KEY, parseProjection));
@@ -201,7 +205,7 @@ export function MetricsLivePanel({
     // com um evento na sessão, o nome dele vai no arquivo: fica fácil achar e juntar depois
     const slug = sessionRef.current.events.map((e) => fileSlug(e.name)).filter(Boolean).slice(0, 2).join("+");
     const base = `tempo-real-resumo${slug ? `_${slug}` : ""}_${stamp}`;
-    if (kind === "md") downloadText(buildSessionMarkdown(sessionRef.current, now), "text/markdown", `${base}.md`);
+    if (kind === "md") downloadText(buildSessionMarkdown(sessionRef.current, now, liveMarkers.markers), "text/markdown", `${base}.md`);
     else downloadText(buildSessionCSV(sessionRef.current), "text/csv", `${base}.csv`);
   };
 
@@ -297,6 +301,7 @@ export function MetricsLivePanel({
               onSave={onSaveEvent}
               onRemove={onRemoveEvent}
             />
+            <MetricsMarkerButton markers={liveMarkers.markers} onAdd={liveMarkers.add} onRemove={liveMarkers.remove} />
             <Popover>
               <PopoverTrigger asChild>
                 <Button size="sm" variant="outline" className="h-7 text-xs gap-1" title="Projeção, percentis de latência, itens do Prometheus e resumo da sessão">
@@ -452,7 +457,7 @@ export function MetricsLivePanel({
       {/* gráficos completos: só existem enquanto o modal está aberto */}
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          {detail && <DetailCharts s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} win={data?.window} />}
+          {detail && <DetailCharts markers={liveMarkers.markers} s={detail} base={baseMap.get(`${detail.cluster}|${detail.namespace}|${detail.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanMs={spanMs} win={data?.window} />}
         </DialogContent>
       </Dialog>
     </div>
@@ -640,7 +645,7 @@ const LiveCard = memo(function LiveCard({
 });
 
 // Gráficos completos de uma aplicação (RPS, latência e erros com a projeção): montados só no modal.
-function DetailCharts({ s, base, percentiles, horizon, spanMs, win }: { s: LiveSeries; base?: LiveSeries; percentiles: number[]; horizon: number; spanMs: number; win?: { start: string; end: string } }) {
+function DetailCharts({ s, base, percentiles, horizon, spanMs, win, markers }: { markers: Marker[]; s: LiveSeries; base?: LiveSeries; percentiles: number[]; horizon: number; spanMs: number; win?: { start: string; end: string } }) {
   // a rede só é pedida quando o modal abre (uma consulta por abertura e por atualização), não em todo cartão
   const netQ = useQuery({
     queryKey: ["metrics-live-net", s.cluster, s.namespace, s.workload, win?.start, win?.end],
@@ -661,10 +666,10 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs, win }: { s: LiveS
         <DialogDescription>ns: {s.namespace} · {s.cluster}{s.services?.length ? ` · ${s.services.length} serviço(s) de entrada` : ""}</DialogDescription>
         {s.links && s.links.length > 0 && <DynatraceLinks links={s.links} />}
       </DialogHeader>
-      <MiniChart title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
+      <MiniChart markers={markers} title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
         lines={[{ key: "rps", color: COLORS.rps, name: "RPS" }, { key: "rpsProj", color: COLORS.proj, name: "projeção", dashed: true }]} />
       {(d.hasLatency || d.hasAvg) && (
-        <MiniChart title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? LATENCY_RED_MS : undefined}
+        <MiniChart markers={markers} title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? LATENCY_RED_MS : undefined}
           lines={[
             ...(d.hasAvg ? [{ key: "avg", color: COLORS.avg, name: "Média" }] : []),
             ...(percentiles.includes(50) ? [{ key: "p50", color: COLORS.p50, name: "P50" }] : []),
@@ -674,17 +679,17 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs, win }: { s: LiveS
           ]} />
       )}
       {d.hasErrors && (
-        <MiniChart title="Erros por segundo" data={d} spanWithDate={withDate} height={120} yFmt={(v) => fmtRps(v)}
+        <MiniChart markers={markers} title="Erros por segundo" data={d} spanWithDate={withDate} height={120} yFmt={(v) => fmtRps(v)}
           lines={[{ key: "e4", color: COLORS.e4, name: "4xx" }, { key: "e5", color: COLORS.e5, name: "5xx" }]} />
       )}
       {netQ.isLoading && <div className="text-[11px] text-muted-foreground">Carregando a rede (Prometheus)…</div>}
       {netQ.isError && <div className="text-[11px] text-red-400">Rede (Prometheus): {errText(netQ.error)}</div>}
       {net.hasData && (
-        <MiniChart title="Rede (Prometheus): ↓ recebido · ↑ enviado, somando os pods" data={net} spanWithDate={withDate} height={140} yFmt={(v) => fmtBytesPerSec(v)}
+        <MiniChart markers={markers} title="Rede (Prometheus): ↓ recebido · ↑ enviado, somando os pods" data={net} spanWithDate={withDate} height={140} yFmt={(v) => fmtBytesPerSec(v)}
           lines={[{ key: "rx", color: COLORS.rps, name: "↓ recebido" }, { key: "tx", color: COLORS.p50, name: "↑ enviado" }]} />
       )}
       {net.hasErrors && (
-        <MiniChart title="Pacotes descartados e erros de rede por segundo" data={net} spanWithDate={withDate} height={100} yFmt={(v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
+        <MiniChart markers={markers} title="Pacotes descartados e erros de rede por segundo" data={net} spanWithDate={withDate} height={100} yFmt={(v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
           lines={[{ key: "err", color: COLORS.e5, name: "descartes + erros" }]} />
       )}
     </div>
@@ -722,8 +727,9 @@ function Trend({ label, p, horizon, fmt }: { label: string; p: Projection | null
 }
 
 function MiniChart({
-  title, data, lines, yFmt, limit, height = 120, spanWithDate,
+  title, data, lines, yFmt, limit, height = 120, spanWithDate, markers = [],
 }: {
+  markers?: Marker[];
   title: string;
   data: { rows: object[] };
   lines: { key: string; color: string; name: string; dashed?: boolean }[];
@@ -732,6 +738,9 @@ function MiniChart({
   height?: number;
   spanWithDate: boolean;
 }) {
+  // marcadores que caem dentro do período do gráfico (linhas verticais com o nome)
+  const rowsT = (data.rows as { t: number }[]).map((r) => r.t).filter((t) => Number.isFinite(t));
+  const inRange = rowsT.length ? markersInRange(markers, Math.min(...rowsT), Math.max(...rowsT)) : [];
   return (
     <div>
       <div className="text-[10px] text-muted-foreground mb-0.5">{title}</div>
@@ -747,6 +756,9 @@ function MiniChart({
               formatter={(v, name) => [typeof v === "number" ? yFmt(v) : "—", name]}
             />
             {limit != null && <ReferenceLine y={limit} stroke={COLORS.p99} strokeDasharray="2 4" strokeOpacity={0.6} />}
+            {inRange.map((m, i) => (
+              <ReferenceLine key={m.id} x={m.t} stroke={COLORS.axis} strokeDasharray="4 3" ifOverflow="hidden" label={{ value: shortName(m.name), position: i % 2 ? "insideTopRight" : "insideTopLeft", fontSize: 9, fill: COLORS.axis }} />
+            ))}
             {lines.map((l) => (
               <Line key={l.key} dataKey={l.key} name={l.name} type="monotone" stroke={l.color} strokeWidth={l.dashed ? 1.5 : 1.8} strokeDasharray={l.dashed ? "5 4" : undefined} dot={false} connectNulls={false} isAnimationActive={false} />
             ))}
