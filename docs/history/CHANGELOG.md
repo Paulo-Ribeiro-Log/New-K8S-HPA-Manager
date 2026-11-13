@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: começa parado (Novembro 2026)
+
+O painel (`MetricsLivePanel`) abria já consultando o Dynatrace. Agora o estado inicial é `running = false`: o operador escolhe os alvos e clica em **Iniciar**. Vale a cada abertura da aba.
+
 ### Relatório: selos 🔴/⚠️ usam os limites de alerta do usuário (Novembro 2026)
 
 Os limites configuráveis só valiam para o Tempo real: o Relatório marcava 🔴/⚠️ com limites fixos no servidor (P99 acima de 1 s, qualquer 5xx, qualquer 4xx), e as duas telas julgavam a mesma aplicação por critérios diferentes. Agora a coleta envia `thresholds` (`reportThresholds`: o P99 vermelho é o limite de erro do P99 e erros/s viram total da janela, taxa média x segundos) e o servidor **valida** (`Thresholds.validate`: negativo, NaN e acima de 1e9 são recusados) e **devolve** os limites usados em `Result.Thresholds`, para a legenda da tela, do Markdown e do PDF dizer os que valeram (`reportLegend`). O padrão do Tempo real dá exatamente o padrão antigo do Relatório. O hook `useLiveThresholds` passou a viver em `MetricsReportTab`, e o painel do Tempo real recebe os limites por props (uma fonte só). Valem a partir da próxima coleta.
