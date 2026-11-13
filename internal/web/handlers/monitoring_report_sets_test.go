@@ -142,3 +142,36 @@ func TestMarcadoresSobrevivemAoReinicioEFicamSeparadosDeEventosEConjuntos(t *tes
 		t.Fatalf("campo errado deveria dar 400, deu %d", w.Code)
 	}
 }
+
+func TestLimitesDeAlertaSobrevivemAoReinicioEFicamPorUsuario(t *testing.T) {
+	dir := t.TempDir()
+	st := newSetsStore(t, dir)
+	router := func(email string, h *MonitoringSetsHandler) *gin.Engine {
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.Use(func(c *gin.Context) { c.Set("user_email", email) })
+		r.GET("/sets", h.Get)
+		r.PUT("/sets", h.Put)
+		return r
+	}
+	body := `{"thresholds":[{"latWarnMs":300,"latRedMs":800,"hpaCeiling":false}]}`
+	if w := do(router("a@x.com", NewMonitoringThresholdsHandler(st)), http.MethodPut, body); w.Code != 200 {
+		t.Fatalf("PUT = %d %s", w.Code, w.Body)
+	}
+	st2 := newSetsStore(t, dir) // "reinício"
+	w := do(router("a@x.com", NewMonitoringThresholdsHandler(st2)), http.MethodGet, "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"latWarnMs":300`) || !strings.Contains(w.Body.String(), `"hpaCeiling":false`) {
+		t.Fatalf("GET após reinício = %d %s", w.Code, w.Body)
+	}
+	// sem nada gravado devolve lista vazia (a tela usa o padrão); outro usuário não vê os limites
+	if w := do(router("b@x.com", NewMonitoringThresholdsHandler(st2)), http.MethodGet, ""); w.Body.String() != `{"thresholds":[]}` {
+		t.Fatalf("outro usuário: %s", w.Body)
+	}
+	// não vaza para marcadores nem eventos
+	if w := do(router("a@x.com", NewMonitoringMarkersHandler(st2)), http.MethodGet, ""); strings.Contains(w.Body.String(), "latWarnMs") {
+		t.Fatalf("limites apareceram nos marcadores: %s", w.Body)
+	}
+	if w := do(router("a@x.com", NewMonitoringThresholdsHandler(st2)), http.MethodPut, `{"markers":[]}`); w.Code != 400 {
+		t.Fatalf("campo errado deveria dar 400, deu %d", w.Code)
+	}
+}

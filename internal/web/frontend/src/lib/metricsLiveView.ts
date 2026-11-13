@@ -1,6 +1,7 @@
 // Visão do Tempo real: modelo de linha (tabela e cartões), ordenação, filtro por situação e os números da
 // faixa de resumo. Lógica pura (testada em metricsLiveView.test.ts); nenhuma chamada de rede nem DOM.
 import { assessSeries, lastValue, projectedPercentile, type Level, type LiveSeries } from "./metricsLive";
+import { DEFAULT_THRESHOLDS, type Thresholds } from "./metricsThresholds";
 
 export const LEVEL_RANK: Record<Level, number> = { info: 0, ok: 1, warn: 2, red: 3 };
 
@@ -49,9 +50,9 @@ function peakOf(s: LiveSeries): { rpsPeak: number | null; rpsPeakAt: number | nu
   return { rpsPeak: best, rpsPeakAt: at };
 }
 
-export function rowModel(s: LiveSeries, percentiles: number[]): LiveRowModel {
+export function rowModel(s: LiveSeries, percentiles: number[], t: Thresholds = DEFAULT_THRESHOLDS): LiveRowModel {
   const p = projectedPercentile(percentiles);
-  const a = assessSeries(s, percentiles);
+  const a = assessSeries(s, percentiles, t);
   const r = s.resources;
   return {
     s, key: rowKey(s), level: a.level, reasons: a.reasons,
@@ -61,7 +62,7 @@ export function rowModel(s: LiveSeries, percentiles: number[]): LiveRowModel {
     e5Rate: lastValue(s.err_5xx_rps), e5Total: s.err_5xx_total ?? null,
     e4Rate: lastValue(s.err_4xx_rps), e4Total: s.err_4xx_total ?? null,
     repAvail: r?.replicas_available ?? null, repDesired: r?.replicas_desired ?? null, hpaMax: r?.hpa_max ?? null,
-    atCeiling: r?.hpa_max != null && r?.replicas_desired != null && r.hpa_max > 0 && r.replicas_desired >= r.hpa_max,
+    atCeiling: t.hpaCeiling && r?.hpa_max != null && r?.replicas_desired != null && r.hpa_max > 0 && r.replicas_desired >= r.hpa_max,
     cpuLim: r?.cpu_lim_pct ?? null, memLim: r?.mem_lim_pct ?? null, restarts: r?.restarts_15m ?? null,
   };
 }

@@ -1,9 +1,16 @@
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import { AlertTriangle, CheckCircle2, CircleHelp, XCircle } from "lucide-react";
 import { LEVEL_LABEL, sparkHeights, type Level } from "@/lib/metricsLive";
 import { REPORT_TZ, fmtRps } from "@/lib/metricsReport";
+import { DEFAULT_THRESHOLDS, type Thresholds } from "@/lib/metricsThresholds";
 
 // Peças compartilhadas pelas visões do Tempo real (cartões, tabela e faixa de resumo).
+
+// Limites de alerta do usuário, para os cartões e a tabela pintarem pelas mesmas regras da situação sem passar a
+// configuração por todas as props.
+const ThresholdsContext = createContext<Thresholds>(DEFAULT_THRESHOLDS);
+export const ThresholdsProvider = ThresholdsContext.Provider;
+export const useThresholds = (): Thresholds => useContext(ThresholdsContext);
 
 export const COLORS = { rps: "#38bdf8", p50: "#34d399", p95: "#fbbf24", p99: "#f87171", e4: "#fbbf24", e5: "#f87171", proj: "#a78bfa", avg: "#2dd4bf", grid: "#374151", axis: "#9ca3af", spark: "#d946ef" };
 export const LEVEL_CLASS: Record<Level, string> = { ok: "text-emerald-400", warn: "text-amber-400", red: "text-red-400", info: "text-sky-400" };

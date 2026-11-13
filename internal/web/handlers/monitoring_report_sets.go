@@ -35,6 +35,12 @@ func NewMonitoringMarkersHandler(store *storage.LocalSettingsStore) *MonitoringS
 	return &MonitoringSetsHandler{store: store, prefix: "metrics_live_markers:", field: "markers"}
 }
 
+// NewMonitoringThresholdsHandler guarda os limites de alerta do Tempo real do usuário. É uma lista de UM objeto
+// ({"thresholds":[{...}]}): a tela valida e completa os campos, o servidor só guarda.
+func NewMonitoringThresholdsHandler(store *storage.LocalSettingsStore) *MonitoringSetsHandler {
+	return &MonitoringSetsHandler{store: store, prefix: "metrics_live_thresholds:", field: "thresholds"}
+}
+
 func (h *MonitoringSetsHandler) key(c *gin.Context) string {
 	return h.prefix + c.GetString("user_email")
 }

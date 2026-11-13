@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, BarChart3, ChevronDown, ChevronRight, X } from "luc
 import { LEVEL_LABEL, errorLevel, fmtRestartReasons, latencyLevel, restartsLevel, usageLevel, worstLevel, type LiveSeries } from "@/lib/metricsLive";
 import { fmtInt, fmtLatency, fmtRps, type ReportItem } from "@/lib/metricsReport";
 import type { LiveRowModel, SortKey, SortState } from "@/lib/metricsLiveView";
-import { LEVEL_CLASS, LevelIcon, Spark } from "@/components/metricsLiveShared";
+import { LEVEL_CLASS, LevelIcon, Spark, useThresholds } from "@/components/metricsLiveShared";
 
 const NUM = "px-2 py-1.5 text-right whitespace-nowrap tabular-nums";
 const dash = <span className="text-muted-foreground">—</span>;
@@ -130,6 +130,7 @@ const TableRow = memo(function TableRow({
   onDetail: (s: LiveSeries) => void;
   onRemove: (item: ReportItem) => void;
 }) {
+  const th = useThresholds();
   const s = r.s;
   const failed = !!s.error && !s.resources;
   const why = r.reasons.length ? r.reasons.join("\n") : LEVEL_LABEL[r.level];
@@ -160,12 +161,12 @@ const TableRow = memo(function TableRow({
         {pcts.map((p) => {
           const v = p === 99 ? r.p99 : p === 95 ? r.p95 : r.p50;
           const primary = p === pcts[pcts.length - 1];
-          return <td key={p} className={`${NUM} ${v == null || !primary ? "" : LEVEL_CLASS[latencyLevel(v)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
+          return <td key={p} className={`${NUM} ${v == null || !primary ? "" : LEVEL_CLASS[latencyLevel(v, th)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
         })}
-        <td className={`${NUM} ${errorLevel(r.e5Rate, "5xx") === "red" ? LEVEL_CLASS.red : ""}`}>
+        <td className={`${NUM} ${errorLevel(r.e5Rate, "5xx", th) === "red" ? LEVEL_CLASS.red : ""}`}>
           {r.e5Total == null ? dash : <><b>{fmtInt(r.e5Total)}</b><div className="text-[10px] font-normal text-muted-foreground">{fmtRps(r.e5Rate)}/s</div></>}
         </td>
-        <td className={`${NUM} ${errorLevel(r.e4Rate, "4xx") === "warn" ? LEVEL_CLASS.warn : ""}`}>
+        <td className={`${NUM} ${errorLevel(r.e4Rate, "4xx", th) === "warn" ? LEVEL_CLASS.warn : ""}`}>
           {r.e4Total == null ? dash : <><b>{fmtInt(r.e4Total)}</b><div className="text-[10px] font-normal text-muted-foreground">{fmtRps(r.e4Rate)}/s</div></>}
         </td>
         {showResources && (
@@ -178,9 +179,9 @@ const TableRow = memo(function TableRow({
                 </>
               )}
             </td>
-            <td className={`${NUM} ${r.cpuLim != null ? LEVEL_CLASS[usageLevel(r.cpuLim)] : ""}`}>{pct(r.cpuLim) ?? dash}</td>
-            <td className={`${NUM} ${r.memLim != null ? LEVEL_CLASS[usageLevel(r.memLim)] : ""}`}>{pct(r.memLim) ?? dash}</td>
-            <td className={`${NUM} ${r.restarts != null ? LEVEL_CLASS[restartsLevel(r.restarts)] : ""}`} title={fmtRestartReasons(s.resources?.restart_reasons) || undefined}>
+            <td className={`${NUM} ${r.cpuLim != null ? LEVEL_CLASS[usageLevel(r.cpuLim, th)] : ""}`}>{pct(r.cpuLim) ?? dash}</td>
+            <td className={`${NUM} ${r.memLim != null ? LEVEL_CLASS[usageLevel(r.memLim, th)] : ""}`}>{pct(r.memLim) ?? dash}</td>
+            <td className={`${NUM} ${r.restarts != null ? LEVEL_CLASS[restartsLevel(r.restarts, th)] : ""}`} title={fmtRestartReasons(s.resources?.restart_reasons) || undefined}>
               {r.restarts == null ? dash : r.restarts}
             </td>
           </>
