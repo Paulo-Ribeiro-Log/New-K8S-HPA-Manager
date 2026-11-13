@@ -3,9 +3,17 @@
 // código antes de existir esta configuração, então quem não mexe em nada vê o mesmo de sempre.
 
 export interface Thresholds {
-  /** Latência do maior percentil marcado (ms): acima de latWarnMs é ALERTA, acima de latRedMs é ERRO. */
-  latWarnMs: number;
-  latRedMs: number;
+  /**
+   * Latência em ms, uma escala para cada percentil (um P50 de 600 ms e um P99 de 600 ms não são a mesma coisa):
+   * acima do limite de alerta é ALERTA, acima do de erro é ERRO. A situação da aplicação usa só o maior percentil
+   * marcado; a cor de cada célula usa a escala do próprio percentil.
+   */
+  p50WarnMs: number;
+  p50RedMs: number;
+  p95WarnMs: number;
+  p95RedMs: number;
+  p99WarnMs: number;
+  p99RedMs: number;
   /** Erros 5xx por segundo agora: acima disto é ERRO (0 = qualquer 5xx). */
   err5Rate: number;
   /** Erros 4xx por segundo agora: acima disto é ALERTA (0 = qualquer 4xx). */
@@ -27,7 +35,9 @@ export interface Thresholds {
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
-  latWarnMs: 500, latRedMs: 1000,
+  p50WarnMs: 200, p50RedMs: 500,
+  p95WarnMs: 400, p95RedMs: 800,
+  p99WarnMs: 500, p99RedMs: 1000,
   err5Rate: 0, err4Rate: 0,
   usageWarn: 70, usageRed: 85,
   throttleWarn: 10, throttleRed: 25,
@@ -37,14 +47,19 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   pods: true,
 };
 
+/** Limites de latência (ms) do percentil dado. */
+export function latencyLimits(t: Thresholds, percentile: 50 | 95 | 99): { warn: number; red: number } {
+  return percentile === 50 ? { warn: t.p50WarnMs, red: t.p50RedMs } : percentile === 95 ? { warn: t.p95WarnMs, red: t.p95RedMs } : { warn: t.p99WarnMs, red: t.p99RedMs };
+}
+
 export const THRESHOLDS_KEY = "metrics_live_thresholds";
 
-const NUM_KEYS = ["latWarnMs", "latRedMs", "err5Rate", "err4Rate", "usageWarn", "usageRed", "throttleWarn", "throttleRed", "netWarn", "restartsWarn"] as const;
+const NUM_KEYS = ["p50WarnMs", "p50RedMs", "p95WarnMs", "p95RedMs", "p99WarnMs", "p99RedMs", "err5Rate", "err4Rate", "usageWarn", "usageRed", "throttleWarn", "throttleRed", "netWarn", "restartsWarn"] as const;
 const BOOL_KEYS = ["hpaCeiling", "pods"] as const;
 /** Pares (alerta, erro): alerta não pode passar de erro. */
-const PAIRS: [keyof Thresholds, keyof Thresholds][] = [["latWarnMs", "latRedMs"], ["usageWarn", "usageRed"], ["throttleWarn", "throttleRed"]];
+const PAIRS: [keyof Thresholds, keyof Thresholds][] = [["p50WarnMs", "p50RedMs"], ["p95WarnMs", "p95RedMs"], ["p99WarnMs", "p99RedMs"], ["usageWarn", "usageRed"], ["throttleWarn", "throttleRed"]];
 /** Teto de cada campo, para barrar digitação absurda (um "0 a 100%" que vira 1000000). */
-const MAX: Partial<Record<keyof Thresholds, number>> = { latWarnMs: 3_600_000, latRedMs: 3_600_000, usageWarn: 1000, usageRed: 1000, throttleWarn: 100, throttleRed: 100, err5Rate: 1_000_000, err4Rate: 1_000_000, netWarn: 1_000_000, restartsWarn: 1_000_000 };
+const MAX: Partial<Record<keyof Thresholds, number>> = { p50WarnMs: 3_600_000, p50RedMs: 3_600_000, p95WarnMs: 3_600_000, p95RedMs: 3_600_000, p99WarnMs: 3_600_000, p99RedMs: 3_600_000, usageWarn: 1000, usageRed: 1000, throttleWarn: 100, throttleRed: 100, err5Rate: 1_000_000, err4Rate: 1_000_000, netWarn: 1_000_000, restartsWarn: 1_000_000 };
 
 /**
  * Aceita o que veio do servidor ou do navegador (objeto, texto JSON ou lista de um objeto) e devolve limites
@@ -61,7 +76,11 @@ export function normalizeThresholds(raw: unknown): Thresholds {
     }
   }
   if (Array.isArray(v)) v = v[0];
-  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const o = { ...((v && typeof v === "object" ? v : {}) as Record<string, unknown>) };
+  // limites salvos antes da escala por percentil tinham um par só (latWarnMs/latRedMs, valendo para o maior percentil
+  // marcado, quase sempre o P99): passam a ser o do P99, e o P50 e o P95 ficam com o padrão
+  if (o.p99WarnMs === undefined && o.latWarnMs !== undefined) o.p99WarnMs = o.latWarnMs;
+  if (o.p99RedMs === undefined && o.latRedMs !== undefined) o.p99RedMs = o.latRedMs;
   const out: Thresholds = { ...DEFAULT_THRESHOLDS };
   for (const k of NUM_KEYS) {
     const x = o[k];
@@ -78,7 +97,8 @@ export function normalizeThresholds(raw: unknown): Thresholds {
 }
 
 const LABEL: Record<(typeof NUM_KEYS)[number], string> = {
-  latWarnMs: "Latência (alerta)", latRedMs: "Latência (erro)", err5Rate: "Erros 5xx", err4Rate: "Erros 4xx",
+  p50WarnMs: "Latência P50 (alerta)", p50RedMs: "Latência P50 (erro)", p95WarnMs: "Latência P95 (alerta)", p95RedMs: "Latência P95 (erro)",
+  p99WarnMs: "Latência P99 (alerta)", p99RedMs: "Latência P99 (erro)", err5Rate: "Erros 5xx", err4Rate: "Erros 4xx",
   usageWarn: "CPU e memória (alerta)", usageRed: "CPU e memória (erro)", throttleWarn: "Throttling (alerta)", throttleRed: "Throttling (erro)",
   netWarn: "Rede", restartsWarn: "Restarts",
 };
@@ -92,7 +112,10 @@ export function validateThresholds(t: Thresholds): string[] {
     else if (x > (MAX[k] ?? Infinity)) errs.push(`${LABEL[k]}: o máximo é ${(MAX[k] as number).toLocaleString("pt-BR")}.`);
   }
   if (errs.length) return errs;
-  if (t.latWarnMs > t.latRedMs) errs.push("Latência: o limite de alerta não pode ser maior que o de erro.");
+  for (const p of [50, 95, 99] as const) {
+    const lim = latencyLimits(t, p);
+    if (lim.warn > lim.red) errs.push(`Latência P${p}: o limite de alerta não pode ser maior que o de erro.`);
+  }
   if (t.usageWarn > t.usageRed) errs.push("CPU e memória: o limite de alerta não pode ser maior que o de erro.");
   if (t.throttleWarn > t.throttleRed) errs.push("Throttling: o limite de alerta não pode ser maior que o de erro.");
   return errs;
