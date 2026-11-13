@@ -64,7 +64,7 @@ describe("formatação da comparação", () => {
     expect(fmtCompareValue("pct", null)).toBe("—");
     expect(fmtCompareValue("pct", 0.0123)).toBe("0,012%");
     expect(fmtCompareValue("pct", 12.34)).toBe("12,3%");
-    expect(fmtCompareValue("ms", 1500)).toBe("1.500s");
+    expect(fmtCompareValue("ms", 1500)).toBe("1,5 s");
     expect(fmtDelta(20.4)).toBe("+20%");
     expect(fmtDelta(-5.2)).toBe("-5%");
     expect(fmtDelta(0)).toBe("0%");

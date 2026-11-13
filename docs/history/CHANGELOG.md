@@ -3,6 +3,18 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Latência na unidade que cabe no valor (Novembro 2026)
+
+As latências e o response time passaram de "0.268s" (segundos com 3 casas) para a unidade que cabe no valor, com vírgula decimal: `30 µs`, `4,3 ms`, `268 ms`, `1,3 s`, `42 s` (`fmtDurationMs`, `fmtDuration.ts`). Vale no Tempo real, no Relatório e nas exportações em Markdown e PDF, no resumo da sessão e na comparação. Os CSVs continuam em número cru em milissegundos (`p99_pico_ms`, `response_time_medio_ms`), para planilha. Na fronteira de 1 s não aparece "1000 ms" (999,6 ms vira "1 s"). Outras abas do programa têm formatadores próprios e não foram alteradas.
+
+### Tempo real: "Maior RPS" no lugar de "RPS total" (Novembro 2026)
+
+O bloco da faixa de resumo passou a mostrar o **maior RPS medido no período**, com o nome da aplicação e a hora do pico (`rpsPeak`, `Kpis.top`), no mesmo estilo do "Pior P99", em vez da soma do RPS de agora das aplicações. A soma dava um número que nenhuma aplicação teve e que misturava aplicações de naturezas diferentes.
+
+### Tempo real: linhas do cartão marcadas ao passar o mouse (Novembro 2026)
+
+Cada linha de detalhe do cartão (Réplicas, Restarts, HPA, CPU, Memória, Rede, erros, latências, tendência) ganha um fundo suave ao passar o mouse (`hover:bg-muted/60`, com margem e preenchimento que se compensam, então o alinhamento não muda), para marcar a linha que se está lendo.
+
 ### Tempo real: nome do evento no resumo da sessão (Novembro 2026)
 
 Quando a janela do Tempo real é a de um evento salvo (`eventAtWindow`, comparação ao minuto), o resumo da sessão leva o nome dele: título do Markdown, linha com a janela, coluna `evento` no CSV e o nome no arquivo (`fileSlug`: sem acento, minúsculas, só letras, números e hífen). Os eventos ficam registrados na sessão a cada atualização, então trocar de evento no meio dela lista os dois. Sem evento, nada muda. As Opções mostram "evento: nome".

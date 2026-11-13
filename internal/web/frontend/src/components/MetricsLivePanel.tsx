@@ -466,7 +466,7 @@ function fmtStep(sec: number): string {
 // Uma linha do cartão: rótulo, valor e situação (como o monitor de stress test).
 function Row({ label, level, source = "Dynatrace", children }: { label: string; level?: Level; source?: "Dynatrace" | "Prometheus"; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[88px_1fr_auto] items-baseline gap-2 leading-5">
+    <div className="-mx-1.5 grid grid-cols-[88px_1fr_auto] items-baseline gap-2 rounded-md px-1.5 leading-5 transition-colors duration-150 hover:bg-muted/60">
       <span className="text-cyan-400" title={`Fonte: ${source}`}>{label}</span>
       <span className="min-w-0">{children}</span>
       {level && <span className={`text-right font-medium ${LEVEL_CLASS[level]}`}>{LEVEL_LABEL[level]}</span>}

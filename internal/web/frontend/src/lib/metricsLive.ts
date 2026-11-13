@@ -2,6 +2,7 @@
 // dados dos gráficos e projeção de tendência. Lógica pura (testada em metricsLive.test.ts); nenhuma
 // chamada de rede aqui.
 
+import { fmtDurationMs } from "./fmtDuration";
 import type { ReportItem } from "@/lib/metricsReport";
 
 // ── tipos da API (espelham report.LiveResult) ──────────────────────────────────────────────────────
@@ -490,7 +491,7 @@ export interface StatusEntry {
 }
 export type StatusSummary = Record<Level, StatusEntry[]>;
 
-const secs = (ms: number) => `${(ms / 1000).toFixed(3)}s`;
+const secs = (ms: number) => fmtDurationMs(ms);
 const perSec = (v: number) => `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}/s`;
 const pct1 = (v: number) => `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
 

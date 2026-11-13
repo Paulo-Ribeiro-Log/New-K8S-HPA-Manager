@@ -56,7 +56,7 @@ describe("buildExportTable", () => {
     expect(t.groups.map((g) => g.cluster)).toEqual(["c1", "c2"]);
     expect(t.groups[0].rows.map((r) => r.cells[0])).toEqual(["frete-b2c (ns: calculo-de-fretes-prd)", "frete-hub (ns: calculo-de-fretes-prd)"]);
     const hub = t.groups[0].rows[1].cells;
-    expect(hub.slice(0, 9)).toEqual(["frete-hub (ns: calculo-de-fretes-prd)", "2087668", "158.7", "0.120s", "0.045s", "0.820s", "1.501s", "181344", "9"]);
+    expect(hub.slice(0, 9)).toEqual(["frete-hub (ns: calculo-de-fretes-prd)", "2087668", "158.7", "120 ms", "45 ms", "820 ms", "1,5 s", "181344", "9"]);
     expect(hub[9]).toBe("3.3% (Min: 0.4%, Avg: 2.6%)");
   });
 
@@ -105,7 +105,7 @@ describe("buildMarkdown", () => {
 
   it("marca os selos com emoji e escreve sem dado", () => {
     const hubLine = md.split("\n").find((l) => l.startsWith("| frete-hub"))!;
-    expect(hubLine).toContain("1.501s 🔴");
+    expect(hubLine).toContain("1,5 s 🔴");
     expect(hubLine).toContain("181344 ⚠️");
     expect(hubLine).toContain("| 9 🔴 |");
     expect(md.split("\n").find((l) => l.startsWith("| frete-b2c"))).toContain("sem dado");
@@ -195,7 +195,7 @@ describe("buildReportPDF", () => {
     expect(raw.startsWith("%PDF-")).toBe(true);
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(1);
     expect(doc.internal.pageSize.getWidth()).toBeGreaterThan(doc.internal.pageSize.getHeight()); // paisagem
-    for (const trecho of ["frete-hub", "calculo-de-fretes-prd", "1.501s", "2087668", "sem dado", "Observacoes", "Dynatrace: nenhum process group casa"]) {
+    for (const trecho of ["frete-hub", "calculo-de-fretes-prd", "1,5 s", "2087668", "sem dado", "Observacoes", "Dynatrace: nenhum process group casa"]) {
       expect(raw, trecho).toContain(trecho);
     }
     // o que o PDF não suporta (emoji, setas) não pode vazar para o arquivo
@@ -317,7 +317,7 @@ describe("tempo de resposta médio nas exportações", () => {
     const t = buildExportTable(fixture());
     const i = t.columns.indexOf("Response time (média)");
     expect(i).toBeGreaterThan(0);
-    expect(t.groups[0].rows[1].cells[i]).toBe("0.120s");
+    expect(t.groups[0].rows[1].cells[i]).toBe("120 ms");
     expect(t.groups[0].rows[0].cells[i]).toBe("sem dado");
     expect(buildCSV(fixture()).split("\r\n")[0]).toContain("response_time_medio_ms");
   });

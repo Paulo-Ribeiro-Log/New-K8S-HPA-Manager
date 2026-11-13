@@ -10,6 +10,9 @@ export interface LiveRowModel {
   level: Level;
   reasons: string[];
   rps: number | null;
+  /** Maior RPS medido no período (nulo sem nenhum ponto) e o instante dele (epoch ms). */
+  rpsPeak: number | null;
+  rpsPeakAt: number | null;
   avg: number | null;
   /** Latência do maior percentil marcado (ms). */
   lat: number | null;
@@ -34,13 +37,25 @@ export interface LiveRowModel {
 
 export const rowKey = (s: { cluster: string; namespace: string; workload: string }) => `${s.cluster}|${s.namespace}|${s.workload}`;
 
+/** O maior RPS do período e quando ocorreu. Sem ponto válido, nulos (nunca zero). */
+function peakOf(s: LiveSeries): { rpsPeak: number | null; rpsPeakAt: number | null } {
+  let best: number | null = null, at: number | null = null;
+  (s.rps ?? []).forEach((v, i) => {
+    if (v != null && Number.isFinite(v) && (best === null || v > best)) {
+      best = v;
+      at = s.times?.[i] ?? null;
+    }
+  });
+  return { rpsPeak: best, rpsPeakAt: at };
+}
+
 export function rowModel(s: LiveSeries, percentiles: number[]): LiveRowModel {
   const p = projectedPercentile(percentiles);
   const a = assessSeries(s, percentiles);
   const r = s.resources;
   return {
     s, key: rowKey(s), level: a.level, reasons: a.reasons,
-    rps: lastValue(s.rps), avg: lastValue(s.avg_ms),
+    rps: lastValue(s.rps), ...peakOf(s), avg: lastValue(s.avg_ms),
     lat: lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms), latPercentile: p,
     p50: lastValue(s.p50_ms), p95: lastValue(s.p95_ms), p99: lastValue(s.p99_ms),
     e5Rate: lastValue(s.err_5xx_rps), e5Total: s.err_5xx_total ?? null,
@@ -119,8 +134,8 @@ export function groupRows(rows: LiveRowModel[]): { cluster: string; rows: LiveRo
 export interface Kpis {
   counts: Record<Level, number>;
   total: number;
-  /** Soma do RPS mais recente das aplicações (nulo sem nenhum dado). */
-  rps: number | null;
+  /** A aplicação com o maior RPS medido no período (o pico, não a soma) e quando ocorreu. */
+  top: { name: string; rps: number; at: number | null } | null;
   /** A aplicação com a pior latência (do maior percentil marcado). */
   worst: { name: string; ms: number; percentile: 50 | 95 | 99 } | null;
   e5Rate: number | null;
@@ -129,16 +144,17 @@ export interface Kpis {
 
 export function buildKpis(rows: LiveRowModel[]): Kpis {
   const counts: Record<Level, number> = { red: 0, warn: 0, ok: 0, info: 0 };
-  let rps: number | null = null, e5Rate: number | null = null, e5Total: number | null = null;
+  let top: Kpis["top"] = null;
+  let e5Rate: number | null = null, e5Total: number | null = null;
   let worst: Kpis["worst"] = null;
   for (const r of rows) {
     counts[r.level] += 1;
-    if (r.rps != null) rps = (rps ?? 0) + r.rps;
+    if (r.rpsPeak != null && (!top || r.rpsPeak > top.rps)) top = { name: r.s.workload, rps: r.rpsPeak, at: r.rpsPeakAt };
     if (r.e5Rate != null) e5Rate = (e5Rate ?? 0) + r.e5Rate;
     if (r.e5Total != null) e5Total = (e5Total ?? 0) + r.e5Total;
     if (r.lat != null && (!worst || r.lat > worst.ms)) worst = { name: r.s.workload, ms: r.lat, percentile: r.latPercentile };
   }
-  return { counts, total: rows.length, rps, worst, e5Rate, e5Total };
+  return { counts, total: rows.length, top, worst, e5Rate, e5Total };
 }
 
 // ── visão: tabela ou cartões ──────────────────────────────────────────────────────────────────────
