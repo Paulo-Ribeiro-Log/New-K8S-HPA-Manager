@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: nome do evento no resumo da sessão (Novembro 2026)
+
+Quando a janela do Tempo real é a de um evento salvo (`eventAtWindow`, comparação ao minuto), o resumo da sessão leva o nome dele: título do Markdown, linha com a janela, coluna `evento` no CSV e o nome no arquivo (`fileSlug`: sem acento, minúsculas, só letras, números e hífen). Os eventos ficam registrados na sessão a cada atualização, então trocar de evento no meio dela lista os dois. Sem evento, nada muda. As Opções mostram "evento: nome".
+
 ### Relatório: barra de coleta mais limpa (Novembro 2026)
 
 A janela de tempo virou um controle segmentado (1 h … 14 d, Personalizado) com o botão Eventos ao lado. **Coletar** passou para a mesma linha, junto com Cancelar, o andamento e o botão **Opções de coleta**, que guarda os percentis de latência, o contexto de node e "Réplicas, HPA e rede" com a explicação de cada um; ao lado do botão, uma linha curta diz o que será coletado ("P95/P99 · node"). A resolução e os avisos da janela ficaram numa linha menor. Sem mudança de comportamento, só de lugar.

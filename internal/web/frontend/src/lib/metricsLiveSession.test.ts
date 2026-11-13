@@ -78,3 +78,35 @@ describe("tempo de resposta médio na sessão", () => {
     expect(buildSessionCSV(s).split("\r\n")[0]).toContain("response_time_medio_ms_med");
   });
 });
+
+describe("nome do evento no resumo da sessão", () => {
+  const ev = { name: "Stress test 11/11", start: "2026-11-11T17:00:00Z", end: "2026-11-11T19:00:00Z" };
+  it("entra no título, numa linha com a janela e numa coluna do CSV", () => {
+    const s = newSession(0);
+    recordSample(s, [mk()], 99, ev);
+    recordSample(s, [mk()], 99, ev); // o mesmo evento não se repete
+    expect(s.events).toEqual([ev]);
+    const md = buildSessionMarkdown(s, 60000);
+    expect(md.split("\n")[0]).toBe("# Resumo da sessão do Tempo real — Stress test 11/11");
+    expect(md).toContain("- **Evento:** Stress test 11/11 · 11/11 14:00 → 16:00 (2 h)");
+    const lines = buildSessionCSV(s).replace(/^\uFEFF/, "").split("\r\n").filter(Boolean);
+    expect(lines[0].startsWith('"evento";"cluster"')).toBe(true);
+    expect(lines[1].startsWith('"Stress test 11/11";"c1"')).toBe(true);
+    expect(lines[0].split(";").length).toBe(lines[1].split(";").length);
+  });
+  it("sem evento nada muda: título simples e coluna vazia", () => {
+    const s = newSession(0);
+    recordSample(s, [mk()], 99);
+    expect(buildSessionMarkdown(s, 60000).split("\n")[0]).toBe("# Resumo da sessão do Tempo real");
+    expect(buildSessionMarkdown(s, 60000)).not.toContain("**Evento:**");
+    const lines = buildSessionCSV(s).replace(/^\uFEFF/, "").split("\r\n").filter(Boolean);
+    expect(lines[1].startsWith('"";"c1"')).toBe(true);
+  });
+  it("dois eventos na mesma sessão aparecem os dois", () => {
+    const s = newSession(0);
+    recordSample(s, [mk()], 99, ev);
+    recordSample(s, [mk()], 99, { name: "Black Friday", start: "2026-11-27T12:00:00Z", end: "2026-11-27T15:00:00Z" });
+    expect(s.events.map((e) => e.name)).toEqual(["Stress test 11/11", "Black Friday"]);
+    expect(buildSessionMarkdown(s, 60000).split("\n")[0]).toContain("Stress test 11/11, Black Friday");
+  });
+});

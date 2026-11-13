@@ -2,6 +2,7 @@
 // contagens), nunca as séries — o consumo de memória não cresce com o tempo, só com o número de aplicações.
 // Lógica pura (testada em metricsLiveSession.test.ts); só o download toca o DOM (downloadText).
 import { REPORT_TZ, fmtLatency } from "./metricsReport";
+import { eventLabel, type SavedEvent } from "./metricsEvents";
 import { fmtBytesPerSec, lastValue, type LiveSeries } from "./metricsLive";
 
 export interface Agg {
@@ -40,10 +41,12 @@ export interface Session {
   updates: number; // atualizações registradas
   percentile: 50 | 95 | 99;
   apps: Map<string, AppStat>;
+  /** Eventos salvos cuja janela estava aplicada quando uma atualização foi registrada. */
+  events: SavedEvent[];
 }
 
 export function newSession(startedAt: number, percentile: 50 | 95 | 99 = 99): Session {
-  return { startedAt, updates: 0, percentile, apps: new Map() };
+  return { startedAt, updates: 0, percentile, apps: new Map(), events: [] };
 }
 
 const add = (a: Agg | null, v: number | null | undefined): Agg | null => {
@@ -54,8 +57,9 @@ const add = (a: Agg | null, v: number | null | undefined): Agg | null => {
 const keyOf = (s: { cluster: string; namespace: string; workload: string }) => `${s.cluster}|${s.namespace}|${s.workload}`;
 
 /** Registra uma atualização. Muda a sessão (barato: um passo por aplicação). */
-export function recordSample(sess: Session, series: LiveSeries[], percentile: 50 | 95 | 99): void {
+export function recordSample(sess: Session, series: LiveSeries[], percentile: 50 | 95 | 99, event?: SavedEvent | null): void {
   sess.updates += 1;
+  if (event && !sess.events.some((e) => e.name === event.name)) sess.events.push(event);
   sess.percentile = percentile;
   for (const s of series) {
     const k = keyOf(s);
@@ -115,8 +119,9 @@ const reasons = (m: Record<string, number>) =>
 /** Resumo em Markdown: uma seção por cluster, uma linha por aplicação. */
 export function buildSessionMarkdown(sess: Session, nowMs: number): string {
   const lines: string[] = [
-    "# Resumo da sessão do Tempo real",
+    `# Resumo da sessão do Tempo real${sess.events.length ? ` — ${sess.events.map((e) => e.name).join(", ")}` : ""}`,
     "",
+    ...sess.events.map((e) => `- **Evento:** ${eventLabel(e)}`),
     `- **Início:** ${fmtWhen(sess.startedAt)} (${REPORT_TZ})`,
     `- **Fim do resumo:** ${fmtWhen(nowMs)} · duração ${fmtDur(nowMs - sess.startedAt)}`,
     `- **Atualizações registradas:** ${sess.updates}`,
@@ -160,7 +165,7 @@ export function buildSessionCSV(sess: Session, delimiter = ";"): string {
   const aggCols = (name: string, pick: (a: AppStat) => Agg | null, d: number) => {
     cols.push([`${name}_min`, (a) => csvNum(pick(a)?.min, d)], [`${name}_med`, (a) => { const g = pick(a); return g ? csvNum(avg(g), d) : ""; }], [`${name}_max`, (a) => csvNum(pick(a)?.max, d)]);
   };
-  cols.push(["cluster", (a) => csvText(a.cluster)], ["namespace", (a) => csvText(a.namespace)], ["deployment", (a) => csvText(a.workload)], ["amostras", (a) => String(a.samples)], ["amostras_com_falha", (a) => String(a.errors)]);
+  cols.push(["evento", () => csvText(sess.events.map((e) => e.name).join("; "))], ["cluster", (a) => csvText(a.cluster)], ["namespace", (a) => csvText(a.namespace)], ["deployment", (a) => csvText(a.workload)], ["amostras", (a) => String(a.samples)], ["amostras_com_falha", (a) => String(a.errors)]);
   aggCols("rps", (a) => a.rps, 2);
   aggCols("erros_5xx_ps", (a) => a.err5xx, 3);
   aggCols("erros_4xx_ps", (a) => a.err4xx, 3);
