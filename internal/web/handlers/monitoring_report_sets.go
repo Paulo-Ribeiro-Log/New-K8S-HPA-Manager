@@ -30,6 +30,11 @@ func NewMonitoringEventsHandler(store *storage.LocalSettingsStore) *MonitoringSe
 	return &MonitoringSetsHandler{store: store, prefix: "metrics_report_events:", field: "events"}
 }
 
+// NewMonitoringMarkersHandler guarda os marcadores pontuais do Tempo real ("Marcar agora") do mesmo jeito.
+func NewMonitoringMarkersHandler(store *storage.LocalSettingsStore) *MonitoringSetsHandler {
+	return &MonitoringSetsHandler{store: store, prefix: "metrics_live_markers:", field: "markers"}
+}
+
 func (h *MonitoringSetsHandler) key(c *gin.Context) string {
 	return h.prefix + c.GetString("user_email")
 }

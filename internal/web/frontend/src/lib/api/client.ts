@@ -6052,6 +6052,14 @@ class APIClient {
   async metricsReportSetsGet(): Promise<{ sets: unknown }> {
     return this.request("/monitoring/report-sets");
   }
+  // Marcadores pontuais do Tempo real ("Marcar agora"), por usuário, no servidor.
+  async metricsLiveMarkersGet(): Promise<{ markers: unknown }> {
+    return this.request("/monitoring/live-markers");
+  }
+  async metricsLiveMarkersPut(markers: unknown[]): Promise<{ saved: number }> {
+    return this.request("/monitoring/live-markers", { method: "PUT", body: JSON.stringify({ markers }) });
+  }
+
   // Eventos nomeados (janelas de tempo salvas) do Relatório de Métricas, por usuário, no servidor.
   async metricsReportEventsGet(): Promise<{ events: unknown }> {
     return this.request("/monitoring/report-events");

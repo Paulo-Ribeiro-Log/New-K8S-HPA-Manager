@@ -3,6 +3,7 @@
 // Lógica pura (testada em metricsLiveSession.test.ts); só o download toca o DOM (downloadText).
 import { REPORT_TZ, fmtLatency } from "./metricsReport";
 import { eventLabel, type SavedEvent } from "./metricsEvents";
+import { markerTime, markersInRange, type Marker } from "./metricsMarkers";
 import { fmtBytesPerSec, lastValue, type LiveSeries } from "./metricsLive";
 
 export interface Agg {
@@ -117,7 +118,8 @@ const reasons = (m: Record<string, number>) =>
   Object.entries(m).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([r, n]) => `${r} ×${n}`).join(", ");
 
 /** Resumo em Markdown: uma seção por cluster, uma linha por aplicação. */
-export function buildSessionMarkdown(sess: Session, nowMs: number): string {
+/** `markers`: os marcadores do usuário; entram na seção "Marcadores" os que caem entre o início da sessão e agora. */
+export function buildSessionMarkdown(sess: Session, nowMs: number, markers: Marker[] = []): string {
   const lines: string[] = [
     `# Resumo da sessão do Tempo real${sess.events.length ? ` — ${sess.events.map((e) => e.name).join(", ")}` : ""}`,
     "",
@@ -130,6 +132,10 @@ export function buildSessionMarkdown(sess: Session, nowMs: number): string {
     "> Os valores são **amostrados a cada atualização** (o valor mais recente de cada métrica naquele momento), não o pico entre uma atualização e outra. Picos curtos podem não aparecer. Tráfego, erros e latência vêm do Dynatrace; réplicas, CPU, memória, throttling, rede e restarts, do Prometheus.",
     "",
   ];
+  const inSession = markersInRange(markers, sess.startedAt, nowMs);
+  if (inSession.length > 0) {
+    lines.push("## Marcadores", "", ...inSession.map((m) => `- **${markerTime(new Date(m.t).toISOString(), nowMs)}** — ${m.name}`), "");
+  }
   let cluster = "";
   for (const a of sorted(sess)) {
     if (a.cluster !== cluster) {

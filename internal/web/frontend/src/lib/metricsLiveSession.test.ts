@@ -110,3 +110,26 @@ describe("nome do evento no resumo da sessão", () => {
     expect(buildSessionMarkdown(s, 60000).split("\n")[0]).toContain("Stress test 11/11, Black Friday");
   });
 });
+
+describe("marcadores no resumo da sessão", () => {
+  const T0 = Date.UTC(2026, 10, 13, 17, 0);
+  const mark = (id: string, name: string, minAfter: number) => ({ id, name, at: new Date(T0 + minAfter * 60000).toISOString() });
+  it("lista os marcadores entre o início da sessão e agora, antes das aplicações, em ordem cronológica", () => {
+    const s = newSession(T0);
+    recordSample(s, [mk()], 99);
+    const md = buildSessionMarkdown(s, T0 + 60 * 60000, [mark("b", "HPA escalou", 22), mark("a", "Início do stress test", 5), mark("x", "antes da sessão", -30), mark("y", "depois de agora", 90)]);
+    expect(md).toContain("## Marcadores");
+    expect(md).toContain("- **14:05** — Início do stress test");
+    expect(md).toContain("- **14:22** — HPA escalou");
+    expect(md).not.toContain("antes da sessão");
+    expect(md).not.toContain("depois de agora");
+    expect(md.indexOf("Início do stress test")).toBeLessThan(md.indexOf("HPA escalou"));
+    expect(md.indexOf("## Marcadores")).toBeLessThan(md.indexOf("### frete-hub")); // contexto antes dos números
+  });
+  it("sem marcador na sessão a seção não aparece", () => {
+    const s = newSession(T0);
+    recordSample(s, [mk()], 99);
+    expect(buildSessionMarkdown(s, T0 + 60000, [])).not.toContain("## Marcadores");
+    expect(buildSessionMarkdown(s, T0 + 60000)).not.toContain("## Marcadores");
+  });
+});

@@ -108,3 +108,37 @@ func TestEventosNomeadosSobrevivemAoReinicioEFicamSeparadosDosConjuntos(t *testi
 		t.Fatalf("campo errado deveria dar 400, deu %d", w.Code)
 	}
 }
+
+func TestMarcadoresSobrevivemAoReinicioEFicamSeparadosDeEventosEConjuntos(t *testing.T) {
+	dir := t.TempDir()
+	st := newSetsStore(t, dir)
+	router := func(email string, h *MonitoringSetsHandler) *gin.Engine {
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.Use(func(c *gin.Context) { c.Set("user_email", email) })
+		r.GET("/sets", h.Get)
+		r.PUT("/sets", h.Put)
+		return r
+	}
+	body := `{"markers":[{"id":"m1","name":"Subi o limite do HPA","at":"2026-11-13T17:12:00Z"}]}`
+	if w := do(router("a@x.com", NewMonitoringMarkersHandler(st)), http.MethodPut, body); w.Code != 200 {
+		t.Fatalf("PUT = %d %s", w.Code, w.Body)
+	}
+	st2 := newSetsStore(t, dir) // "reinício"
+	if w := do(router("a@x.com", NewMonitoringMarkersHandler(st2)), http.MethodGet, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"markers":[`) || !strings.Contains(w.Body.String(), "Subi o limite do HPA") {
+		t.Fatalf("GET após reinício = %d %s", w.Code, w.Body)
+	}
+	// não vaza para eventos, conjuntos nem para outro usuário
+	if w := do(router("a@x.com", NewMonitoringEventsHandler(st2)), http.MethodGet, ""); strings.Contains(w.Body.String(), "HPA") {
+		t.Fatalf("marcador apareceu nos eventos: %s", w.Body)
+	}
+	if w := do(setsRouter(t, "a@x.com", st2), http.MethodGet, ""); strings.Contains(w.Body.String(), "HPA") {
+		t.Fatalf("marcador apareceu nos conjuntos: %s", w.Body)
+	}
+	if w := do(router("b@x.com", NewMonitoringMarkersHandler(st2)), http.MethodGet, ""); strings.Contains(w.Body.String(), "HPA") {
+		t.Fatalf("vazou entre usuários: %s", w.Body)
+	}
+	if w := do(router("a@x.com", NewMonitoringMarkersHandler(st2)), http.MethodPut, `{"events":[]}`); w.Code != 400 {
+		t.Fatalf("campo errado deveria dar 400, deu %d", w.Code)
+	}
+}
