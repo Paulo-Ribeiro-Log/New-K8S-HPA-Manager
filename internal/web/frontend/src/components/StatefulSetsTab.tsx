@@ -361,16 +361,37 @@ export const StatefulSetsTab = ({
     if (!selectedStatefulSet || !editorValue) return;
     setIsApplying(true);
     try {
-      await apiClient.applyStatefulSet(
+      const result = await apiClient.applyStatefulSet(
         selectedStatefulSet.cluster,
         selectedStatefulSet.namespace,
         selectedStatefulSet.name,
         { yaml: editorValue, dryRun: false, force: true }
       );
-      toast.success("StatefulSet aplicado com sucesso");
       setApplyConfirmOpen(false);
-      setOriginalYaml(editorValue);
-      addToHistory(editorValue);
+      if (result.managedBy) {
+        // O Kubernetes aceitou o YAML, mas o dono (ex.: prometheus-operator) reconcilia o StatefulSet e pode reescrevê-lo.
+        // Mostra o que realmente ficou no cluster em vez de tratar o texto digitado como salvo.
+        const owner = `${result.managedBy.kind}/${result.managedBy.name}`;
+        if (result.reverted) {
+          setErrorTitle(`A alteração em ${selectedStatefulSet.name} não permaneceu`);
+          setErrorMessage(
+            `O Kubernetes aceitou o YAML, mas o controlador ${result.revertedBy || owner} reescreveu o StatefulSet logo depois.\n\n` +
+              `Este StatefulSet pertence a ${owner}: a fonte da verdade é esse recurso (e, se ele vem de um Helm, os values da release). ` +
+              `Para uma mudança permanente, edite ${result.managedBy.kind} ${result.managedBy.name} ou os values do Helm.`
+          );
+          setErrorDialogOpen(true);
+          toast.warning("Alteração desfeita pelo controlador", { description: `Gerenciado por ${owner}` });
+        } else {
+          toast.warning("StatefulSet aplicado, mas é gerenciado por " + owner, {
+            description: "O controlador pode reescrevê-lo mais tarde; o manifesto abaixo é o que está no cluster agora.",
+          });
+        }
+        await refreshManifest(true);
+      } else {
+        toast.success("StatefulSet aplicado com sucesso");
+        setOriginalYaml(editorValue);
+        addToHistory(editorValue);
+      }
       refetch();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -544,6 +565,19 @@ export const StatefulSetsTab = ({
 
   const hasChanges = editorValue !== originalYaml;
 
+  // Dono controlador do StatefulSet (ownerReferences com controller=true no YAML do cluster).
+  const controllerOwnerRef = useMemo(() => {
+    try {
+      const doc = yaml.load(originalYaml) as
+        | { metadata?: { ownerReferences?: { kind?: string; name?: string; controller?: boolean }[] } }
+        | undefined;
+      const ref = doc?.metadata?.ownerReferences?.find((r) => r.controller);
+      return ref?.kind && ref?.name ? { kind: ref.kind, name: ref.name } : null;
+    } catch {
+      return null;
+    }
+  }, [originalYaml]);
+
   // Namespace Selector
   const namespaceSelector = (
     <Select value={selectedNamespace || "__all__"} onValueChange={(v) => onNamespaceChange(v === "__all__" ? "" : v)}>
@@ -689,7 +723,7 @@ export const StatefulSetsTab = ({
   );
 
   // Função para recarregar o manifesto do StatefulSet selecionado
-  const refreshManifest = async () => {
+  const refreshManifest = async (silent = false) => {
     if (!selectedStatefulSet) return;
     setManifestLoading(true);
     try {
@@ -704,7 +738,7 @@ export const StatefulSetsTab = ({
       setEditorValue(newYaml);
       setHistory([newYaml]);
       setHistoryIndex(0);
-      toast.success("Manifesto recarregado");
+      if (!silent) toast.success("Manifesto recarregado");
     } catch (err) {
       toast.error("Erro ao recarregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -755,7 +789,7 @@ export const StatefulSetsTab = ({
       <Button
         variant="outline"
         size="sm"
-        onClick={refreshManifest}
+        onClick={() => refreshManifest()}
         disabled={!selectedStatefulSet || manifestLoading}
       >
         <RefreshCcw className="w-4 h-4 mr-2" />
@@ -896,6 +930,17 @@ export const StatefulSetsTab = ({
 
         {/* Seção Manifesto YAML */}
         <div className="space-y-3">
+          {controllerOwnerRef && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                Este StatefulSet é gerenciado por <b>{controllerOwnerRef.kind}/{controllerOwnerRef.name}</b>. O controlador
+                (o prometheus-operator, por exemplo) reescreve o StatefulSet a partir do recurso dono, então alterações feitas
+                aqui costumam ser <b>desfeitas em segundos</b>. Para uma mudança permanente, edite o recurso{" "}
+                {controllerOwnerRef.kind} ou os values do Helm que o criam.
+              </p>
+            </div>
+          )}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium">Manifesto YAML</p>

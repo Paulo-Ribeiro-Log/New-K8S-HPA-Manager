@@ -371,6 +371,12 @@ export interface StatefulSetApplyResult {
   resourceVersion?: string;
   dryRun?: boolean;
   appliedAt?: string;
+  /** Dono controlador do StatefulSet (ex.: Prometheus, do prometheus-operator). */
+  managedBy?: { kind: string; name: string } | null;
+  /** O controlador desfez a alteração depois do apply. */
+  reverted?: boolean;
+  /** Gerenciador que reescreveu o spec (ex.: PrometheusOperator). */
+  revertedBy?: string;
 }
 
 // Ingress Types
