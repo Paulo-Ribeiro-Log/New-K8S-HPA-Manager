@@ -3,6 +3,16 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Code Editor: barra de formatação para arquivos .md (Novembro 2026)
+
+`MarkdownFormatBar` (acima do Monaco, só em `.md`) aplica na seleção negrito, itálico, riscado, código, títulos, listas, tarefas, citação, link, bloco de código, tabela, `---`, `<br>`, `☐` e cor (`<span style="color">`, cor validada). A lógica é pura em `lib/markdownFormat.ts` (`applyFormat` devolve a edição mínima e a nova seleção, com teste); o componente aplica por `executeEdits`, então o Ctrl+Z funciona. Aplicar de novo no mesmo trecho desfaz. Não confundir com `MarkdownToolbar`, que é da textarea das Notas.
+
+**Quebra de linha:** Shift+Enter em `.md` (`addAction`, `editorLangId == markdown`) e botão ↵ inserem dois espaços + Enter; o botão "Enter = quebra" (preferência `ce_md_soft_breaks`, padrão ligado) liga `remarkSoftBreaks`, que faz o Enter simples virar `<br>` só no preview. Corrigida a coluna do `☐` clicável depois de uma quebra no mesmo texto.
+
+### Code Editor: preview Markdown com `<br>`, cor e checkbox clicável (Novembro 2026)
+
+O preview (`react-markdown` + `remark-gfm`) ignorava HTML, então `<br>` e cores de arquivos vindos do Confluence não apareciam. `lib/markdownPreview.ts` traz um plugin remark **sem dependência nova** (o `rehype-raw` não pôde ser instalado, e o plugin próprio só aceita `<br>` e `span`/`font` com cor validada, sem sanitizador): `<br>` vira quebra, `<span style="color">`/`<font color>` colorem, `☐`/`☑` e `- [ ]` viram clicáveis e a alternância é gravada no texto da aba (posição linha/coluna conferida contra o caractere antes de trocar). Botão **Limpar escapes** (só aparece quando há) tira as barras do export do Confluence, preservando `\|` e blocos de código. Fora do escopo: HTML em bloco (linha que começa com a tag), edição de célula pelo preview e WYSIWYG.
+
 ### Relatório: selos 🔴/⚠️ usam os limites de alerta do usuário (Novembro 2026)
 
 Os limites configuráveis só valiam para o Tempo real: o Relatório marcava 🔴/⚠️ com limites fixos no servidor (P99 acima de 1 s, qualquer 5xx, qualquer 4xx), e as duas telas julgavam a mesma aplicação por critérios diferentes. Agora a coleta envia `thresholds` (`reportThresholds`: o P99 vermelho é o limite de erro do P99 e erros/s viram total da janela, taxa média x segundos) e o servidor **valida** (`Thresholds.validate`: negativo, NaN e acima de 1e9 são recusados) e **devolve** os limites usados em `Result.Thresholds`, para a legenda da tela, do Markdown e do PDF dizer os que valeram (`reportLegend`). O padrão do Tempo real dá exatamente o padrão antigo do Relatório. O hook `useLiveThresholds` passou a viver em `MetricsReportTab`, e o painel do Tempo real recebe os limites por props (uma fonte só). Valem a partir da próxima coleta.
