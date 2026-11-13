@@ -262,6 +262,14 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 		}
 	}
 
+	// Geração antes do apply: base para saber, depois, se um controlador reescreveu o spec.
+	var genBefore int64
+	if !req.DryRun {
+		if pre, err := clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+			genBefore = pre.Generation
+		}
+	}
+
 	start := time.Now()
 	sanitizedYAML, err := sanitizeStatefulSetYAML(req.YAML)
 	if err != nil {
@@ -283,8 +291,24 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 		return
 	}
 
+	// StatefulSet com dono (ex.: prometheus-operator): o apply foi aceito, mas o controlador pode reescrever o spec em
+	// segundos. Relê depois de uma espera curta e avisa se a alteração não permaneceu.
+	owner := controllerOwner(result)
+	reverted, revertedBy := false, ""
+	if owner != nil && !req.DryRun && sleepCtx(ctx, revertCheckDelay) {
+		if latest, err := clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+			reverted, revertedBy = detectRevert(genBefore, result.Generation, latest, start.Add(-2*time.Second))
+		}
+	}
+
 	if !req.DryRun && h.historyTracker != nil {
 		after := statefulSetToHistoryMap(result)
+		if owner != nil {
+			after["managed_by"] = owner.Kind + "/" + owner.Name
+		}
+		if reverted {
+			after["reverted_by"] = revertedBy
+		}
 		entry := history.HistoryEntry{
 			Action:   "apply_statefulset",
 			Resource: fmt.Sprintf("%s/%s", namespace, name),
@@ -308,6 +332,11 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 			"resourceVersion": result.ResourceVersion,
 			"dryRun":          req.DryRun,
 			"appliedAt":       time.Now().UTC(),
+			// managedBy: o dono controlador do StatefulSet (ex.: Prometheus). reverted: o controlador desfez a alteração
+			// depois do apply (revertedBy = gerenciador que reescreveu o spec).
+			"managedBy":  owner,
+			"reverted":   reverted,
+			"revertedBy": revertedBy,
 		},
 	})
 }
