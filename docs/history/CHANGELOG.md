@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: atualização incremental com cache do servidor (Novembro 2026)
+
+Antes, cada atualização refazia no Dynatrace a resolução de cada aplicação (`ResolveEntryServices`: busca do process group e da lista de serviços, pelo menos 2 chamadas por aplicação, sem cache entre requisições) e a janela inteira de cada série. Agora `report.DTCache` (`dtcache.go`) embrulha o cliente do Dynatrace só no Tempo real: (1) guarda o mapa aplicação -> serviços por 10 min; (2) guarda as séries brutas por serviço e, na repetição, busca só o trecho novo, **sobrepondo** os últimos pontos (≥ 5 min ou 3 intervalos: o Dynatrace revisa os recentes e o último chega incompleto) e refazendo a série inteira a cada 30 min. Cache só em memória, **por usuário e cluster** (nada cruza usuários), com limite de 3 milhões de pontos (descarta os menos usados) e série parada por 30 min sai. Janela do passado (o dia anterior da projeção) já é definitiva e não rebusca a sobreposição. Qualquer dúvida (janela que cresce para trás, buraco, resolução desconhecida) cai em busca completa; erro nunca é guardado. A garantia testada: o resultado para a janela é idêntico ao de uma busca completa, a cada passo de uma janela que desliza com os últimos pontos sendo revisados (mutações sem a sobreposição e com ponto duplicado são pegas). A resposta traz `cache` (`LiveCacheStats`) e a tela mostra "cache: serviços 13/13 do cache · séries: 39 só o trecho novo". O Relatório não usa o cache.
+
 ### Relatório: exportar a comparação com um evento (Novembro 2026)
 
 Botões **Markdown** e **CSV** na seção "Comparar com um evento" (`metricsCompareExport.ts`). Markdown: as duas janelas, o evento, a latência comparada, os avisos e uma tabela por cluster, com "atual / evento (variação)" em cada célula e o veredito (pior/melhor) quando passa de 5%. CSV: um registro por aplicação com, por métrica, `_atual`, `_evento` e `_variacao_pct` (números crus, latência em ms, vazio sem dado), coluna `evento` e BOM para o Excel. O nome do evento vai no título e no nome do arquivo (`comparacao_<evento>_<data>`).
