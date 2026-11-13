@@ -32,6 +32,10 @@ Um editor de código no navegador, com **Git completo**, **terminal** e **integr
 
 Dá ainda para ver o **histórico do arquivo**, o **blame** inline e o **diff** contra o que está no repositório.
 
+## Preview de Markdown
+
+O botão do livro abre o preview ao lado do texto. Ele mostra \`<br>\` (quebra de linha, inclusive dentro de células de tabela) e cor via \`<span style="color:red">\` ou \`<font color="red">\`; outro HTML continua ignorado. Clicar em \`☐\`/\`☑\` (também em tabelas) ou em \`- [ ]\` no preview marca e desmarca **no texto do arquivo**, que fica como alterado até você salvar. Se o arquivo veio do Confluence com barras de escape (\`\\*\\*\`, \`\\<br\\>\`), aparece o botão **Limpar escapes**, que as remove do texto (blocos de código ficam como estão; Ctrl+Z desfaz).
+
 ## Pull Request e View Plan
 
 **Criar Pull Request** abre o PR do branch atual. **View Plan** mostra os **plans e outputs do PR** (Atlantis, comentários, checks e jobs de plan/diff do GitHub Actions). O botão fica **desabilitado** quando o branch não tem PR, ou quando o PR não tem plan nem output.
@@ -62,6 +66,12 @@ No modal do diff, uma coluna numera as linhas: a linha **vermelha** (removida) m
 No modal **Criar Pull Request**, a **branch de origem** (azul) e o **destino** (verde, onde será mergeada) aparecem em blocos separados, com uma frase explicando o merge. Abaixo, o editor simula o merge e mostra se **pode ser mergeado**: verde (sem conflitos), amarelo (destino avançou, nada a mergear ou não deu para simular) ou vermelho (**conflitos**, com os arquivos). A simulação é local, usa \`origin/<destino>\` (faça **Fetch** para ficar em dia) e não altera seus arquivos.
 
 Ao **criar** o PR, a tela de sucesso mostra a origem → destino, o **status de merge calculado pelo GitHub** (pode levar alguns segundos: sem conflitos, bloqueado por checks/aprovações, desatualizado, rascunho ou conflitos) e o link, com **Copiar**, além de **Abrir no GitHub** e **Ver diff**.
+
+### Barra de formatação (arquivos .md)
+
+Em arquivo \`.md\`, uma barra acima do editor aplica a formatação na seleção: negrito, itálico, riscado, código, títulos 1 a 3, listas (marcadores, numerada, tarefas), citação, link, bloco de código, tabela 3×2, linha horizontal, quebra \`<br>\`, caixinha \`☐\` e cor do texto (vira \`<span style="color:…">\`). Aplicar de novo no mesmo trecho desfaz. Sem seleção, ela insere o marcador com um texto de exemplo já selecionado. Ctrl+Z desfaz como qualquer edição.
+
+**Quebra de linha:** no Markdown padrão, um Enter simples não quebra a linha (as duas linhas se juntam no preview). No \`.md\` use **Shift+Enter** (ou o botão ↵), que põe dois espaços no fim da linha e quebra em qualquer visualizador; dentro de tabela use \`<br>\`. O botão **Enter = quebra** da barra faz o preview tratar o Enter simples como quebra (como nos comentários do GitHub); ele só muda o preview, não o arquivo, e um README no GitHub continuará juntando as linhas.
 
 ## Conflitos de merge
 

@@ -6,6 +6,9 @@ import Editor, { DiffEditor, OnMount } from "@/lib/monacoEditor";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MarkdownFormatBar } from "@/components/MarkdownFormatBar";
+import { applyFormat, type FormatAction } from "@/lib/markdownFormat";
+import { fixMarkdown, hasConfluenceEscapes, remarkMdExtras, remarkSoftBreaks, toggleCheckAt, toggleTaskAt } from "@/lib/markdownPreview";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
@@ -183,7 +186,23 @@ const MD_COMPONENTS: Components = {
   ol: ({ children }) => (
     <ol className="list-decimal list-inside text-sm text-slate-300 mb-3 space-y-1 pl-2">{children}</ol>
   ),
-  li: ({ children }) => <li className="text-slate-300">{children}</li>,
+  li: ({ children, node, className }) => {
+    const task = typeof className === "string" && className.includes("task-list-item");
+    return <li className={`text-slate-300 ${task ? "list-none" : ""}`} data-task-line={task ? node?.position?.start.line : undefined}>{children}</li>;
+  },
+  input: ({ type, checked }) =>
+    type === "checkbox"
+      ? <input type="checkbox" checked={!!checked} readOnly className="mr-1.5 align-middle cursor-pointer md-task-box" />
+      : null,
+  span: ({ children, className, style, ...rest }) => {
+    const p = rest as Record<string, unknown>;
+    return (
+      <span className={className === "md-check" ? "cursor-pointer select-none hover:text-sky-300" : className} style={style}
+        data-check-line={p["data-check-line"] as number | undefined} data-check-col={p["data-check-col"] as number | undefined}>
+        {children}
+      </span>
+    );
+  },
   code: ({ className, children, ...rest }) => {
     if (className) {
       return (
@@ -2608,6 +2627,16 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
       ? { disabled: false, title: "Ver plans e outputs do PR desta branch (não foi possível verificar antes; o erro aparece ao abrir)" }
       : { disabled: true, title: "Verificando se há plan ou output no PR…" };
   const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
+  // Enter simples vira quebra no preview Markdown (preferência do usuário)
+  const [mdSoftBreaks, setMdSoftBreaks] = useState(() => {
+    try { return localStorage.getItem("ce_md_soft_breaks") !== "0"; } catch { return true; }
+  });
+  function toggleMdSoftBreaks() {
+    setMdSoftBreaks(v => {
+      try { localStorage.setItem("ce_md_soft_breaks", v ? "0" : "1"); } catch { /* sem storage */ }
+      return !v;
+    });
+  }
   const [markdownPreviewWidth, setMarkdownPreviewWidth] = useState(() => {
     const saved = localStorage.getItem("ce_md_preview_width");
     return saved ? Math.max(200, parseInt(saved, 10)) : 480;
@@ -3840,6 +3869,25 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     return () => document.removeEventListener("keydown", onKey);
   }, [selectedRepo]);
 
+  // Formatação Markdown pela barra: edita a seleção do editor principal (executeEdits: Ctrl+Z desfaz)
+  const applyMdFormatRef = useRef<(a: FormatAction) => void>(() => {});
+  function applyMdFormat(action: FormatAction) {
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    const sel = ed?.getSelection();
+    if (!ed || !model || !sel) return;
+    const edit = applyFormat(model.getValue(), model.getOffsetAt(sel.getStartPosition()), model.getOffsetAt(sel.getEndPosition()), action);
+    const a = model.getPositionAt(edit.from);
+    const b = model.getPositionAt(edit.to);
+    ed.executeEdits("md-format", [{ range: { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column }, text: edit.insert, forceMoveMarkers: true }]);
+    const ns = model.getPositionAt(edit.selStart);
+    const ne = model.getPositionAt(edit.selEnd);
+    ed.setSelection({ startLineNumber: ns.lineNumber, startColumn: ns.column, endLineNumber: ne.lineNumber, endColumn: ne.column });
+    ed.focus();
+  }
+
+  applyMdFormatRef.current = applyMdFormat;
+
   const handleEditorMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
     // Atalhos via addAction, nunca addCommand: no Monaco o addCommand registra o atalho no
@@ -3848,6 +3896,11 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
     // MonacoYamlEditor de outra aba, Teams) "roubava" o Ctrl+S daqui de forma intermitente.
     // O addAction amarra o atalho a este editor (precondition editorId) e some no dispose.
     editor.addAction({ id: "ce.save", label: "Salvar arquivo", keybindings: [2048 | 49], run: () => saveFileRef.current() }); // Ctrl+S
+    // Shift+Enter em .md: quebra de linha dentro do parágrafo (dois espaços + Enter)
+    editor.addAction({
+      id: "ce.mdLineBreak", label: "Markdown: quebra de linha", keybindings: [1024 | 3], precondition: "editorLangId == markdown",
+      run: () => applyMdFormatRef.current("break"),
+    });
     editor.addAction({ id: "ce.format", label: "Formatar arquivo", keybindings: [512 | 1024 | 36, 2048 | 512 | 36], run: () => formatFileRef.current() }); // Shift+Alt+F / Ctrl+Alt+F
     editor.addAction({ id: "ce.quickOpen", label: "Abrir arquivo (Quick Open)", keybindings: [2048 | 46], run: () => { setShowQuickOpen(true); setQuickOpenQuery(""); setQuickOpenIdx(0); } }); // Ctrl+P
     setCommentFileName(editor, () => leftFileNameRef.current);
@@ -5201,6 +5254,13 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                     onClick={() => { openSidePanel("files"); setRevealPath(activeTab.node.path); }}>
                     <Locate className="w-3 h-3" />
                   </Button>
+                  {activeTab.node.name.endsWith(".md") && hasConfluenceEscapes(activeTab.currentContent) && (
+                    <Button variant="ghost" size="sm" className="h-6 text-xs px-2 text-amber-300"
+                      title={"O texto tem barras de escape do export do Confluence (\\*\\*, \\<br\\>) e/ou negrito com espaço dentro (**Texto **), que não renderizam. Corrige no texto; blocos de código ficam como estão. Ctrl+Z desfaz."}
+                      onClick={() => updateTabContent(fixMarkdown(activeTab.currentContent))}>
+                      Corrigir Markdown
+                    </Button>
+                  )}
                   {activeTab.node.name.endsWith(".md") && (
                     <Button variant={showMarkdownPreview ? "default" : "ghost"} size="sm" className="h-5 w-5 p-0"
                       title={showMarkdownPreview ? "Ocultar preview Markdown" : "Preview Markdown"}
@@ -5304,6 +5364,8 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                   style={splitActive ? { width: `${splitWidthPct}%`, flexShrink: 0 } : { flex: 1 }}
                   onClick={() => setFocusedPane("left")}
                 >
+                  {activeTab.node.name.endsWith(".md") && <MarkdownFormatBar onAction={applyMdFormat} softBreaks={mdSoftBreaks} onToggleSoftBreaks={toggleMdSoftBreaks} />}
+                  <div className="flex-1 min-h-0">
                   <Editor
                     height="100%"
                     language={extToLanguage(activeTab.node.name)}
@@ -5329,6 +5391,7 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                       quickSuggestions: true,
                     }}
                   />
+                  </div>
                 </div>
                 {/* Markdown preview (somente quando sem split) */}
                 {!splitActive && showMarkdownPreview && activeTab.node.name.endsWith(".md") && (
@@ -5339,8 +5402,18 @@ export function CodeEditorTab({ isActive = true }: { isActive?: boolean } = {}) 
                       localStorage.setItem("ce_md_preview_width", String(next));
                       return next;
                     })} />
-                    <div className="flex-shrink-0 overflow-y-auto bg-slate-950 p-5" style={{ width: markdownPreviewWidth }}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                    <div className="flex-shrink-0 overflow-y-auto bg-slate-950 p-5" style={{ width: markdownPreviewWidth }}
+                      onClick={(e) => {
+                        // marcar/desmarcar ☐ e "- [ ]" no preview altera o texto do arquivo
+                        const t = e.target as HTMLElement;
+                        const chk = t.closest<HTMLElement>("[data-check-line]");
+                        const li = t.closest<HTMLElement>("[data-task-line]");
+                        let next = activeTab.currentContent;
+                        if (chk) next = toggleCheckAt(next, Number(chk.dataset.checkLine), Number(chk.dataset.checkCol));
+                        else if (li && t.classList.contains("md-task-box")) next = toggleTaskAt(next, Number(li.dataset.taskLine));
+                        if (next !== activeTab.currentContent) updateTabContent(next);
+                      }}>
+                      <ReactMarkdown remarkPlugins={mdSoftBreaks ? [remarkGfm, remarkMdExtras, remarkSoftBreaks] : [remarkGfm, remarkMdExtras]} components={MD_COMPONENTS}>
                         {activeTab.currentContent}
                       </ReactMarkdown>
                     </div>
