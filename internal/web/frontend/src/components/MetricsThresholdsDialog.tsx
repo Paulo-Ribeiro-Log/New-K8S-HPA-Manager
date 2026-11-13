@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { DEFAULT_THRESHOLDS, isDefaultThresholds, validateThresholds, type Thresholds } from "@/lib/metricsThresholds";
 
-type NumKey = "latWarnMs" | "latRedMs" | "err5Rate" | "err4Rate" | "usageWarn" | "usageRed" | "throttleWarn" | "throttleRed" | "netWarn" | "restartsWarn";
+type NumKey = "p50WarnMs" | "p50RedMs" | "p95WarnMs" | "p95RedMs" | "p99WarnMs" | "p99RedMs" | "err5Rate" | "err4Rate" | "usageWarn" | "usageRed" | "throttleWarn" | "throttleRed" | "netWarn" | "restartsWarn";
 
 interface Field {
   key: NumKey;
@@ -19,8 +19,10 @@ interface Group {
 }
 
 const GROUPS: Group[] = [
-  { title: "Latência", hint: "Vale para o maior percentil marcado (o que define a situação). Acima do alerta fica âmbar; acima do erro, vermelho.", fields: [
-    { key: "latWarnMs", label: "Alerta acima de", unit: "ms" }, { key: "latRedMs", label: "Erro acima de", unit: "ms" } ] },
+  { title: "Latência por percentil", hint: "Cada percentil tem a sua escala: um P50 de 600 ms e um P99 de 600 ms não são a mesma coisa. Acima do alerta fica âmbar; acima do erro, vermelho. A situação da aplicação usa só o maior percentil marcado; a cor de cada célula usa a escala do próprio percentil.", fields: [
+    { key: "p50WarnMs", label: "P50: alerta acima de", unit: "ms" }, { key: "p50RedMs", label: "P50: erro acima de", unit: "ms" },
+    { key: "p95WarnMs", label: "P95: alerta acima de", unit: "ms" }, { key: "p95RedMs", label: "P95: erro acima de", unit: "ms" },
+    { key: "p99WarnMs", label: "P99: alerta acima de", unit: "ms" }, { key: "p99RedMs", label: "P99: erro acima de", unit: "ms" } ] },
   { title: "Erros 5xx e 4xx", hint: "Taxa por segundo no momento. 0 significa que qualquer erro já conta; suba se a aplicação convive com um ruído de fundo.", fields: [
     { key: "err5Rate", label: "5xx: erro acima de", unit: "por s" }, { key: "err4Rate", label: "4xx: alerta acima de", unit: "por s" } ] },
   { title: "CPU e memória", hint: "Percentual do limit do container.", fields: [

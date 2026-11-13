@@ -449,7 +449,7 @@ describe("limites de alerta personalizados", () => {
     expect(restartsLevel(1)).toBe("warn");
   });
   it("latência: os limites do usuário mandam", () => {
-    const x = t({ latWarnMs: 200, latRedMs: 300 });
+    const x = t({ p99WarnMs: 200, p99RedMs: 300 });
     expect(latencyLevel(250, x)).toBe("warn");
     expect(latencyLevel(350, x)).toBe("red");
     expect(latencyLevel(200, x)).toBe("ok");
@@ -483,9 +483,36 @@ describe("limites de alerta personalizados", () => {
     const padrao = assessSeries(s, [99]);
     expect(padrao.level).toBe("warn");
     expect(padrao.reasons.sort()).toEqual(["4xx 2/s", "CPU 75% do limit", "P99 600 ms"].sort());
-    const folgado = assessSeries(s, [99], t({ latWarnMs: 800, latRedMs: 1500, err4Rate: 5, usageWarn: 90, usageRed: 95 }));
+    const folgado = assessSeries(s, [99], t({ p99WarnMs: 800, p99RedMs: 1500, err4Rate: 5, usageWarn: 90, usageRed: 95 }));
     expect(folgado).toEqual({ level: "ok", reasons: [] });
-    const rigido = assessSeries(s, [99], t({ latWarnMs: 100, latRedMs: 500 }));
+    const rigido = assessSeries(s, [99], t({ p99WarnMs: 100, p99RedMs: 500 }));
     expect(rigido.level).toBe("red");
+  });
+});
+
+describe("latência por percentil", () => {
+  it("o mesmo valor muda de situação conforme o percentil", () => {
+    // 300 ms: acima do alerta do P50 (200), abaixo do alerta do P95 (400) e do P99 (500)
+    expect(latencyLevel(300, DT, 50)).toBe("warn");
+    expect(latencyLevel(300, DT, 95)).toBe("ok");
+    expect(latencyLevel(300, DT, 99)).toBe("ok");
+    // 600 ms: erro no P50 (500), alerta no P95 (400..800), alerta no P99 (500..1000)
+    expect(latencyLevel(600, DT, 50)).toBe("red");
+    expect(latencyLevel(600, DT, 95)).toBe("warn");
+    expect(latencyLevel(600, DT, 99)).toBe("warn");
+    // sem percentil informado vale a escala do P99, como sempre foi
+    expect(latencyLevel(600)).toBe("warn");
+    expect(latencyLevel(null, DT, 50)).toBe("info");
+  });
+  it("os limites do usuário valem por percentil", () => {
+    const x = { ...DT, p50WarnMs: 50, p50RedMs: 100 };
+    expect(latencyLevel(80, x, 50)).toBe("warn");
+    expect(latencyLevel(80, x, 95)).toBe("ok"); // o P95 segue a escala dele
+  });
+  it("a situação da aplicação usa a escala do maior percentil marcado", () => {
+    const s = { cluster: "c", namespace: "n", workload: "w", times: [1], rps: [10], err_4xx_rps: [0], err_5xx_rps: [0], p50_ms: [300], p95_ms: [300], p99_ms: [300] } as any;
+    expect(assessSeries(s, [50]).level).toBe("warn"); // 300 ms é alerta para o P50 (maior marcado)
+    expect(assessSeries(s, [50, 95]).level).toBe("ok"); // o maior marcado é o P95: 300 ms é normal
+    expect(assessSeries(s, [50, 95, 99]).level).toBe("ok");
   });
 });

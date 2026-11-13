@@ -4,6 +4,7 @@ import { LEVEL_LABEL, errorLevel, fmtRestartReasons, latencyLevel, restartsLevel
 import { fmtInt, fmtLatency, fmtRps, type ReportItem } from "@/lib/metricsReport";
 import type { LiveRowModel, SortKey, SortState } from "@/lib/metricsLiveView";
 import { LEVEL_CLASS, LevelIcon, Spark, useThresholds } from "@/components/metricsLiveShared";
+import { latencyLimits } from "@/lib/metricsThresholds";
 
 const NUM = "px-2 py-1.5 text-right whitespace-nowrap tabular-nums";
 const dash = <span className="text-muted-foreground">—</span>;
@@ -38,20 +39,24 @@ export function MetricsLiveTable({
   percentiles: number[];
   showResources: boolean;
 }) {
+  const th = useThresholds();
   const pcts = [...percentiles].sort((a, b) => a - b).filter((p): p is 50 | 95 | 99 => p === 50 || p === 95 || p === 99);
   const cols: Col[] = [
     { key: "gravidade", label: "Situação", title: "Pior situação da aplicação (latência, erros, réplicas, HPA, restarts, throttling, CPU e memória)" },
     { key: "nome", label: "Aplicação" },
     { key: "rps", label: "RPS", align: "right", title: "Requisições por segundo agora, com as barras do período" },
     { key: "avg", label: "Response time", align: "right", title: "Response time médio (ponderado pelas requisições)" },
-    // a cor segue a regra da situação, que usa só o MAIOR percentil marcado: pintar também o P50 e o P95 com limites
-    // pensados para o P99 faria um P50 de 600 ms parecer problema sem que a aplicação esteja em alerta
-    ...pcts.map((p): Col => ({
-      key: p === 99 ? "p99" : p === 95 ? "p95" : "p50",
-      label: `P${p}`,
-      align: "right",
-      title: p === pcts[pcts.length - 1] ? `Latência P${p} agora. Cor: acima de 0,5 s é alerta e de 1 s é erro (é o percentil que define a situação)` : `Latência P${p} agora. Sem cor: os limites de 0,5 s e 1 s valem para o P${pcts[pcts.length - 1]}, o maior percentil marcado`,
-    })),
+    // cada percentil é colorido pela escala do PRÓPRIO percentil (Opções > Limites de alerta); a situação da
+    // aplicação usa só o maior percentil marcado
+    ...pcts.map((p): Col => {
+      const lim = latencyLimits(th, p);
+      return {
+        key: p === 99 ? "p99" : p === 95 ? "p95" : "p50",
+        label: `P${p}`,
+        align: "right",
+        title: `Latência P${p} agora. Cor pela escala do P${p}: acima de ${fmtLatency(lim.warn)} é alerta e de ${fmtLatency(lim.red)} é erro${p === pcts[pcts.length - 1] ? " (é o percentil que define a situação da aplicação)" : ""}`,
+      };
+    }),
     { key: "err5", label: "5xx", align: "right", title: "Erros 5xx no período (e por segundo agora)" },
     { key: "err4", label: "4xx", align: "right", title: "Erros 4xx no período (e por segundo agora)" },
     ...(showResources
@@ -160,8 +165,7 @@ const TableRow = memo(function TableRow({
         <td className={NUM}>{r.avg == null ? dash : fmtLatency(r.avg)}</td>
         {pcts.map((p) => {
           const v = p === 99 ? r.p99 : p === 95 ? r.p95 : r.p50;
-          const primary = p === pcts[pcts.length - 1];
-          return <td key={p} className={`${NUM} ${v == null || !primary ? "" : LEVEL_CLASS[latencyLevel(v, th)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
+          return <td key={p} className={`${NUM} ${v == null ? "" : LEVEL_CLASS[latencyLevel(v, th, p)]}`}>{v == null ? dash : <b>{fmtLatency(v)}</b>}</td>;
         })}
         <td className={`${NUM} ${errorLevel(r.e5Rate, "5xx", th) === "red" ? LEVEL_CLASS.red : ""}`}>
           {r.e5Total == null ? dash : <><b>{fmtInt(r.e5Total)}</b><div className="text-[10px] font-normal text-muted-foreground">{fmtRps(r.e5Rate)}/s</div></>}

@@ -43,7 +43,7 @@ import { MetricsEventPicker } from "@/components/MetricsEventPicker";
 import { MetricsMarkerButton } from "@/components/MetricsMarkerButton";
 import { MetricsThresholdsDialog } from "@/components/MetricsThresholdsDialog";
 import { useLiveThresholds } from "@/hooks/useLiveThresholds";
-import { changedThresholds } from "@/lib/metricsThresholds";
+import { changedThresholds, latencyLimits } from "@/lib/metricsThresholds";
 import { useLiveMarkers } from "@/hooks/useLiveMarkers";
 import { markersInRange, shortName, type Marker } from "@/lib/metricsMarkers";
 import { MetricsLiveSummary } from "@/components/MetricsLiveSummary";
@@ -535,7 +535,7 @@ const LiveCard = memo(function LiveCard({
   const rpsProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, s.rps, base ? { times: base.times, values: base.rps } : null, horizon) : null), [s, base, horizon]);
   const latProj = useMemo(() => (horizon > 0 ? projectWithBaseline(s.times, (latP === 99 ? s.p99_ms : latP === 95 ? s.p95_ms : s.p50_ms) ?? [], base ? { times: base.times, values: (latP === 99 ? base.p99_ms : latP === 95 ? base.p95_ms : base.p50_ms) ?? [] } : null, horizon) : null), [s, base, horizon, latP]);
   const th = useThresholds();
-  const toLimit = latP === 99 ? minutesToThreshold(latProj, th.latRedMs, horizon) : null;
+  const toLimit = latP === 99 ? minutesToThreshold(latProj, th.p99RedMs, horizon) : null;
 
   const r = s.resources;
   const assessed = useMemo(() => assessSeries(s, percentiles, th), [s, percentiles, th]);
@@ -567,7 +567,7 @@ const LiveCard = memo(function LiveCard({
       {/* o essencial na frente: quatro números grandes; o resto fica em "Detalhes" */}
       <div className="my-2 grid grid-cols-2 gap-x-2 gap-y-3 rounded-lg bg-muted/40 px-3 py-2.5 font-sans ring-1 ring-inset ring-border/60 sm:grid-cols-4 sm:gap-y-0 sm:divide-x sm:divide-border/50">
         <Hero label="RPS" value={s.error && !r ? "—" : fmtRps(rpsNow)} unit="req/s" />
-        <Hero label={`P${latP}`} value={fmtLatency(latValue)} level={latencyLevel(latValue, th)} />
+        <Hero label={`P${latP}`} value={fmtLatency(latValue)} level={latencyLevel(latValue, th, latP)} />
         <Hero label="Erros 5xx" value={fmtInt(s.err_5xx_total)} unit="no período" level={errorLevel(e5, "5xx", th)} />
         <Hero label="Réplicas" value={r?.replicas_available != null ? `${r.replicas_available}/${r.replicas_desired ?? "?"}` : "—"} unit={hpaLevel(r?.replicas_desired, r?.hpa_max, th) === "warn" ? "no teto do HPA" : undefined} level={replicasLevel(r?.replicas_available, r?.replicas_desired) === "red" ? "red" : hpaLevel(r?.replicas_desired, r?.hpa_max, th) === "warn" ? "warn" : undefined} />
       </div>
@@ -634,10 +634,10 @@ const LiveCard = memo(function LiveCard({
         </Row>
       )}
       {hasLatency && (
-        <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v, th)}>
+        <Row label="Latências" level={latencyLevel(lat.find((l) => l.p === latP)?.v, th, latP)}>
           {lat.map((l, i) => (
             <span key={l.p}>
-              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={l.p === latP ? LEVEL_CLASS[latencyLevel(l.v, th)] : ""} title={l.p === latP ? undefined : `Sem cor: os limites de latência valem para o P${latP}, o maior percentil marcado`}>{fmtLatency(l.v)}</b>
+              {i > 0 && <span className="text-muted-foreground"> | </span>}P{l.p}: <b className={LEVEL_CLASS[latencyLevel(l.v, th, l.p as 50 | 95 | 99)]} title={`Cor pela escala do P${l.p}: acima de ${fmtLatency(latencyLimits(th, l.p as 50 | 95 | 99).warn)} é alerta e de ${fmtLatency(latencyLimits(th, l.p as 50 | 95 | 99).red)} é erro`}>{fmtLatency(l.v)}</b>
             </span>
           ))}
         </Row>
@@ -647,7 +647,7 @@ const LiveCard = memo(function LiveCard({
           <div className="flex flex-col font-sans text-[11px]">
             <Trend label="RPS" p={rpsProj} horizon={horizon} fmt={fmtRps} />
             {hasLatency && <Trend label={`P${latP}`} p={latProj} horizon={horizon} fmt={fmtLatency} />}
-            {toLimit != null && <span className="text-red-400">P99 deve passar de {fmtLatency(th.latRedMs)} em ~{Math.max(1, Math.round(toLimit))} min</span>}
+            {toLimit != null && <span className="text-red-400">P99 deve passar de {fmtLatency(th.p99RedMs)} em ~{Math.max(1, Math.round(toLimit))} min</span>}
           </div>
         </Row>
       )}
@@ -687,7 +687,7 @@ function DetailCharts({ s, base, percentiles, horizon, spanMs, win, markers }: {
       <MiniChart markers={markers} title="Requisições por segundo" data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtRps(v)}
         lines={[{ key: "rps", color: COLORS.rps, name: "RPS" }, { key: "rpsProj", color: COLORS.proj, name: "projeção", dashed: true }]} />
       {(d.hasLatency || d.hasAvg) && (
-        <MiniChart markers={markers} title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? th.latRedMs : undefined}
+        <MiniChart markers={markers} title={d.hasAvg ? "Latência (média e percentis)" : "Latência"} data={d} spanWithDate={withDate} height={160} yFmt={(v) => fmtLatency(v)} limit={percentiles.includes(99) ? th.p99RedMs : undefined}
           lines={[
             ...(d.hasAvg ? [{ key: "avg", color: COLORS.avg, name: "Média" }] : []),
             ...(percentiles.includes(50) ? [{ key: "p50", color: COLORS.p50, name: "P50" }] : []),

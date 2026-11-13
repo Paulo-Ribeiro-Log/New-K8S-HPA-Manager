@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: limites de latência por percentil (Novembro 2026)
+
+Os limites de latência passaram de um par só (que valia para o maior percentil marcado) para **um par por percentil**: P50 alerta 200 ms / erro 500 ms, P95 400 ms / 800 ms, P99 500 ms / 1 s (o P99 é o padrão de sempre). Um P50 de 600 ms e um P99 de 600 ms não são a mesma coisa, e antes só o maior percentil recebia cor. Agora **todos** os percentis marcados são coloridos, cada um pela escala do próprio percentil, na tabela e na linha "Latências" do cartão, e o tooltip diz os limites. `latencyLevel(ms, t, percentil)` (padrão P99), `latencyLimits` e os campos `p50WarnMs`...`p99RedMs` em `Thresholds`; o formulário de limites ganhou os 3 pares. A situação da aplicação continua usando só o maior percentil marcado, agora pela escala dele. **Migração:** limites salvos antes (`latWarnMs`/`latRedMs`) viram os do P99 e o P50 e o P95 ficam no padrão; o campo antigo não volta a ser gravado. Isto desfaz o `4d36fbd2` ("só o maior percentil é colorido").
+
 ### Relatório: exportar a comparação com um evento (Novembro 2026)
 
 Botões **Markdown** e **CSV** na seção "Comparar com um evento" (`metricsCompareExport.ts`). Markdown: as duas janelas, o evento, a latência comparada, os avisos e uma tabela por cluster, com "atual / evento (variação)" em cada célula e o veredito (pior/melhor) quando passa de 5%. CSV: um registro por aplicação com, por métrica, `_atual`, `_evento` e `_variacao_pct` (números crus, latência em ms, vazio sem dado), coluna `evento` e BOM para o Excel. O nome do evento vai no título e no nome do arquivo (`comparacao_<evento>_<data>`).
