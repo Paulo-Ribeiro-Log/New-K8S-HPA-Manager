@@ -3,6 +3,10 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Tempo real: começa parado (Novembro 2026)
+
+O painel (`MetricsLivePanel`) abria já consultando o Dynatrace. Agora o estado inicial é `running = false`: o operador escolhe os alvos e clica em **Iniciar**. Vale a cada abertura da aba.
+
 ### Code Editor: barra de formatação para arquivos .md (Novembro 2026)
 
 `MarkdownFormatBar` (acima do Monaco, só em `.md`) aplica na seleção negrito, itálico, riscado, código, títulos, listas, tarefas, citação, link, bloco de código, tabela, `---`, `<br>`, `☐` e cor (`<span style="color">`, cor validada). A lógica é pura em `lib/markdownFormat.ts` (`applyFormat` devolve a edição mínima e a nova seleção, com teste); o componente aplica por `executeEdits`, então o Ctrl+Z funciona. Aplicar de novo no mesmo trecho desfaz. Não confundir com `MarkdownToolbar`, que é da textarea das Notas.
