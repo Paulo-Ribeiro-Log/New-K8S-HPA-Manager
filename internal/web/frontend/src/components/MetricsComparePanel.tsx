@@ -1,11 +1,13 @@
 import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { FileDown, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api/client";
 import { buildComparison, fmtCompareValue, fmtDelta, verdict } from "@/lib/metricsCompare";
-import { eventLabel, type SavedEvent } from "@/lib/metricsEvents";
+import { buildComparisonCSV, buildComparisonMarkdown } from "@/lib/metricsCompareExport";
+import { downloadText, fileStamp } from "@/lib/metricsReportExport";
+import { eventLabel, fileSlug, type SavedEvent } from "@/lib/metricsEvents";
 import type { ReportResult } from "@/lib/metricsReport";
 
 const VERDICT_CLASS = { pior: "text-red-400", melhor: "text-emerald-400", igual: "text-muted-foreground", "sem-base": "text-muted-foreground" } as const;
@@ -39,6 +41,14 @@ export function MetricsComparePanel({ result, events }: { result: ReportResult; 
   const other = job.data?.state === "done" ? job.data.result : undefined;
   const cmp = useMemo(() => (other ? buildComparison(result, other) : null), [result, other]);
 
+  // o nome do evento vai no título, numa coluna do CSV e no nome do arquivo
+  const exportCmp = (kind: "md" | "csv") => {
+    if (!cmp || !ev || !other) return;
+    const base = `comparacao_${fileSlug(ev.name) || "evento"}_${fileStamp(new Date().toISOString())}`;
+    if (kind === "md") downloadText(buildComparisonMarkdown(cmp, result, other, ev.name, new Date().toISOString()), "text/markdown", `${base}.md`);
+    else downloadText(buildComparisonCSV(cmp, ev.name), "text/csv", `${base}.csv`);
+  };
+
   return (
     <section className="rounded-md border border-border p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -58,6 +68,11 @@ export function MetricsComparePanel({ result, events }: { result: ReportResult; 
 
       {cmp && ev && (
         <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium">Exportar a comparação</span>
+            <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => exportCmp("md")} title="Baixa a comparação em Markdown (uma tabela por cluster)"><FileDown className="h-3 w-3" />Markdown</Button>
+            <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => exportCmp("csv")} title="Baixa a comparação em CSV (um registro por aplicação: atual, evento e variação)"><FileDown className="h-3 w-3" />CSV</Button>
+          </div>
           {cmp.notes.map((n) => <div key={n} className="text-[11px] text-amber-400">{n}</div>)}
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full text-xs">
