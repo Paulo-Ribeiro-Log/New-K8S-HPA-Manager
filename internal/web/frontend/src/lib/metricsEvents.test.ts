@@ -31,3 +31,23 @@ describe("eventos nomeados", () => {
     expect(eventLabel({ name: "noite", start: "2026-11-12T01:00:00Z", end: "2026-11-12T05:00:00Z" })).toContain("11/11 22:00 → 12/11 02:00");
   });
 });
+
+import { eventAtWindow, fileSlug } from "./metricsEvents";
+describe("evento da janela atual e nome de arquivo", () => {
+  const ev = { name: "Stress test 11/11", start: "2026-11-11T17:00:00Z", end: "2026-11-11T19:00:00Z" };
+  it("acha o evento pela janela, no minuto, e ignora segundos e formato", () => {
+    expect(eventAtWindow([ev], "2026-11-11T17:00:00Z", "2026-11-11T19:00:00Z")).toEqual(ev);
+    expect(eventAtWindow([ev], "2026-11-11T17:00:00.000Z", "2026-11-11T19:00:30Z")).toEqual(ev);
+    expect(eventAtWindow([ev], "2026-11-11T17:01:00Z", "2026-11-11T19:00:00Z")).toBeNull();
+    expect(eventAtWindow([ev], null, "2026-11-11T19:00:00Z")).toBeNull();
+    expect(eventAtWindow([ev], "lixo", "lixo")).toBeNull();
+    expect(eventAtWindow([], ev.start, ev.end)).toBeNull();
+  });
+  it("slug sem acento, sem barra e sem hífen sobrando", () => {
+    expect(fileSlug("Stress test 11/11")).toBe("stress-test-11-11");
+    expect(fileSlug("  Black Friday — Cálculo de Fretes!  ")).toBe("black-friday-calculo-de-fretes");
+    expect(fileSlug("///")).toBe("");
+    expect(fileSlug("a".repeat(60)).length).toBe(40);
+    expect(fileSlug("x".repeat(39) + "-y")).toBe("x".repeat(39));
+  });
+});

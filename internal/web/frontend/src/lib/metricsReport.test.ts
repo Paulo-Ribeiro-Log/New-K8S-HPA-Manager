@@ -154,11 +154,13 @@ describe("formatação", () => {
     }
     expect(fmtPctStats(null)).toBe("sem dado");
     expect(fmtInt(0)).toBe("0");
-    expect(fmtLatency(0)).toBe("0.000s");
+    expect(fmtLatency(0)).toBe("0 ms"); // zero é um valor real, não "sem dado"
   });
-  it("segue o formato do relatório de referência", () => {
-    expect(fmtLatency(1769)).toBe("1.769s");
-    expect(fmtLatency(26)).toBe("0.026s");
+  it("latência na unidade que cabe no valor; o resto segue o formato do relatório de referência", () => {
+    expect(fmtLatency(1769)).toBe("1,77 s");
+    expect(fmtLatency(26)).toBe("26 ms");
+    expect(fmtLatency(0.03)).toBe("30 µs");
+    expect(fmtLatency(268)).toBe("268 ms");
     expect(fmtRps(740)).toBe("740,0");
     expect(fmtPct(9.04)).toBe("9.0%");
     expect(fmtPctStats({ max: 9, min: 1.9, avg: 6.7 })).toBe("9.0% (Min: 1.9%, Avg: 6.7%)");

@@ -1,5 +1,5 @@
 import { type Level, type StatusSummary } from "@/lib/metricsLive";
-import { fmtInt, fmtLatency, fmtRps } from "@/lib/metricsReport";
+import { REPORT_TZ, fmtInt, fmtLatency, fmtRps } from "@/lib/metricsReport";
 import type { Kpis } from "@/lib/metricsLiveView";
 import { BADGE_CLASS, LevelIcon } from "@/components/metricsLiveShared";
 
@@ -10,7 +10,7 @@ const tip = (status: StatusSummary | null, lv: Level) =>
   (status?.[lv] ?? []).map((e) => `${e.name}${e.reasons.length ? ` — ${e.reasons.join("; ")}` : ""}`).join("\n");
 
 /**
- * Faixa de resumo do topo: quantas aplicações em cada situação (clicar filtra), o RPS total, a pior latência
+ * Faixa de resumo do topo: quantas aplicações em cada situação (clicar filtra), o maior RPS, a pior latência
  * (com o nome da aplicação) e o total de 5xx. O número é grande e em tinta primária; a cor fica no ícone e na
  * borda, que também carregam o texto da situação.
  */
@@ -44,7 +44,12 @@ export function MetricsLiveSummary({
           </button>
         );
       })}
-      <Tile label="RPS total" value={kpis.rps == null ? "—" : fmtRps(kpis.rps)} sub="req/s, soma das aplicações" />
+      <Tile
+        label="Maior RPS"
+        value={kpis.top ? fmtRps(kpis.top.rps) : "—"}
+        sub={kpis.top ? `${kpis.top.name}${kpis.top.at ? ` · ${new Date(kpis.top.at).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" })}` : ""}` : "sem dado"}
+        subTitle={kpis.top ? `Pico de ${fmtRps(kpis.top.rps)} req/s de ${kpis.top.name}${kpis.top.at ? ` às ${new Date(kpis.top.at).toLocaleString("pt-BR", { timeZone: REPORT_TZ })}` : ""} (o maior valor medido no período, entre todas as aplicações)` : undefined}
+      />
       <Tile
         label={kpis.worst ? `Pior P${kpis.worst.percentile}` : "Pior latência"}
         value={kpis.worst ? fmtLatency(kpis.worst.ms) : "—"}

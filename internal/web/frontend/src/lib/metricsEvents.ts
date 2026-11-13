@@ -57,6 +57,19 @@ export function mergeEvents(server: SavedEvent[], local: SavedEvent[]): SavedEve
 // data e hora montadas separadas: o separador que o ICU põe entre elas ("11/11, 14:00") varia entre ambientes
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" });
 const dateOf = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { timeZone: REPORT_TZ, day: "2-digit", month: "2-digit" });
+/** O evento cuja janela é exatamente a dada (início e fim iguais ao minuto), ou nulo. Os campos de data da tela só têm minutos. */
+export function eventAtWindow(events: SavedEvent[], start: string | null | undefined, end: string | null | undefined): SavedEvent | null {
+  if (!start || !end) return null;
+  const s = Math.floor(Date.parse(start) / 60000), f = Math.floor(Date.parse(end) / 60000);
+  if (!Number.isFinite(s) || !Number.isFinite(f)) return null;
+  return events.find((e) => Math.floor(Date.parse(e.start) / 60000) === s && Math.floor(Date.parse(e.end) / 60000) === f) ?? null;
+}
+
+/** Nome seguro para arquivo: minúsculas, sem acento, só letras, números e hífen ("Stress test 11/11" -> "stress-test-11-11"). */
+export function fileSlug(name: string, max = 40): string {
+  return name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+$/g, "");
+}
+
 const fmt = (iso: string, withDate: boolean) => (withDate ? `${dateOf(iso)} ${timeOf(iso)}` : timeOf(iso));
 
 function fmtDuration(ms: number): string {

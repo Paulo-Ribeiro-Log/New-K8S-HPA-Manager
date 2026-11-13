@@ -3,6 +3,7 @@
 // metricsReport.test.ts); nenhuma chamada de rede aqui.
 
 import { fmtBytesPerSec } from "./metricsLive";
+import { fmtDurationMs } from "./fmtDuration";
 
 // ── tipos da API (espelham internal/monitoring/report) ─────────────────────────────────────────────
 
@@ -537,9 +538,10 @@ export function fmtRps(v: number | null | undefined): string {
   return v == null ? NO_DATA : (Math.round(v * 10) / 10).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
-/** Latência em segundos com 3 casas ("1.769s"), como no relatório de referência. */
+/** Latência na unidade que cabe no valor ("30 µs", "268 ms", "1,3 s"); ver fmtDuration.ts. */
 export function fmtLatency(ms: number | null | undefined): string {
-  return ms == null ? NO_DATA : `${(ms / 1000).toFixed(3)}s`;
+  if (ms == null) return NO_DATA;
+  return fmtDurationMs(ms) || NO_DATA;
 }
 
 export function fmtPct(v: number | null | undefined): string {

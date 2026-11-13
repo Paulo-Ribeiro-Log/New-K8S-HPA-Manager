@@ -69,18 +69,18 @@ describe("filterRows e groupRows", () => {
 });
 
 describe("buildKpis", () => {
-  it("conta por nível, soma RPS e 5xx e acha a pior latência", () => {
+  it("conta por nível, acha o maior RPS, soma os 5xx e acha a pior latência", () => {
     const k = buildKpis(rows(mk("a", { rps: [10], p99_ms: [200] }), mk("b", { rps: [30], p99_ms: [900], err_5xx_rps: [1], err_5xx_total: 60 }), mk("c", { rps: [] as any, p99_ms: null, err_4xx_rps: [], err_5xx_rps: [] })));
     expect(k.counts).toEqual({ red: 1, warn: 0, ok: 1, info: 1 }); // b=ERRO (5xx), a=OK (200 ms), c=sem dado
     expect(k.total).toBe(3);
-    expect(k.rps).toBe(40);
+    expect(k.top).toEqual({ name: "b", rps: 30, at: 1 }); // pico de b, no único ponto (instante 1)
     expect(k.worst).toEqual({ name: "b", ms: 900, percentile: 99 });
     expect(k.e5Rate).toBe(1);
     expect(k.e5Total).toBe(60);
   });
   it("sem nenhum dado, os totais são nulos (nunca zero)", () => {
     const k = buildKpis(rows(mk("c", { rps: [] as any, p99_ms: null, err_4xx_rps: [], err_5xx_rps: [], err_5xx_total: null as any })));
-    expect(k.rps).toBeNull();
+    expect(k.top).toBeNull();
     expect(k.worst).toBeNull();
     expect(k.e5Rate).toBeNull();
     expect(k.e5Total).toBeNull();
@@ -118,5 +118,24 @@ describe("um valor por percentil (tabela com colunas P50, P95 e P99)", () => {
     expect(sortRows(rs, { key: "p95", desc: true }).map((r) => r.s.workload)).toEqual(["a", "b", "c"]);
     expect(sortRows(rs, { key: "p95", desc: false }).map((r) => r.s.workload)).toEqual(["b", "a", "c"]);
     expect(parseSort(JSON.stringify({ key: "p50", desc: true }))).toEqual({ key: "p50", desc: true });
+  });
+});
+
+describe("maior RPS medido (o pico, não a soma)", () => {
+  it("rowModel acha o pico do período e quando ocorreu", () => {
+    const r = rowModel(mk("a", { times: [1000, 2000, 3000], rps: [5, 40, 12] } as any), [99]);
+    expect(r.rpsPeak).toBe(40);
+    expect(r.rpsPeakAt).toBe(2000);
+    expect(r.rps).toBe(12); // o valor de agora é outro
+    const sem = rowModel(mk("b", { times: [1], rps: [null] } as any), [99]);
+    expect([sem.rpsPeak, sem.rpsPeakAt]).toEqual([null, null]);
+  });
+  it("o card traz a aplicação com o maior pico, nunca a soma", () => {
+    const k = buildKpis(rows(
+      mk("a", { times: [1000, 2000], rps: [10, 20] } as any),
+      mk("b", { times: [1000, 2000], rps: [70, 5] } as any),
+      mk("c", { times: [1000], rps: [30] } as any),
+    ));
+    expect(k.top).toEqual({ name: "b", rps: 70, at: 1000 }); // a soma dos picos seria 120
   });
 });

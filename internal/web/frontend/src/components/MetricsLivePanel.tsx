@@ -45,6 +45,7 @@ import { MetricsLiveTable } from "@/components/MetricsLiveTable";
 import { COLORS, LEVEL_CLASS, LevelIcon, Spark, fmtClock } from "@/components/metricsLiveShared";
 import { DEFAULT_SORT, SORT_KEY, VIEW_KEY, buildKpis, effectiveView, filterRows, groupRows, parseSort, parseViewMode, rowModel, sortRows, type SortKey, type SortState, type ViewMode } from "@/lib/metricsLiveView";
 import type { SavedEvent } from "@/lib/metricsEvents";
+import { eventAtWindow, fileSlug } from "@/lib/metricsEvents";
 import { buildSessionCSV, buildSessionMarkdown, newSession, recordSample, type Session } from "@/lib/metricsLiveSession";
 import { downloadText, fileStamp } from "@/lib/metricsReportExport";
 
@@ -137,6 +138,8 @@ export function MetricsLivePanel({
     const start = zonedLocalToISO(startLocal), end = zonedLocalToISO(endLocal);
     return start && end ? { start, end } : null;
   }, [range, startLocal, endLocal]);
+  // evento salvo cuja janela está aplicada agora (o nome vai no resumo da sessão e no nome do arquivo)
+  const activeEvent = useMemo(() => eventAtWindow(events, custom?.start, custom?.end), [events, custom]);
   const relative = range !== "custom";
   const customInvalid = range === "custom" && !custom;
 
@@ -187,7 +190,7 @@ export function MetricsLivePanel({
   const [sessionUpdates, setSessionUpdates] = useState(0);
   useEffect(() => {
     if (!q.data) return;
-    recordSample(sessionRef.current, q.data.series, projectedPercentile(q.data.percentiles ?? percentiles));
+    recordSample(sessionRef.current, q.data.series, projectedPercentile(q.data.percentiles ?? percentiles), activeEvent);
     setSessionUpdates(sessionRef.current.updates);
     // só quando chega dado novo
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -195,8 +198,11 @@ export function MetricsLivePanel({
   const exportSession = (kind: "md" | "csv") => {
     const now = Date.now();
     const stamp = fileStamp(new Date(now).toISOString());
-    if (kind === "md") downloadText(buildSessionMarkdown(sessionRef.current, now), "text/markdown", `tempo-real-resumo_${stamp}.md`);
-    else downloadText(buildSessionCSV(sessionRef.current), "text/csv", `tempo-real-resumo_${stamp}.csv`);
+    // com um evento na sessão, o nome dele vai no arquivo: fica fácil achar e juntar depois
+    const slug = sessionRef.current.events.map((e) => fileSlug(e.name)).filter(Boolean).slice(0, 2).join("+");
+    const base = `tempo-real-resumo${slug ? `_${slug}` : ""}_${stamp}`;
+    if (kind === "md") downloadText(buildSessionMarkdown(sessionRef.current, now), "text/markdown", `${base}.md`);
+    else downloadText(buildSessionCSV(sessionRef.current), "text/csv", `${base}.csv`);
   };
 
   // minimizados (cluster inteiro ou cartão), lembrados no navegador
@@ -330,6 +336,11 @@ export function MetricsLivePanel({
                   <div className="text-muted-foreground" title="Agregados (mín/méd/máx) por aplicação, amostrados a cada atualização; a memória não cresce com o tempo">
                     {sessionUpdates} atualização(ões) desde {new Date(sessionRef.current.startedAt).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" })}
                   </div>
+                  {(sessionRef.current.events.length > 0 || activeEvent) && (
+                    <div className="text-muted-foreground" title="O nome do evento vai no título do resumo, numa coluna do CSV e no nome do arquivo">
+                      evento: <b className="text-foreground">{(sessionRef.current.events.length ? sessionRef.current.events : [activeEvent!]).map((e) => e.name).join(", ")}</b>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("md")} title="Baixa o resumo da sessão em Markdown"><FileDown className="h-3 w-3" />Resumo .md</Button>
                     <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("csv")} title="Baixa o resumo da sessão em CSV"><FileDown className="h-3 w-3" />CSV</Button>
@@ -455,7 +466,7 @@ function fmtStep(sec: number): string {
 // Uma linha do cartão: rótulo, valor e situação (como o monitor de stress test).
 function Row({ label, level, source = "Dynatrace", children }: { label: string; level?: Level; source?: "Dynatrace" | "Prometheus"; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[88px_1fr_auto] items-baseline gap-2 leading-5">
+    <div className="-mx-1.5 grid grid-cols-[88px_1fr_auto] items-baseline gap-2 rounded-md px-1.5 leading-5 transition-colors duration-150 hover:bg-muted/60">
       <span className="text-cyan-400" title={`Fonte: ${source}`}>{label}</span>
       <span className="min-w-0">{children}</span>
       {level && <span className={`text-right font-medium ${LEVEL_CLASS[level]}`}>{LEVEL_LABEL[level]}</span>}
