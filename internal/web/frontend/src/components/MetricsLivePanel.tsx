@@ -1,17 +1,18 @@
 import { memo, useCallback, useEffect, useRef, useMemo, useState, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { BarChart3, ChevronDown, FileDown, ChevronRight, ExternalLink, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
+import { BarChart3, ChevronDown, FileDown, SlidersHorizontal, ChevronRight, ExternalLink, Loader2, X, Play, RefreshCw, Square, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { apiClient } from "@/lib/api/client";
 import { PERCENTILE_CHOICES, REPORT_TZ, fmtInt, fmtLatency, fmtRps, togglePercentile, zonedLocalToISO, isoToZonedLocal, type ReportItem } from "@/lib/metricsReport";
 import {
   DEFAULT_LIVE_RANGE, LATENCY_RED_MS, LEVEL_LABEL, LIVE_MAX_POINTS, LIVE_RANGES, LIVE_RESOURCES_KEY, LIVE_RANGE_KEY, LIVE_REFRESH_CHOICES, LIVE_REFRESH_KEY, PROJECTION_CHOICES, PROJECTION_KEY,
-  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, podsLevel, fmtRestartReasons, netLevel, fmtBytesPerSec, usageLevel, groupLive, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
-  normalizeLive, buildNetworkRows, projectedPercentile, sparkHeights, seriesLevel, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
+  buildChartData, errorLevel, fmtCores, fmtMemMB, fmtRefresh, fmtSpanLabel, fmtUsagePcts, parseLiveResources, replicasLevel, restartsLevel, hpaLevel, throttleLevel, podsLevel, fmtRestartReasons, netLevel, fmtBytesPerSec, usageLevel, lastValue, latencyLevel, liveRangeMs, liveWindow, minutesToThreshold, parseLiveRange, parseLiveRefresh, parseProjection, projectWithBaseline, DAY_MS, SEASONAL_LOOKBACK_MIN,
+  normalizeLive, buildNetworkRows, projectedPercentile, assessSeries, summarizeStatus, worstLevel, type Level, type LiveChartData, type LiveRangeId, type LiveSeries, type Projection,
 } from "@/lib/metricsLive";
 
 // Tempo real do Relatório de Métricas: as mesmas métricas do relatório (Dynatrace), num cartão por
@@ -22,9 +23,6 @@ import {
 // cartão desenha barras SVG leves (os gráficos completos só são montados quando o operador os abre), a
 // consulta não fica em cache depois de substituída e a contagem regressiva é um componente à parte
 // (não refaz a tela inteira a cada segundo).
-
-const COLORS = { rps: "#38bdf8", p50: "#34d399", p95: "#fbbf24", p99: "#f87171", e4: "#fbbf24", e5: "#f87171", proj: "#a78bfa", avg: "#2dd4bf", grid: "#374151", axis: "#9ca3af", spark: "#d946ef" };
-const LEVEL_CLASS: Record<Level, string> = { ok: "text-emerald-400", warn: "text-amber-400", red: "text-red-400", info: "text-sky-400" };
 
 function loadPref<T>(key: string, parse: (raw: string | null) => T): T {
   try {
@@ -42,6 +40,10 @@ function savePref(key: string, value: unknown) {
 }
 
 import { MetricsEventPicker } from "@/components/MetricsEventPicker";
+import { MetricsLiveSummary } from "@/components/MetricsLiveSummary";
+import { MetricsLiveTable } from "@/components/MetricsLiveTable";
+import { COLORS, LEVEL_CLASS, LevelIcon, Spark, fmtClock } from "@/components/metricsLiveShared";
+import { DEFAULT_SORT, SORT_KEY, VIEW_KEY, buildKpis, effectiveView, filterRows, groupRows, parseSort, parseViewMode, rowModel, sortRows, type SortKey, type SortState, type ViewMode } from "@/lib/metricsLiveView";
 import type { SavedEvent } from "@/lib/metricsEvents";
 import { buildSessionCSV, buildSessionMarkdown, newSession, recordSample, type Session } from "@/lib/metricsLiveSession";
 import { downloadText, fileStamp } from "@/lib/metricsReportExport";
@@ -71,13 +73,10 @@ function BrowserMemory() {
   );
 }
 
-const BADGE_CLASS: Record<Level, string> = {
-  red: "border-red-500/50 bg-red-500/10 text-red-400",
-  warn: "border-amber-500/50 bg-amber-500/10 text-amber-400",
-  ok: "border-emerald-500/50 bg-emerald-500/10 text-emerald-400",
-  info: "border-sky-500/50 bg-sky-500/10 text-sky-400",
-};
 const COLLAPSED_KEY = "metrics_live_collapsed";
+const ONLY_PROBLEMS_KEY = "metrics_live_only_problems";
+const CARD_DETAILS_KEY = "metrics_live_card_details";
+const SORT_LABEL: Record<SortKey, string> = { gravidade: "Gravidade", nome: "Nome", rps: "RPS", avg: "Response time", lat: "Latência (maior percentil)", p50: "P50", p95: "P95", p99: "P99", err5: "Erros 5xx", err4: "Erros 4xx", replicas: "Réplicas", cpu: "CPU", mem: "Memória" };
 function parseCollapsed(raw: string | null): Set<string> {
   try {
     const v = raw ? JSON.parse(raw) : [];
@@ -88,9 +87,6 @@ function parseCollapsed(raw: string | null): Set<string> {
 }
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : "erro desconhecido");
-
-const fmtClock = (ms: number, withDate: boolean) =>
-  new Date(ms).toLocaleString("pt-BR", { timeZone: REPORT_TZ, ...(withDate ? { day: "2-digit", month: "2-digit" } : {}), hour: "2-digit", minute: "2-digit" });
 
 type CustomRange = { start: string; end: string };
 
@@ -165,7 +161,26 @@ export function MetricsLivePanel({
 
   const data = q.data;
 
-  const status = useMemo(() => (data ? summarizeStatus(data.series, data.percentiles ?? percentiles) : null), [data, percentiles]);
+  const pctsNow = data?.percentiles ?? percentiles;
+  const status = useMemo(() => (data ? summarizeStatus(data.series, pctsNow) : null), [data, pctsNow]);
+
+  // visão: tabela (padrão com muitas aplicações) ou cartões; ordenação; filtros. Tudo lembrado, menos o filtro por nível.
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadPref(VIEW_KEY, parseViewMode));
+  const [sort, setSort] = useState<SortState>(() => loadPref(SORT_KEY, parseSort));
+  const [onlyProblems, setOnlyProblems] = useState<boolean>(() => loadPref(ONLY_PROBLEMS_KEY, (raw) => raw === "true"));
+  const [cardDetails, setCardDetails] = useState<boolean>(() => loadPref(CARD_DETAILS_KEY, (raw) => raw !== "false"));
+  const [levelFilter, setLevelFilter] = useState<Level | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  useEffect(() => savePref(VIEW_KEY, viewMode), [viewMode]);
+  useEffect(() => savePref(SORT_KEY, sort), [sort]);
+  useEffect(() => savePref(ONLY_PROBLEMS_KEY, onlyProblems), [onlyProblems]);
+  useEffect(() => savePref(CARD_DETAILS_KEY, cardDetails), [cardDetails]);
+  const toggleRow = useCallback((key: string) => setExpandedRows((prev) => {
+    const next = new Set(prev);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  }), []);
+  const onSort = useCallback((key: SortKey) => setSort((prev) => (prev.key === key ? { key, desc: !prev.desc } : { key, desc: key !== "nome" })), []);
 
   // resumo da sessão: só agregados por aplicação, a cada atualização (a memória não cresce com o tempo)
   const sessionRef = useRef<Session>(newSession(Date.now()));
@@ -217,17 +232,24 @@ export function MetricsLivePanel({
     for (const b of bq.data?.series ?? []) m.set(`${b.cluster}|${b.namespace}|${b.workload}`, b);
     return m;
   }, [bq.data]);
-  const groups = useMemo(() => (data ? groupLive(data.series) : []), [data]);
+  const allRows = useMemo(() => (data ? data.series.map((s) => rowModel(s, pctsNow)) : []), [data, pctsNow]);
+  const kpis = useMemo(() => buildKpis(allRows), [allRows]);
+  const shown = useMemo(() => sortRows(filterRows(allRows, { onlyProblems, level: levelFilter }), sort), [allRows, onlyProblems, levelFilter, sort]);
+  const groups = useMemo(() => groupRows(shown), [shown]);
+  const view = effectiveView(viewMode, items.length);
+  const showResources = allRows.some((r) => !!r.s.resources);
   const spanMs = range === "custom" && custom ? Date.parse(custom.end) - Date.parse(custom.start) : liveRangeMs(range === "custom" ? DEFAULT_LIVE_RANGE : range);
   const spanLabel = fmtSpanLabel(spanMs);
   const [detail, setDetail] = useState<LiveSeries | null>(null);
 
   return (
     <div className="space-y-3">
+      {data && allRows.length > 0 && <MetricsLiveSummary kpis={kpis} status={status} level={levelFilter} onLevel={setLevelFilter} />}
       <section className="rounded-md border border-border p-3 space-y-2">
+        {/* o essencial à vista; o que se mexe pouco fica em "Opções" */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {running ? (
-            <Button size="sm" variant="destructive" className="h-7 text-xs gap-1" onClick={() => setRunning(false)} title="Para as consultas ao Dynatrace; os cartões ficam como estão">
+            <Button size="sm" variant="destructive" className="h-7 text-xs gap-1" onClick={() => setRunning(false)} title="Para as consultas ao Dynatrace; os dados ficam como estão">
               <Square className="h-3 w-3" />Parar
             </Button>
           ) : (
@@ -243,37 +265,80 @@ export function MetricsLivePanel({
               <option value="custom">Personalizado…</option>
             </select>
           </label>
-          <label className="flex items-center gap-1.5" title="De quanto em quanto tempo os cartões são atualizados (o Dynatrace entrega dado de 1 em 1 minuto)">
+          <label className="flex items-center gap-1.5" title="De quanto em quanto tempo os dados são atualizados (o Dynatrace entrega dado de 1 em 1 minuto)">
             Atualizar a cada
             <select className="h-7 rounded border border-border bg-background px-1 text-xs" value={refresh} disabled={!relative} onChange={(e) => setRefresh(Number(e.target.value))}>
               {LIVE_REFRESH_CHOICES.map((s) => <option key={s} value={s}>{fmtRefresh(s)}</option>)}
               <option value={0}>{fmtRefresh(0)}</option>
             </select>
           </label>
-          <label className="flex items-center gap-1.5" title="Estende uma reta ajustada aos dados do período (tendência linear, não previsão): não conhece sazonalidade nem limite de capacidade">
-            Projeção
-            <select className="h-7 rounded border border-border bg-background px-1 text-xs" value={horizon} disabled={!relative} onChange={(e) => setHorizon(Number(e.target.value))}>
-              {PROJECTION_CHOICES.map((m) => <option key={m} value={m}>{m === 0 ? "Desligada" : m === 60 ? "+1 h" : `+${m} min`}</option>)}
-            </select>
-          </label>
-          <MetricsEventPicker
-            events={events}
-            current={(() => {
-              const s = zonedLocalToISO(startLocal), e = zonedLocalToISO(endLocal);
-              return s && e ? { start: s, end: e } : null;
-            })()}
-            onApply={(s, e) => {
-              setRange("custom");
-              setStartLocal(isoToZonedLocal(Date.parse(s)));
-              setEndLocal(isoToZonedLocal(Date.parse(e)));
-            }}
-            onSave={onSaveEvent}
-            onRemove={onRemoveEvent}
-          />
           <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={items.length === 0 || customInvalid || q.isFetching} onClick={() => q.refetch()}>
             {q.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Atualizar agora
           </Button>
           <Countdown updatedAt={q.dataUpdatedAt} refreshSec={running && relative ? refresh : 0} fetching={q.isFetching} />
+          <div className="ml-auto flex items-center gap-2">
+            <MetricsEventPicker
+              events={events}
+              current={(() => {
+                const s = zonedLocalToISO(startLocal), e = zonedLocalToISO(endLocal);
+                return s && e ? { start: s, end: e } : null;
+              })()}
+              onApply={(s, e) => {
+                setRange("custom");
+                setStartLocal(isoToZonedLocal(Date.parse(s)));
+                setEndLocal(isoToZonedLocal(Date.parse(e)));
+              }}
+              onSave={onSaveEvent}
+              onRemove={onRemoveEvent}
+            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" title="Projeção, percentis de latência, itens do Prometheus e resumo da sessão">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />Opções
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[26rem] space-y-3 p-3 text-xs">
+                <div className="space-y-1">
+                  <div className="font-medium">Projeção</div>
+                  <select className="h-7 rounded border border-border bg-background px-1 text-xs" value={horizon} disabled={!relative} onChange={(e) => setHorizon(Number(e.target.value))}>
+                    {PROJECTION_CHOICES.map((m) => <option key={m} value={m}>{m === 0 ? "Desligada" : m === 60 ? "+1 h" : `+${m} min`}</option>)}
+                  </select>
+                  <div className="text-[10px] text-muted-foreground">Usa a curva de ontem no mesmo horário, escalada pelo nível de hoje (sem dado de ontem, uma reta). É extrapolação, não previsão. Só vale para períodos relativos.</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="font-medium">Latência</div>
+                  <div className="flex items-center gap-3">
+                    {PERCENTILE_CHOICES.map((p) => (
+                      <label key={p} className="flex items-center gap-1.5 cursor-pointer">
+                        <Checkbox checked={percentiles.includes(p)} onCheckedChange={(v) => onPercentiles(togglePercentile(percentiles, p, v === true))} />
+                        P{p}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Compartilhado com o relatório. A projeção e a situação usam o maior percentil marcado.</div>
+                </div>
+                <div className="space-y-1">
+                  <div className="font-medium">Prometheus</div>
+                  <label className="flex items-center gap-1.5 cursor-pointer" title="Réplicas, HPA, restarts, CPU, memória, throttling, rede e pods vêm do Prometheus do cluster. Tráfego, erros e latência vêm sempre do Dynatrace.">
+                    <Checkbox checked={resources} onCheckedChange={(v) => setResources(v === true)} />
+                    Réplicas, HPA, restarts, CPU, memória, throttling e rede
+                  </label>
+                  <div className="text-[10px] text-muted-foreground">Várias consultas ao Prometheus por cluster a cada atualização. Desligue se estiver lento; tráfego e latência continuam do Dynatrace.</div>
+                </div>
+                <div className="space-y-1 border-t border-border pt-2">
+                  <div className="font-medium">Resumo da sessão</div>
+                  <div className="text-muted-foreground" title="Agregados (mín/méd/máx) por aplicação, amostrados a cada atualização; a memória não cresce com o tempo">
+                    {sessionUpdates} atualização(ões) desde {new Date(sessionRef.current.startedAt).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("md")} title="Baixa o resumo da sessão em Markdown"><FileDown className="h-3 w-3" />Resumo .md</Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("csv")} title="Baixa o resumo da sessão em CSV"><FileDown className="h-3 w-3" />CSV</Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={sessionUpdates === 0} onClick={() => { sessionRef.current = newSession(Date.now()); setSessionUpdates(0); }} title="Zera o resumo e começa uma sessão nova">Zerar</Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
         {range === "custom" && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -283,49 +348,9 @@ export function MetricsLivePanel({
             {customInvalid && <span className="text-red-400">Data ou hora inválida.</span>}
           </div>
         )}
-        {status && (
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            {(["red", "warn", "ok", "info"] as const).map((lv) => status[lv].length > 0 && (
-              <span
-                key={lv}
-                className={`cursor-help rounded border px-1.5 py-0.5 font-medium ${BADGE_CLASS[lv]}`}
-                title={status[lv].map((e) => `${e.name}${e.reasons.length ? ` — ${e.reasons.join("; ")}` : ""}`).join("\n")}
-              >
-                {LEVEL_LABEL[lv]} {status[lv].length}
-              </span>
-            ))}
-            <span className="text-muted-foreground">passe o mouse para ver quais</span>
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-          <span className="text-muted-foreground" title="Agregados (mín/méd/máx) por aplicação, amostrados a cada atualização; a memória não cresce com o tempo">
-            sessão: {sessionUpdates} atualização(ões) desde {new Date(sessionRef.current.startedAt).toLocaleTimeString("pt-BR", { timeZone: REPORT_TZ, hour: "2-digit", minute: "2-digit" })}
-          </span>
-          <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("md")} title="Baixa o resumo da sessão em Markdown"><FileDown className="h-3 w-3" />Resumo .md</Button>
-          <Button size="sm" variant="outline" className="h-6 text-[11px] gap-1" disabled={sessionUpdates === 0} onClick={() => exportSession("csv")} title="Baixa o resumo da sessão em CSV"><FileDown className="h-3 w-3" />CSV</Button>
-          <Button size="sm" variant="ghost" className="h-6 text-[11px]" disabled={sessionUpdates === 0} onClick={() => { sessionRef.current = newSession(Date.now()); setSessionUpdates(0); }} title="Zera o resumo e começa uma sessão nova">Zerar</Button>
-          <BrowserMemory />
-        </div>
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <span className="text-muted-foreground">Latência:</span>
-          {PERCENTILE_CHOICES.map((p) => (
-            <label key={p} className="flex items-center gap-1.5 cursor-pointer">
-              <Checkbox checked={percentiles.includes(p)} onCheckedChange={(v) => onPercentiles(togglePercentile(percentiles, p, v === true))} />
-              P{p}
-            </label>
-          ))}
-          <span className="text-[10px] text-muted-foreground">compartilhado com o relatório · a projeção de latência usa o maior percentil marcado</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <label className="flex items-center gap-1.5 cursor-pointer" title="Réplicas, restarts, CPU e memória vêm do Prometheus do cluster. Tráfego, erros e P50/P95/P99 vêm sempre do Dynatrace.">
-            <Checkbox checked={resources} onCheckedChange={(v) => setResources(v === true)} />
-            Réplicas, restarts, CPU e memória
-          </label>
-          <span className="text-[10px] text-muted-foreground">Prometheus · 9 consultas por cluster a cada atualização · latência e tráfego continuam do Dynatrace</span>
-        </div>
         {data && (
-          <div className="text-xs text-muted-foreground">
-            {items.length} aplicação(ões) · cada barra = {fmtStep(data.step_seconds)} (Dynatrace {data.resolution}) · {new Date(data.window.start).toLocaleString("pt-BR", { timeZone: REPORT_TZ })} → {new Date(data.window.end).toLocaleString("pt-BR", { timeZone: REPORT_TZ })}
+          <div className="text-[11px] text-muted-foreground">
+            {items.length} aplicação(ões) · cada ponto = {fmtStep(data.step_seconds)} (Dynatrace {data.resolution}) · {new Date(data.window.start).toLocaleString("pt-BR", { timeZone: REPORT_TZ })} → {new Date(data.window.end).toLocaleString("pt-BR", { timeZone: REPORT_TZ })}
             {data.warnings?.map((w) => <span key={w} className="ml-2 text-amber-400">{w}</span>)}
           </div>
         )}
@@ -338,24 +363,80 @@ export function MetricsLivePanel({
         <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Consultando o Dynatrace…</div>
       )}
 
-      {groups.map((g) => (
+      {data && allRows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <div role="group" aria-label="Visão" className="inline-flex overflow-hidden rounded-md border border-border">
+            {(["table", "cards"] as const).map((v) => (
+              <button key={v} type="button" aria-pressed={view === v} onClick={() => setViewMode(v)} className={`px-2.5 py-1 ${view === v ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`} title={v === "table" ? "Uma linha por aplicação: melhor para muitas aplicações" : "Um cartão por aplicação: melhor para poucas"}>
+                {v === "table" ? "Tabela" : "Cartões"}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5">
+            Ordenar
+            <select className="h-7 rounded border border-border bg-background px-1 text-xs" value={sort.key} onChange={(e) => setSort({ key: e.target.value as SortKey, desc: e.target.value !== "nome" })}>
+              {(Object.keys(SORT_LABEL) as SortKey[]).filter((k) => k !== "p50" && k !== "p95" && k !== "p99" ? true : pctsNow.includes(Number(k.slice(1)))).map((k) => <option key={k} value={k}>{SORT_LABEL[k]}</option>)}
+            </select>
+            <button type="button" className="rounded border border-border px-1.5 py-0.5 hover:bg-muted" title="Inverter o sentido" onClick={() => setSort((p) => ({ ...p, desc: !p.desc }))}>{sort.desc ? "↓" : "↑"}</button>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer" title="Esconde as aplicações em OK ou sem dado e deixa só as em ERRO ou ALERTA">
+            <Checkbox checked={onlyProblems} onCheckedChange={(v) => setOnlyProblems(v === true)} />
+            Só problemas
+          </label>
+          {levelFilter && (
+            <button type="button" className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 hover:bg-muted" onClick={() => setLevelFilter(null)} title="Tirar o filtro">
+              filtro: {LEVEL_LABEL[levelFilter]} <X className="h-3 w-3" />
+            </button>
+          )}
+          <span className="text-muted-foreground">{shown.length} de {allRows.length} aplicação(ões){viewMode === "auto" ? " · visão automática" : ""}</span>
+          {view === "cards" && (
+            <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setCardDetails((v) => !v)} title="Mostra ou esconde as linhas de detalhe de todos os cartões">
+              {cardDetails ? "esconder detalhes" : "mostrar detalhes"}
+            </button>
+          )}
+        </div>
+      )}
+      {data && allRows.length > 0 && shown.length === 0 && <div className="text-xs text-muted-foreground">Nenhuma aplicação com este filtro.</div>}
+
+      {view === "table" && shown.length > 0 && (
+        <MetricsLiveTable
+          groups={groups}
+          sort={sort}
+          onSort={onSort}
+          collapsed={collapsed}
+          onToggleCluster={toggleCollapsed}
+          expanded={expandedRows}
+          onToggleRow={toggleRow}
+          renderExpanded={(s) => (
+            <LiveCard s={s} base={baseMap.get(`${s.cluster}|${s.namespace}|${s.workload}`)} percentiles={pctsNow} horizon={effHorizon} spanLabel={spanLabel} onDetail={setDetail} onRemove={onRemove} detailsOpen onToggleDetails={() => {}} showToggle={false} />
+          )}
+          onDetail={setDetail}
+          onRemove={onRemove}
+          percentiles={pctsNow}
+          showResources={showResources}
+        />
+      )}
+
+      {view === "cards" && groups.map((g) => (
         <section key={g.cluster} className="space-y-2">
           <button className="flex items-center gap-1.5 text-sm font-medium text-amber-500 hover:text-amber-400" title={collapsed.has(g.cluster) ? "Expandir o cluster" : "Minimizar o cluster"} onClick={() => toggleCollapsed(g.cluster)}>
             {collapsed.has(g.cluster) ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             {g.cluster}
-            <span className="text-[11px] font-normal text-muted-foreground">({g.series.length} aplicação(ões))</span>
+            <span className="text-[11px] font-normal text-muted-foreground">({g.rows.length} aplicação(ões))</span>
             {collapsed.has(g.cluster) && (() => {
-              const lv = worstLevel(g.series.map((x) => seriesLevel(x, data?.percentiles ?? percentiles)));
-              return <span className={`text-[11px] font-medium ${LEVEL_CLASS[lv]}`}>{LEVEL_LABEL[lv]}</span>;
+              const lv = worstLevel(g.rows.map((x) => x.level));
+              return <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${LEVEL_CLASS[lv]}`}><LevelIcon level={lv} className="h-3 w-3" />{LEVEL_LABEL[lv]}</span>;
             })()}
           </button>
           {!collapsed.has(g.cluster) && <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-            {g.series.map((s) => (
-              <LiveCard key={`${s.cluster}|${s.namespace}|${s.workload}`} s={s} base={baseMap.get(`${s.cluster}|${s.namespace}|${s.workload}`)} percentiles={data?.percentiles ?? percentiles} horizon={effHorizon} spanLabel={spanLabel} onDetail={setDetail} onRemove={onRemove} />
+            {g.rows.map((r) => (
+              <LiveCard key={r.key} s={r.s} base={baseMap.get(r.key)} percentiles={pctsNow} horizon={effHorizon} spanLabel={spanLabel} onDetail={setDetail} onRemove={onRemove} detailsOpen={cardDetails} onToggleDetails={() => setCardDetails((v) => !v)} showToggle />
             ))}
           </div>}
         </section>
       ))}
+
+      <div className="text-right"><BrowserMemory /></div>
 
       {/* gráficos completos: só existem enquanto o modal está aberto */}
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
@@ -382,31 +463,27 @@ function Row({ label, level, source = "Dynatrace", children }: { label: string; 
   );
 }
 
-// Barras do RPS no período (SVG leve; lacuna = sem barra). Cada barra leva a hora e o valor na dica.
-function Spark({ times, values }: { times: number[]; values: (number | null)[] }) {
-  const { heights, max } = useMemo(() => sparkHeights(values), [values]);
-  const n = heights.length;
-  if (n === 0) return <span className="text-muted-foreground">sem dados</span>;
-  const H = 16;
+// Número em destaque do cartão: rótulo pequeno, valor grande em tinta primária; o ícone (não a cor do
+// número) sinaliza ALERTA ou ERRO.
+function Hero({ label, value, unit, level }: { label: string; value: string; unit?: string; level?: Level }) {
   return (
-    <span className="inline-flex items-center gap-2">
-      <svg viewBox={`0 0 ${n * 3} ${H}`} preserveAspectRatio="none" className="h-4 w-48 max-w-full" role="img" aria-label="RPS no período">
-        {heights.map((h, i) =>
-          h == null ? null : (
-            <rect key={i} x={i * 3} y={H - Math.max(1, h * H)} width={2} height={Math.max(1, h * H)} fill={COLORS.spark}>
-              <title>{`${fmtClock(times[i], true)}: ${fmtRps(values[i])} req/s`}</title>
-            </rect>
-          ),
-        )}
-      </svg>
-      <span className="text-fuchsia-400">(Máx: {fmtRps(max)})</span>
-    </span>
+    <div className="min-w-0 sm:px-3 sm:first:pl-0 sm:last:pr-0">
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        {label}
+        {(level === "warn" || level === "red") && <LevelIcon level={level} className="h-3 w-3" />}
+      </div>
+      <div className="truncate text-lg font-semibold leading-tight tabular-nums text-foreground">{value}</div>
+      {unit && <div className="truncate text-[10px] text-muted-foreground">{unit}</div>}
+    </div>
   );
 }
 
 const LiveCard = memo(function LiveCard({
-  s, base, percentiles, horizon, spanLabel, onDetail, onRemove,
+  s, base, percentiles, horizon, spanLabel, onDetail, onRemove, detailsOpen, onToggleDetails, showToggle,
 }: {
+  detailsOpen: boolean;
+  onToggleDetails: () => void;
+  showToggle: boolean;
   onRemove: (item: ReportItem) => void;
   s: LiveSeries;
   base?: LiveSeries;
@@ -428,6 +505,8 @@ const LiveCard = memo(function LiveCard({
   const toLimit = latP === 99 ? minutesToThreshold(latProj, LATENCY_RED_MS, horizon) : null;
 
   const r = s.resources;
+  const assessed = useMemo(() => assessSeries(s, percentiles), [s, percentiles]);
+  const latValue = lastValue(latP === 99 ? s.p99_ms : latP === 95 ? s.p95_ms : s.p50_ms);
   if (s.error && !r) {
     return (
       <div className="rounded-md border border-red-500/40 p-3 text-xs">
@@ -444,6 +523,7 @@ const LiveCard = memo(function LiveCard({
   return (
     <div className="rounded-md border border-border p-3 text-xs font-mono">
       <div className="mb-1 flex items-baseline gap-2">
+        <span className="self-center" title={assessed.reasons.join("\n") || LEVEL_LABEL[assessed.level]}><LevelIcon level={assessed.level} /></span>
         <span className="text-sm font-semibold text-sky-400">{s.workload}</span>
         <span className="text-[10px] text-muted-foreground truncate" title={s.namespace}>ns: {s.namespace}</span>
         <button className="ml-auto text-muted-foreground hover:text-foreground" title="Abrir os gráficos completos" onClick={() => onDetail(s)}>
@@ -451,6 +531,20 @@ const LiveCard = memo(function LiveCard({
         </button>
         {removeBtn}
       </div>
+      {/* o essencial na frente: quatro números grandes; o resto fica em "Detalhes" */}
+      <div className="my-2 grid grid-cols-2 gap-x-2 gap-y-3 rounded-lg bg-muted/40 px-3 py-2.5 font-sans ring-1 ring-inset ring-border/60 sm:grid-cols-4 sm:gap-y-0 sm:divide-x sm:divide-border/50">
+        <Hero label="RPS" value={s.error && !r ? "—" : fmtRps(rpsNow)} unit="req/s" />
+        <Hero label={`P${latP}`} value={fmtLatency(latValue)} level={latencyLevel(latValue)} />
+        <Hero label="Erros 5xx" value={fmtInt(s.err_5xx_total)} unit="no período" level={errorLevel(s.err_5xx_total, "5xx")} />
+        <Hero label="Réplicas" value={r?.replicas_available != null ? `${r.replicas_available}/${r.replicas_desired ?? "?"}` : "—"} unit={hpaLevel(r?.replicas_desired, r?.hpa_max) === "warn" ? "no teto do HPA" : undefined} level={replicasLevel(r?.replicas_available, r?.replicas_desired) === "red" ? "red" : hpaLevel(r?.replicas_desired, r?.hpa_max) === "warn" ? "warn" : undefined} />
+      </div>
+      {showToggle && (
+        <button type="button" className="mb-1 inline-flex items-center gap-1 font-sans text-[11px] text-muted-foreground hover:text-foreground" onClick={onToggleDetails}>
+          {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}Detalhes
+        </button>
+      )}
+      {detailsOpen && (
+      <>
       {r && (
         <>
           <Row label="Réplicas" level={replicasLevel(r.replicas_available, r.replicas_desired)} source="Prometheus">
@@ -502,7 +596,7 @@ const LiveCard = memo(function LiveCard({
         <b>{fmtInt(s.err_4xx_total)}</b> <span className="text-muted-foreground">no período · {fmtRps(e4)}/s agora</span>
       </Row>
       {hasAvg && (
-        <Row label="Resp. média" level="info">
+        <Row label="Response time" level="info">
           <b>{fmtLatency(avgNow)}</b> <span className="text-muted-foreground">média ponderada pelas requisições</span>
         </Row>
       )}
@@ -525,6 +619,8 @@ const LiveCard = memo(function LiveCard({
         </Row>
       )}
         </>
+      )}
+      </>
       )}
       {s.links && s.links.length > 0 && <DynatraceLinks links={s.links} className="mt-1" />}
       {s.notes && s.notes.length > 0 && <div className="mt-1 font-sans text-[10px] text-muted-foreground">{s.notes.join(" · ")}</div>}

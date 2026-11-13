@@ -483,16 +483,6 @@ export function worstLevel(levels: Level[]): Level {
   return levels.reduce<Level>((w, l) => (LEVEL_RANK[l] > LEVEL_RANK[w] ? l : w), "info");
 }
 
-/** Nível resumido de uma aplicação (cartão minimizado e cabeçalho do cluster): latência do maior percentil marcado, 5xx e 4xx. */
-export function seriesLevel(s: LiveSeries, percentiles: number[]): Level {
-  const p = projectedPercentile(percentiles);
-  return worstLevel([
-    latencyLevel(lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms)),
-    errorLevel(lastValue(s.err_5xx_rps), "5xx"),
-    errorLevel(lastValue(s.err_4xx_rps), "4xx"),
-  ]);
-}
-
 export interface StatusEntry {
   /** "cluster · aplicação" */
   name: string;
@@ -502,27 +492,57 @@ export type StatusSummary = Record<Level, StatusEntry[]>;
 
 const secs = (ms: number) => `${(ms / 1000).toFixed(3)}s`;
 const perSec = (v: number) => `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}/s`;
+const pct1 = (v: number) => `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
+
+/**
+ * Situação de uma aplicação: o pior nível entre latência (maior percentil marcado), 5xx, 4xx e, quando o
+ * Prometheus respondeu, réplicas, restarts, pods, teto do HPA, throttling, CPU/memória e rede, com o motivo
+ * de cada item fora do normal. Falha de coleta é ERRO. É a mesma regra dos cartões, dos selos e da tabela.
+ */
+export function assessSeries(s: LiveSeries, percentiles: number[]): { level: Level; reasons: string[] } {
+  if (s.error && !s.resources) return { level: "red", reasons: [`falha na coleta: ${s.error}`] };
+  const p = projectedPercentile(percentiles);
+  const lat = lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms);
+  const e5 = lastValue(s.err_5xx_rps);
+  const e4 = lastValue(s.err_4xx_rps);
+  const levels: Level[] = [latencyLevel(lat), errorLevel(e5, "5xx"), errorLevel(e4, "4xx")];
+  const reasons: string[] = [];
+  if (latencyLevel(lat) === "red" || latencyLevel(lat) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
+  if (errorLevel(e5, "5xx") === "red") reasons.push(`5xx ${perSec(e5 as number)}${s.err_5xx_total != null ? ` (${Math.round(s.err_5xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
+  if (errorLevel(e4, "4xx") === "warn") reasons.push(`4xx ${perSec(e4 as number)}${s.err_4xx_total != null ? ` (${Math.round(s.err_4xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
+
+  const r = s.resources;
+  if (r) {
+    const add = (lv: Level, reason: string) => {
+      levels.push(lv);
+      if (lv === "red" || lv === "warn") reasons.push(reason);
+    };
+    add(replicasLevel(r.replicas_available, r.replicas_desired), `réplicas ${r.replicas_available}/${r.replicas_desired}`);
+    const why = fmtRestartReasons(r.restart_reasons);
+    add(why.includes("OOMKilled") && (r.restarts_15m ?? 0) > 0 ? "red" : restartsLevel(r.restarts_15m), `${r.restarts_15m} restart(s) em 15 min${why ? ` (${why})` : ""}`);
+    add(podsLevel(r.pods_pending, r.pods_not_ready), `${r.pods_pending ?? 0} pod(s) pendente(s), ${r.pods_not_ready ?? 0} não pronto(s)`);
+    add(hpaLevel(r.replicas_desired, r.hpa_max), `HPA no teto (${r.hpa_max} réplicas)`);
+    add(throttleLevel(r.cpu_throttle_pct), `throttling de CPU ${pct1(r.cpu_throttle_pct ?? 0)}`);
+    add(usageLevel(r.cpu_lim_pct), `CPU ${pct1(r.cpu_lim_pct ?? 0)} do limit`);
+    add(usageLevel(r.mem_lim_pct), `memória ${pct1(r.mem_lim_pct ?? 0)} do limit`);
+    add(netLevel(r.net_err_ps), `rede: ${perSec(r.net_err_ps ?? 0)} descartes/erros`);
+  }
+  const level = worstLevel(levels);
+  if (level === "info") reasons.push("sem dados no período");
+  return { level, reasons };
+}
+
+/** Nível resumido de uma aplicação (cabeçalho do cluster, selos e tabela). */
+export function seriesLevel(s: LiveSeries, percentiles: number[]): Level {
+  return assessSeries(s, percentiles).level;
+}
 
 /** Resumo para os selos do topo: aplicações agrupadas pelo nível, com o motivo de cada uma. Falha de coleta conta como ERRO. */
 export function summarizeStatus(series: LiveSeries[], percentiles: number[]): StatusSummary {
   const out: StatusSummary = { red: [], warn: [], ok: [], info: [] };
-  const p = projectedPercentile(percentiles);
   for (const s of series) {
-    const name = `${s.cluster} · ${s.workload}`;
-    if (s.error && !s.resources) {
-      out.red.push({ name, reasons: [`falha na coleta: ${s.error}`] });
-      continue;
-    }
-    const lat = lastValue(p === 99 ? s.p99_ms : p === 95 ? s.p95_ms : s.p50_ms);
-    const e5 = lastValue(s.err_5xx_rps);
-    const e4 = lastValue(s.err_4xx_rps);
-    const level = worstLevel([latencyLevel(lat), errorLevel(e5, "5xx"), errorLevel(e4, "4xx")]);
-    const reasons: string[] = [];
-    if (latencyLevel(lat) === "red" || latencyLevel(lat) === "warn") reasons.push(`P${p} ${secs(lat as number)}`);
-    if (errorLevel(e5, "5xx") === "red") reasons.push(`5xx ${perSec(e5 as number)}${s.err_5xx_total != null ? ` (${Math.round(s.err_5xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
-    if (errorLevel(e4, "4xx") === "warn") reasons.push(`4xx ${perSec(e4 as number)}${s.err_4xx_total != null ? ` (${Math.round(s.err_4xx_total).toLocaleString("pt-BR")} no período)` : ""}`);
-    if (level === "info") reasons.push("sem dados no período");
-    out[level].push({ name, reasons });
+    const a = assessSeries(s, percentiles);
+    out[a.level].push({ name: `${s.cluster} · ${s.workload}`, reasons: a.reasons });
   }
   return out;
 }

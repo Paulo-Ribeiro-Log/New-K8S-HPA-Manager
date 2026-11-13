@@ -74,7 +74,7 @@ describe("tempo de resposta médio na sessão", () => {
     recordSample(s, [mk({ avg_ms: [300] })], 99);
     const a = [...s.apps.values()][0];
     expect(a.avg).toEqual({ n: 2, min: 100, max: 300, sum: 400 });
-    expect(buildSessionMarkdown(s, 60000)).toContain("**Resposta média:** mín 0.100s · méd 0.200s · máx 0.300s");
-    expect(buildSessionCSV(s).split("\r\n")[0]).toContain("resposta_media_ms_med");
+    expect(buildSessionMarkdown(s, 60000)).toContain("**Response time (média):** mín 0.100s · méd 0.200s · máx 0.300s");
+    expect(buildSessionCSV(s).split("\r\n")[0]).toContain("response_time_medio_ms_med");
   });
 });

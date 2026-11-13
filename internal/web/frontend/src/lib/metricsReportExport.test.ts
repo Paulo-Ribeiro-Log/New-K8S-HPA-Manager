@@ -43,7 +43,7 @@ describe("buildExportTable", () => {
 
   it("tem só as colunas dos percentis coletados, na ordem", () => {
     expect(t.columns).toEqual([
-      "Aplicação", "Total Requests", "Max RPS", "Resposta média", "Latência P50 (pico)", "Latência P95 (pico)", "Latência P99 (pico)", "Erros 4xx", "Erros 5xx",
+      "Aplicação", "Total Requests", "Max RPS", "Response time (média)", "Latência P50 (pico)", "Latência P95 (pico)", "Latência P99 (pico)", "Erros 4xx", "Erros 5xx",
       "CPU % do request (Máx/Mín/Méd)", "CPU % do limit (Máx/Mín/Méd)", "Mem % do request (Máx/Mín/Méd)", "Mem % do limit (Máx/Mín/Méd)",
     ]);
     const so99 = buildExportTable(fixture({ percentiles: [99] }));
@@ -135,7 +135,7 @@ describe("buildCSV", () => {
     expect(csv.charCodeAt(0)).toBe(0xfeff);
     expect(csv.endsWith("\r\n")).toBe(true);
     expect(buildCSV(fixture(), ",").split("\r\n")[0]).toContain('"cluster","namespace"');
-    expect(lines[0]).toContain('"cluster";"namespace";"deployment";"requisicoes";"max_rps";"resposta_media_ms";"p50_pico_ms";"p95_pico_ms";"p99_pico_ms";"p99_servico"');
+    expect(lines[0]).toContain('"cluster";"namespace";"deployment";"requisicoes";"max_rps";"response_time_medio_ms";"p50_pico_ms";"p95_pico_ms";"p99_pico_ms";"p99_servico"');
   });
 
   it("um registro por aplicação, ordenado, com número cru e ponto decimal", () => {
@@ -315,10 +315,10 @@ describe("extras (réplicas, HPA, restarts e rede) nas exportações", () => {
 describe("tempo de resposta médio nas exportações", () => {
   it("aparece como coluna e como número cru no CSV; sem dado fica vazio", () => {
     const t = buildExportTable(fixture());
-    const i = t.columns.indexOf("Resposta média");
+    const i = t.columns.indexOf("Response time (média)");
     expect(i).toBeGreaterThan(0);
     expect(t.groups[0].rows[1].cells[i]).toBe("0.120s");
     expect(t.groups[0].rows[0].cells[i]).toBe("sem dado");
-    expect(buildCSV(fixture()).split("\r\n")[0]).toContain("resposta_media_ms");
+    expect(buildCSV(fixture()).split("\r\n")[0]).toContain("response_time_medio_ms");
   });
 });
