@@ -281,25 +281,52 @@ function Delta({ brl, pct }: { brl: number; pct: number }) {
 }
 
 /** Custo do node pool de hoje × custo com esta VM, com a diferença em R$ e em %. Tudo do pool inteiro, por mês. */
+/** Rótulo pequeno em cima e o valor embaixo: a célula quebra em linhas curtas e cabe numa coluna estreita. */
+function Item({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+  return (
+    <div className="leading-tight" title={title}>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+/** Custo do node pool de hoje × custo com esta VM, com a diferença em R$ e em %. Tudo do pool inteiro, por mês. */
 function TodayCell({ s, today, cov }: { s: DeepSimulation; today?: DeepPoolToday; cov?: DeepCoverage }) {
   if (!s.feasible || !s.vs_today_ok || !today || today.monthly_brl <= 0) return <span className="text-muted-foreground">—</span>;
+  const mult = (n: number, total: number) => <div className="text-[11px] text-muted-foreground">{n} × {fmtBRL(total / Math.max(n, 1))}</div>;
   return (
-    <div className="space-y-0.5 whitespace-nowrap">
+    <div className="min-w-[10.5rem] max-w-[14rem] space-y-1.5">
       <div className="text-[11px] font-medium text-muted-foreground">Tabela (sob demanda)</div>
-      <div><span className="text-muted-foreground">hoje </span>{fmtBRL(today.monthly_brl)}<span className="text-[11px] text-muted-foreground"> ({today.nodes} × {fmtBRL(today.unit_brl)})</span></div>
-      <div title="Nodes desta VM que entregam a mesma capacidade que os nodes de hoje entregam"><span className="text-muted-foreground">com esta VM </span><strong>{fmtBRL(s.cost_equiv_brl)}</strong><span className="text-[11px] text-muted-foreground"> ({s.nodes_equiv} × {fmtBRL(s.cost_equiv_brl / Math.max(s.nodes_equiv, 1))})</span></div>
-      <div><span className="text-muted-foreground">diferença </span><Delta brl={s.delta_today_equiv_brl} pct={s.delta_today_equiv_pct} /></div>
-      <div className="text-[11px] text-muted-foreground" title="Opcional: além de trocar a VM, reduzir os requests ao uso real (CPU = P95 × 1,2). Só vale se você ajustar os requests dos workloads.">
-        reduzindo requests (opcional): {s.nodes_recommended} nodes · {fmtBRL(s.cost_recommended_brl)} · <Delta brl={s.delta_today_rec_brl} pct={s.delta_today_rec_pct} />
-      </div>
+      <Item label="Hoje">
+        <strong>{fmtBRL(today.monthly_brl)}</strong>
+        {mult(today.nodes, today.monthly_brl)}
+      </Item>
+      <Item label="Com esta VM (mesma capacidade)" title="Nodes desta VM que entregam a mesma capacidade que os nodes de hoje entregam">
+        <strong>{fmtBRL(s.cost_equiv_brl)}</strong>
+        {mult(s.nodes_equiv, s.cost_equiv_brl)}
+      </Item>
+      <Item label="Diferença">
+        <Delta brl={s.delta_today_equiv_brl} pct={s.delta_today_equiv_pct} />
+      </Item>
+      <Item label="Reduzindo requests (opcional)" title="Além de trocar a VM, reduzir os requests ao uso real (CPU = P95 × 1,2). Só vale se você ajustar os requests dos workloads.">
+        <span className="text-[11px] text-muted-foreground">{s.nodes_recommended} nodes · {fmtBRL(s.cost_recommended_brl)}</span>
+        <div><Delta brl={s.delta_today_rec_brl} pct={s.delta_today_rec_pct} /></div>
+      </Item>
       {cov && cov.effective_monthly_brl > 0 && (
-        <div className="mt-1 border-t border-border/50 pt-1 space-y-0.5" title="Custo amortizado: o que o Cost Management atribui ao pool, com a reserva/Savings Plan diluídos no período">
+        <div className="space-y-1.5 border-t border-border/50 pt-1.5" title="Custo amortizado: o que o Cost Management atribui ao pool, com a reserva/Savings Plan diluídos no período">
           <div className="text-[11px] font-medium text-violet-600 dark:text-violet-400">Amortizado (reserva / Savings Plan)</div>
-          <div><span className="text-muted-foreground">hoje </span>{fmtBRL(cov.effective_monthly_brl)}{today.nodes > 0 && <span className="text-[11px] text-muted-foreground"> ({today.nodes} × {fmtBRL(cov.effective_monthly_brl / today.nodes)})</span>}</div>
+          <Item label="Hoje">
+            <strong>{fmtBRL(cov.effective_monthly_brl)}</strong>
+            {today.nodes > 0 && mult(today.nodes, cov.effective_monthly_brl)}
+          </Item>
           {s.coverage ? (<>
-            <div><span className="text-muted-foreground">com esta VM </span>pior {fmtBRL(s.coverage.worst_monthly_brl)} · melhor {fmtBRL(s.coverage.best_monthly_brl)}</div>
-            <div><span className="text-muted-foreground">pior caso </span><Delta brl={-s.coverage.worst_savings_brl} pct={s.coverage.worst_delta_pct} /></div>
-            <div><span className="text-muted-foreground">melhor caso </span><Delta brl={-s.coverage.best_savings_brl} pct={s.coverage.best_delta_pct} /></div>
+            <Item label="Com esta VM">
+              <div>pior {fmtBRL(s.coverage.worst_monthly_brl)}</div>
+              <div>melhor {fmtBRL(s.coverage.best_monthly_brl)}</div>
+            </Item>
+            <Item label="Pior caso"><Delta brl={-s.coverage.worst_savings_brl} pct={s.coverage.worst_delta_pct} /></Item>
+            <Item label="Melhor caso"><Delta brl={-s.coverage.best_savings_brl} pct={s.coverage.best_delta_pct} /></Item>
           </>) : <div className="text-[11px] text-muted-foreground">sem cenário amortizado para esta VM{cov.note ? " (ver aviso acima)" : ""}</div>}
         </div>
       )}
@@ -322,7 +349,7 @@ function SimulationTable({ sims, coverage, inputs }: { sims: DeepSimulation[]; c
     const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_equiv_brl);
     return ok.sort((a, b) => key(a) - key(b))[0]?.vm_size;
   }, [sims, covOK]);
-  const colCount = covOK ? 9 : 7;
+  const colCount = 7;
 
   // Células em duas linhas (valor principal + detalhe), sem whitespace-nowrap nas longas: a tabela precisa
   // caber na largura do modal. Observações longas (notas de reserva) ficam na linha expandida.
@@ -396,10 +423,6 @@ function SimulationTable({ sims, coverage, inputs }: { sims: DeepSimulation[]; c
           <TableHead title="Quantos nodes desta VM entregam a mesma capacidade (alocável de CPU e memória, e pods) que os nodes de hoje entregam">Mesma capacidade de hoje<div className="text-[10px] font-normal text-muted-foreground">nodes que substituem os de hoje</div></TableHead>
           <TableHead title="Opcional: além de trocar a VM, reduzir os requests ao uso real (CPU = P95 × 1,2, mínimo 50m; memória = o maior entre P95 e uso atual × 1,2)">Reduzindo requests (opcional)<div className="text-[10px] font-normal text-muted-foreground">ajustados ao uso real · tabela</div></TableHead>
           <TableHead title="Custo do node pool hoje (nodes atuais × preço de tabela) contra o custo com esta VM: pool inteiro, por mês, com a diferença em R$ e em %">Pool hoje × com esta VM<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-          {covOK ? (<>
-            <TableHead>Custo amortizado<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-            <TableHead>Economia amortizada<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-          </>) : null}
           <TableHead className="w-[1%]" />
         </TableRow>
       </TableHeader>
@@ -459,20 +482,6 @@ function SimulationTable({ sims, coverage, inputs }: { sims: DeepSimulation[]; c
                 <TableCell>{equivCell(s)}</TableCell>
                 <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended, s.calc_recommended, inputs?.recommended, { nodes: s.nodes_recommended_obs, cost: s.cost_recommended_obs_brl })}</TableCell>
                 <TableCell><TodayCell s={s} today={inputs?.pool_today} cov={coverage} /></TableCell>
-                {covOK ? (<>
-                  <TableCell>
-                    {s.coverage ? (<>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span>{fmtBRL(s.coverage.worst_monthly_brl)}</div>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span>{fmtBRL(s.coverage.best_monthly_brl)}</div>
-                    </>) : "—"}
-                  </TableCell>
-                  <TableCell>
-                    {s.coverage ? (<>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span><SignedBRL v={s.coverage.worst_savings_brl} /> <span className="text-[11px] text-muted-foreground">({pctStr(-s.coverage.worst_delta_pct)})</span></div>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span><SignedBRL v={s.coverage.best_savings_brl} /> <span className="text-[11px] text-muted-foreground">({pctStr(-s.coverage.best_delta_pct)})</span></div>
-                    </>) : "—"}
-                  </TableCell>
-                </>) : null}
                 <TableCell>
                   {nDetails > 0 && (
                     <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => toggle(s.vm_size)} title="Justificativa e observações">
@@ -563,7 +572,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
 
   return (
     <Dialog open onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-7xl max-h-[92vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[96vw] max-w-[96vw] max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base flex-wrap">
             <Microscope className="h-4 w-4 text-indigo-500" />
