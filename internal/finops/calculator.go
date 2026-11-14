@@ -101,11 +101,14 @@ func (c *Calculator) WithPrometheusURL(url string, requiresGCPAuth bool) *Calcul
 // BuildReport gera o relatório FinOps para o cluster.
 // dtEnricher: fonte primária de métricas históricas (Dynatrace). Pode ser nil.
 // enricher:   fonte secundária (Prometheus). Usado como fallback quando DT não tem dados
-//             para um workload, ou quando dtEnricher é nil.
+//
+//	para um workload, ou quando dtEnricher é nil.
+//
 // metricsClient: opcional (pode ser nil) — quando presente, popula CPUCurrentMillis/MemCurrentMi
-//                por workload (live, via metrics-server) e FinOpsReport.NodeUsage (current+top
-//                por node, ver live_metrics.go). Sem ele, o relatório funciona exatamente como
-//                antes (só uso histórico via Prometheus/Dynatrace), sem os campos "current".
+//
+//	por workload (live, via metrics-server) e FinOpsReport.NodeUsage (current+top
+//	por node, ver live_metrics.go). Sem ele, o relatório funciona exatamente como
+//	antes (só uso histórico via Prometheus/Dynatrace), sem os campos "current".
 func (c *Calculator) BuildReport(
 	ctx context.Context,
 	cluster string,
@@ -425,6 +428,7 @@ const (
 //   - EKS: preço linear USD/GB/mês (AWSPricer.GetDiskPricePerGBMonth), mas sempre com os defaults
 //     acima (defaultEKSDiskSizeGB/gp3) — diferente do GKE, o tamanho/tipo reais de EBS não são
 //     capturados nesta fase (não validado ao vivo contra conta AWS real, ver CLAUDE.md).
+//
 // osDiskCostForPool despacha a precificação de disco OS por cloud provider. Bug real corrigido
 // (FINOPS-IMPROVEMENTS-PLAN.md F0.3): a versão anterior decidia o provider via
 // `strings.HasPrefix(cluster, "gke_"/"arn:aws:eks:")` — o resto do pacote (`pricerForCluster`,

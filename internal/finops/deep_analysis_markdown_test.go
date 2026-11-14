@@ -61,7 +61,7 @@ func TestRenderDeepAnalysisMarkdownComReserva(t *testing.T) {
 	in.ExchangeRate = 4.99
 	in.SKUHints = map[string]*SKUCoverageHint{"standard_d4s_v5": {Kind: HintKindSavingsPlan, Scope: HintScopeSKU, Note: "Standard_D4s_v5 já roda sob Savings Plan na frota."}}
 	md := RenderDeepAnalysisMarkdown(BuildPoolDeepAnalysis(in))
-	for _, want := range []string{"| **Custo efetivo** |", "% reserva", "**Com a reserva do pool:**", "Custo efetivo (pior / melhor)", "Economia efetiva (pior / melhor)", "🏷️ Standard_D4s_v5 já roda sob Savings Plan"} {
+	for _, want := range []string{"| **Custo efetivo** |", "% reserva", "**Com a reserva do pool:**", "Custo efetivo do pool/mês (pior / melhor)", "Economia efetiva do pool/mês (pior / melhor)", "🏷️ Standard_D4s_v5 já roda sob Savings Plan"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("relatório sem %q", want)
 		}

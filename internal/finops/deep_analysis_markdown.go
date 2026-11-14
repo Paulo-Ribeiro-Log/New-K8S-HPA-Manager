@@ -160,12 +160,19 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 	// 8. Simulação
 	if len(a.Simulation) > 0 {
 		w("## 8. Simulação de VMs\n\n")
-		w("Nodes necessários por SKU, com %.0f%% de ocupação-alvo, descontando o custo fixo de DaemonSets, mínimo de %d nodes (ou nº de zonas). "+
-			"**Requests atuais** = só troca a VM; **recomendados** = depois do ajuste de requests.", a.Headroom*100, deepMinNodes)
+		w("**Todos os valores em R$ são do pool inteiro, por mês** (nodes × preço de um node × 730 h), não de um node; cada célula traz o preço de um node e a multiplicação.\n\n")
+		w("Nodes necessários por SKU, com %.0f%% de ocupação dos nodes (o que sobra depois dos DaemonSets), descontando o custo fixo de DaemonSets, mínimo de %d nodes (ou nº de zonas). "+
+			"**Requests atuais** = só troca a VM; **recomendados** = depois do ajuste de requests. \"vs atual\" compara com a VM atual do pool, no mesmo cenário e na mesma ocupação.", a.Headroom*100, deepMinNodes)
 		if a.SKUCatalogStatus != "" {
 			w(" Catálogo de SKUs da região: %s.", mdCatalogLabel(a.SKUCatalogStatus))
 		}
 		w("\n\n")
+		si := a.SimulationInputs
+		w("**Base do cálculo:** requests do pool atuais %s CPU / %s e %d pods; recomendados %s CPU / %s e %d pods. Limite de **%d pods por node** (%.0f já ocupados por DaemonSets), DaemonSets gastam %s CPU e %s por node, mínimo de %d nodes. "+
+			"Nodes por recurso = demanda ÷ (livre por node × %.0f%%); o maior dos três (CPU, memória, pods) define o resultado.\n\n",
+			mdCores(si.Current.CPUMillis), mdGib(si.Current.MemMi), si.Current.Pods, mdCores(si.Recommended.CPUMillis), mdGib(si.Recommended.MemMi), si.Recommended.Pods,
+			si.MaxPodsPerNode, si.DSPods, mdCores(si.DSCPUMillis), mdGib(si.DSMemMi), si.MinNodes, si.Headroom*100)
+		writeInventoryAndFit(w, a)
 		cov := a.Overview.Coverage
 		covOK := cov != nil && cov.Computable
 		if covOK {
@@ -176,9 +183,9 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			w("**Reserva/Savings Plan:** %s\n\n", cov.Note)
 		}
 		if covOK {
-			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais | Requests recomendados (tabela) | Custo efetivo (pior / melhor) | Economia efetiva (pior / melhor) | Observações |\n|---|---|---|---|---|---|---|---|---|\n")
+			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais (pool/mês) | Requests recomendados (tabela, pool/mês) | Custo efetivo do pool/mês (pior / melhor) | Economia efetiva do pool/mês (pior / melhor) | Observações |\n|---|---|---|---|---|---|---|---|---|\n")
 		} else {
-			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais | Requests recomendados | Economia/mês | Observações |\n|---|---|---|---|---|---|---|---|\n")
+			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais (pool/mês) | Requests recomendados (pool/mês) | Economia do pool vs atual/mês | Observações |\n|---|---|---|---|---|---|---|---|\n")
 		}
 		for _, s := range a.Simulation {
 			name := "`" + s.VMSize + "`"
@@ -198,8 +205,8 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			}
 			base := fmt.Sprintf("| %s | %d / %d | %s | %s / %s%s | %s | %s", name, s.VCPU, s.MemGB, cpu,
 				mdCores(s.AllocCPUMillis), mdGib(s.AllocMemMi), mdIfStr(s.AllocEstimated, " (est.)"),
-				mdSimCell(s.Feasible, s.NodesCurrentReq, s.CostCurrentReqBRL, s.LimitingCurrentReq, s.PriceUSDHour),
-				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour))
+				mdSimCell(s.Feasible, s.NodesCurrentReq, s.CostCurrentReqBRL, s.LimitingCurrentReq, s.PriceUSDHour, s.CalcCurrentReq)+mdVsCurrent(s, s.NodesDeltaCurrentReq, s.SavingsVsCurrentReqBRL),
+				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour, s.CalcRecommended)+mdVsCurrent(s, s.NodesDeltaRecommended, s.SavingsVsCurrentRecBRL))
 			if covOK {
 				eff, sav := "—", "—"
 				if c := s.Coverage; c != nil {
@@ -212,6 +219,7 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			}
 		}
 		w("\n")
+		writeJustifications(w, a.Simulation)
 	}
 
 	if len(a.Warnings) > 0 {
@@ -430,13 +438,13 @@ func deepSources(a PoolDeepAnalysis) string {
 
 var deepLimitingLabels = map[string]string{"cpu": "CPU", "memory": "memória", "pods": "pods", "min_nodes": "mínimo"}
 
-func mdSimCell(feasible bool, nodes int, cost float64, limiting string, price float64) string {
+func mdSimCell(feasible bool, nodes int, cost float64, limiting string, price float64, calc DeepNodeCalc) string {
 	if !feasible || nodes == 0 {
 		return "não comporta"
 	}
-	s := fmt.Sprintf("%d nodes", nodes)
+	s := fmt.Sprintf("%d nodes [CPU %d · mem %d · pods %d]", nodes, calc.ByCPU, calc.ByMem, calc.ByPods)
 	if price > 0 {
-		s += fmt.Sprintf(", R$ %s", mdBrl(cost))
+		s += fmt.Sprintf(", R$ %s/node × %d = R$ %s/mês", mdBrl(cost/float64(nodes)), nodes, mdBrl(cost))
 	}
 	if l := deepLimitingLabels[limiting]; l != "" {
 		s += " (" + l + ")"
@@ -444,14 +452,115 @@ func mdSimCell(feasible bool, nodes int, cost float64, limiting string, price fl
 	return s
 }
 
+// writeInventoryAndFit lista o que roda hoje no pool e, por SKU, o que cabe em um node e quanto dele fica ocupado.
+func writeInventoryAndFit(w func(string, ...interface{}), a PoolDeepAnalysis) {
+	inv := a.SimulationInputs.Inventory
+	var kinds []string
+	for _, k := range inv.Kinds {
+		kinds = append(kinds, fmt.Sprintf("%d %s (%d pods)", k.Workloads, k.Kind, k.Pods))
+	}
+	w("**Hoje no pool:** %s", mdDash(strings.Join(kinds, " · ")))
+	if inv.DaemonSets > 0 {
+		w(" · %d DaemonSets (%.0f pods por node)", inv.DaemonSets, inv.DSPodsPerNode)
+	}
+	w(" · %d pods em %d nodes", inv.TotalPods, inv.Nodes)
+	if inv.AvgPodsNode > 0 {
+		w(" (média de %.0f pods, %.0f%% da CPU e %.0f%% da memória reservados por node)", inv.AvgPodsNode, inv.AvgCPUReqPct, inv.AvgMemReqPct)
+	}
+	w(".")
+	if inv.BiggestPod != "" {
+		w(" Maior pod: `%s` (%s CPU, %s); pod médio %s CPU, %s.", inv.BiggestPod, mdCores(inv.BiggestPodCPU), mdGib(inv.BiggestPodMemMi), mdCores(inv.AvgPodCPUMillis), mdGib(inv.AvgPodMemMi))
+	}
+	w("\n\n")
+	any := false
+	for _, s := range a.Simulation {
+		if s.Fit != nil {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return
+	}
+	w("**O que cabe em 1 node de cada VM** (pod médio do pool; ocupação com os nodes recomendados):\n\n")
+	w("| VM | DaemonSets (pods · CPU · mem) | Pods que cabem (CPU / mem / limite) | Maior pod: cabem | Ocupação do node (CPU · mem · pods) |\n|---|---|---|---|---|\n")
+	for _, s := range a.Simulation {
+		f := s.Fit
+		if f == nil {
+			continue
+		}
+		name := "`" + s.VMSize + "`"
+		if s.IsCurrent {
+			name += " **(atual)**"
+		}
+		w("| %s | %.0f · %.1f%% · %.1f%% | **%d** (%d / %d / %d) | %d | %.0f%% · %.0f%% · %.0f%% |\n",
+			name, f.DSPods, f.DSCPUPct, f.DSMemPct, f.PodsFit, f.PodsByCPU, f.PodsByMem, f.PodsByLimit, f.BiggestFits, f.OccCPUPct, f.OccMemPct, f.OccPodsPct)
+	}
+	w("\n")
+}
+
+var deepVerdictLabels = map[string]string{
+	VerdictJustified: "✅ justificada", VerdictConditional: "🟡 com ressalva", VerdictTechnical: "🔵 ganho técnico",
+	VerdictNotJustified: "⛔ não justificada", VerdictUnknown: "❔ sem dados",
+}
+
+// writeJustifications lista, por SKU candidata, por que trocar a VM atual (ou não). Só entram as que têm alguma
+// justificativa; as demais vão numa linha de contagem, para o relatório não virar uma lista de "nãos".
+func writeJustifications(w func(string, ...interface{}), sims []DeepSimulation) {
+	w("### Justificativa da troca de VM\n\n")
+	w("Cada SKU contra a **VM atual**, com requests recomendados e a mesma ocupação: economia (tabela, reserva ou Savings Plan) e ganhos para os workloads.\n\n")
+	shown, rest := 0, 0
+	for _, s := range sims {
+		j := s.Justification
+		if j == nil || s.IsCurrent {
+			continue
+		}
+		if j.Verdict != VerdictJustified && j.Verdict != VerdictConditional && j.Verdict != VerdictTechnical {
+			rest++
+			continue
+		}
+		if shown >= 8 {
+			rest++
+			continue
+		}
+		shown++
+		w("**`%s`** — %s: %s\n\n", s.VMSize, deepVerdictLabels[j.Verdict], j.Headline)
+		for _, p := range j.Pros {
+			w("- ✔ %s\n", p)
+		}
+		for _, c := range j.Cons {
+			w("- ⚠ %s\n", c)
+		}
+		w("\n")
+	}
+	if shown == 0 {
+		w("Nenhuma SKU candidata se justifica contra a VM atual (sem economia que se sustente e sem ganho mensurável para os workloads).\n\n")
+	}
+	if rest > 0 {
+		w("_%d SKU(s) sem justificativa (mais caras sem ganho, indisponíveis ou sem preço) não foram listadas._\n\n", rest)
+	}
+}
+
+// mdVsCurrent é o complemento da célula de nodes: diferença de nodes e de custo em relação à VM atual.
+func mdVsCurrent(s DeepSimulation, nodesDelta int, savings float64) string {
+	if !s.VsCurrentOK {
+		return ""
+	}
+	return fmt.Sprintf(" — vs atual (pool): %+d nodes, %s/mês", nodesDelta, mdSignedBRL(savings))
+}
+
+// mdSavingsCell: economia mensal da troca de VM contra a VM atual (mesma ocupação, requests recomendados).
 func mdSavingsCell(s DeepSimulation) string {
-	if !s.Feasible || s.PriceUSDHour <= 0 {
+	if s.IsCurrent {
+		return "base da comparação"
+	}
+	if !s.VsCurrentOK {
 		return "—"
 	}
-	if s.SavingsRecommendedBRL >= 0 {
-		return "R$ " + mdBrl(s.SavingsRecommendedBRL)
+	if s.SavingsVsCurrentRecBRL >= 0 {
+		return "R$ " + mdBrl(s.SavingsVsCurrentRecBRL)
 	}
-	return "+R$ " + mdBrl(-s.SavingsRecommendedBRL) + " (custo maior)"
+	return "+R$ " + mdBrl(-s.SavingsVsCurrentRecBRL) + " (custo maior)"
 }
 
 func mdCatalogLabel(st string) string {

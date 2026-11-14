@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   AlertTriangle, ChevronDown, ChevronUp, Download, Info, Loader2, Microscope, OctagonAlert, RefreshCw,
@@ -17,7 +16,7 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL, fmtMi, fmtMillis } from "@/lib/finopsFormat";
 import type {
-  DeepCoverage, DeepFinding, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
+  DeepCoverage, DeepDemand, DeepFinding, DeepNodeCalc, DeepNodeFit, DeepSimulationInputs, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
 } from "@/types/finopsDeepAnalysis";
 
 type Section = "summary" | "allocation" | "daemonsets" | "workloads" | "hpa" | "simulation";
@@ -152,6 +151,52 @@ function SignedBRL({ v }: { v: number }) {
     : <span className="text-red-600 dark:text-red-400">+{fmtBRL(-v)}</span>;
 }
 
+const VERDICT_UI: Record<string, { label: string; cls: string }> = {
+  justified: { label: "justificada", cls: "border-emerald-500 text-emerald-600 dark:text-emerald-400" },
+  conditional: { label: "com ressalva", cls: "border-amber-500 text-amber-600 dark:text-amber-400" },
+  technical: { label: "ganho técnico", cls: "border-sky-500 text-sky-600 dark:text-sky-400" },
+  not_justified: { label: "não justificada", cls: "border-red-500/60 text-red-600 dark:text-red-400" },
+  unknown: { label: "sem dados", cls: "border-muted-foreground text-muted-foreground" },
+};
+
+function FitDetails({ f }: { f: DeepNodeFit }) {
+  return (
+    <div className="mb-2 rounded border bg-muted/20 p-2 text-[11px] space-y-0.5">
+      <div className="font-medium text-xs">O que cabe em 1 node desta VM</div>
+      <div>DaemonSets: <strong>{Math.round(f.ds_pods)} pods</strong> fixos, ocupando {f.ds_cpu_pct.toFixed(1)}% da CPU e {f.ds_mem_pct.toFixed(1)}% da memória do node.</div>
+      <div>Pods de aplicação (pod médio do pool): cabem <strong>{f.pods_fit}</strong> por node — {f.pods_by_cpu} pela CPU · {f.pods_by_mem} pela memória · {f.pods_by_limit} pelo limite de pods (limitado por <strong>{LIMITING[f.fit_limiting] ?? f.fit_limiting}</strong>).</div>
+      {f.biggest_fits > 0 || f.biggest_pct_cpu > 0 ? (
+        <div>O maior pod ocupa {f.biggest_pct_cpu.toFixed(0)}% da CPU e {f.biggest_pct_mem.toFixed(0)}% da memória de um node; cabem <strong>{f.biggest_fits}</strong> iguais a ele.</div>
+      ) : null}
+      <div>Com os nodes recomendados, cada node recebe ~{f.pods_per_node.toFixed(0)} pods de aplicação e fica com <strong>{f.occ_cpu_pct.toFixed(0)}%</strong> da CPU · <strong>{f.occ_mem_pct.toFixed(0)}%</strong> da memória · <strong>{f.occ_pods_pct.toFixed(0)}%</strong> do limite de pods reservados.</div>
+    </div>
+  );
+}
+
+function SimulationBasis({ inp }: { inp: DeepSimulationInputs }) {
+  const row = (label: string, d: DeepDemand) => (
+    <div><span className="text-muted-foreground">{label}:</span> {cores(d.cpu_millis)} CPU · {gib(d.mem_mi)} · {d.pods} pods</div>
+  );
+  return (
+    <div className="rounded-md border bg-muted/30 p-2.5 text-xs space-y-0.5">
+      <div className="font-medium">Base do cálculo</div>
+      {row("Requests atuais do pool", inp.current)}
+      {row("Requests recomendados", inp.recommended)}
+      <div><span className="text-muted-foreground">Limite por node:</span> <strong>{inp.max_pods_per_node} pods</strong> ({Math.round(inp.ds_pods)} já ocupados por DaemonSets) · <span className="text-muted-foreground">DaemonSets por node:</span> {cores(inp.ds_cpu_millis)} CPU · {gib(inp.ds_mem_mi)} · <span className="text-muted-foreground">mínimo:</span> {inp.min_nodes} nodes</div>
+      <div>
+        <span className="text-muted-foreground">Hoje no pool:</span> {inp.inventory.kinds.map(k => `${k.workloads} ${k.kind}${k.workloads > 1 ? "s" : ""} (${k.pods} pods)`).join(" · ")}
+        {inp.inventory.daemonsets > 0 && <> · {inp.inventory.daemonsets} DaemonSets ({Math.round(inp.inventory.ds_pods_per_node)} pods por node)</>}
+        {" "}· {inp.inventory.total_pods} pods em {inp.inventory.nodes} nodes
+        {inp.inventory.avg_pods_per_node > 0 && <> (média {inp.inventory.avg_pods_per_node.toFixed(0)} pods, {inp.inventory.avg_cpu_req_pct.toFixed(0)}% de CPU e {inp.inventory.avg_mem_req_pct.toFixed(0)}% de memória reservados por node)</>}
+      </div>
+      {inp.inventory.biggest_pod && (
+        <div><span className="text-muted-foreground">Maior pod:</span> <span className="font-mono">{inp.inventory.biggest_pod}</span> ({cores(inp.inventory.biggest_pod_cpu_millis ?? 0)} CPU · {gib(inp.inventory.biggest_pod_mem_mi ?? 0)}) · pod médio {cores(inp.inventory.avg_pod_cpu_millis)} CPU · {gib(inp.inventory.avg_pod_mem_mi)}</div>
+      )}
+      <div className="text-[11px] text-muted-foreground">Nodes por recurso = demanda ÷ (livre por node × {Math.round(inp.headroom * 100)}%), arredondado para cima; o maior entre CPU, memória e pods define o resultado.</div>
+    </div>
+  );
+}
+
 function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?: DeepCoverage }) {
   const covOK = !!coverage?.computable;
   const [open, setOpen] = useState<Set<string>>(new Set());
@@ -161,7 +206,8 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
     return next;
   });
   const best = useMemo(() => {
-    const ok = sims.filter(s => !s.is_current && s.feasible && s.available && s.price_usd_hour > 0 && s.node_loss_impact_pct <= 15);
+    const ok = sims.filter(s => !s.is_current && s.feasible && s.available && s.price_usd_hour > 0 && s.node_loss_impact_pct <= 15
+      && (s.justification?.verdict === "justified" || s.justification?.verdict === "conditional"));
     // Com reserva no pool, decide pela economia efetiva no pior caso; senão, pelo custo de tabela.
     const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_recommended_brl);
     return ok.sort((a, b) => key(a) - key(b))[0]?.vm_size;
@@ -170,14 +216,25 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
 
   // Células em duas linhas (valor principal + detalhe), sem whitespace-nowrap nas longas: a tabela precisa
   // caber na largura do modal. Observações longas (notas de reserva) ficam na linha expandida.
-  const nodesCell = (s: DeepSimulation, n: number, cost: number, lim: string) => {
+  const nodesCell = (s: DeepSimulation, n: number, cost: number, lim: string, nodesDelta: number, savings: number, calc: DeepNodeCalc) => {
     if (!s.feasible || n === 0) return <span className="text-muted-foreground">não comporta</span>;
     return (
       <>
         <div className="font-medium">{n} nodes</div>
         <div className="text-[11px] text-muted-foreground">
-          {s.price_usd_hour > 0 ? fmtBRL(cost) : "sem preço"} · {LIMITING[lim] ?? lim}
+          {s.price_usd_hour > 0 ? <>{fmtBRL(cost / n)}/node × {n} = <strong className="text-foreground">{fmtBRL(cost)}/mês</strong></> : "sem preço"} · {LIMITING[lim] ?? lim}
         </div>
+        <div className="text-[11px] whitespace-nowrap text-muted-foreground" title="Nodes que cada recurso exigiria sozinho; o maior define o resultado (mínimo de 3 nodes ou nº de zonas)">
+          <span className={lim === "cpu" ? "font-semibold text-foreground" : ""}>CPU {calc.by_cpu}</span> ·{" "}
+          <span className={lim === "memory" ? "font-semibold text-foreground" : ""}>mem {calc.by_mem}</span> ·{" "}
+          <span className={lim === "pods" ? "font-semibold text-foreground" : ""}>pods {calc.by_pods}</span>
+        </div>
+        {s.vs_current_ok && (
+          <div className="text-[11px] whitespace-nowrap" title="Diferença contra a VM atual, no mesmo cenário e na mesma ocupação">
+            <span className="text-muted-foreground">vs atual (pool): </span>
+            {nodesDelta > 0 ? "+" : ""}{nodesDelta} nodes · <SignedBRL v={savings} />/mês
+          </div>
+        )}
       </>
     );
   };
@@ -189,12 +246,12 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
           <TableHead>VM</TableHead>
           <TableHead>Configuração</TableHead>
           <TableHead>Alocável/node</TableHead>
-          <TableHead>Requests atuais</TableHead>
-          <TableHead>Requests recomendados{covOK && " (tabela)"}</TableHead>
+          <TableHead>Requests atuais<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
+          <TableHead>Requests recomendados{covOK && " (tabela)"}<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
           {covOK ? (<>
-            <TableHead>Custo efetivo</TableHead>
-            <TableHead>Economia efetiva</TableHead>
-          </>) : <TableHead>Economia/mês</TableHead>}
+            <TableHead>Custo efetivo<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
+            <TableHead>Economia efetiva<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
+          </>) : <TableHead title="Economia mensal da troca de VM contra a VM atual (requests recomendados, mesma ocupação)">Economia vs atual<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>}
           <TableHead className="w-[1%]" />
         </TableRow>
       </TableHeader>
@@ -206,12 +263,20 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
             ...(covOK && s.coverage ? [s.coverage.note] : []),
           ];
           const isOpen = open.has(s.vm_size);
+          const just = s.justification;
+          const nDetails = notes.length + (just ? just.pros.length + just.cons.length : 0) + (s.fit ? 1 : 0);
           const rowCls = s.is_current ? "bg-muted/40" : !s.available ? "opacity-50" : s.vm_size === best ? "bg-emerald-500/5" : "";
           return (
             <Fragment key={s.vm_size}>
               <TableRow key={s.vm_size} className={`${rowCls} align-top`}>
                 <TableCell>
                   <div className="font-mono whitespace-nowrap">{s.vm_size}</div>
+                  {just && !s.is_current && VERDICT_UI[just.verdict] && (
+                    <div className="mt-1 max-w-[16rem]">
+                      <Badge variant="outline" className={`text-[10px] ${VERDICT_UI[just.verdict].cls}`}>{VERDICT_UI[just.verdict].label}</Badge>
+                      <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{just.headline}</div>
+                    </div>
+                  )}
                   {(s.is_current || s.vm_size === best || (s.catalog_known && !s.available) || s.reserved_hint) && (
                     <div className="flex flex-wrap gap-1 mt-1">
                       {s.is_current && <Badge variant="outline" className="text-[10px]">atual</Badge>}
@@ -238,10 +303,13 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
                 <TableCell>
                   <div className="whitespace-nowrap">{cores(s.alloc_cpu_millis)}</div>
                   <div className="whitespace-nowrap">{gib(s.alloc_mem_mi)}</div>
+                  <div className="text-[11px] text-muted-foreground whitespace-nowrap" title="Livre por node depois dos DaemonSets: é a base do cálculo de nodes">
+                    livre {cores(s.free_cpu_millis)} · {gib(s.free_mem_mi)} · {Math.round(s.free_pods)} pods
+                  </div>
                   {s.alloc_estimated && <div className="text-[11px] text-muted-foreground">estimado</div>}
                 </TableCell>
-                <TableCell>{nodesCell(s, s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req)}</TableCell>
-                <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended)}</TableCell>
+                <TableCell>{nodesCell(s, s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req, s.nodes_delta_current_req, s.savings_vs_current_req_brl, s.calc_current_req)}</TableCell>
+                <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended, s.nodes_delta_recommended, s.savings_vs_current_rec_brl, s.calc_recommended)}</TableCell>
                 {covOK ? (<>
                   <TableCell>
                     {s.coverage ? (<>
@@ -256,13 +324,13 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
                     </>) : "—"}
                   </TableCell>
                 </>) : (
-                  <TableCell>{!s.feasible || s.price_usd_hour <= 0 ? "—" : <SignedBRL v={s.savings_recommended_brl} />}</TableCell>
+                  <TableCell>{s.is_current ? <span className="text-muted-foreground">base</span> : !s.vs_current_ok ? "—" : <SignedBRL v={s.savings_vs_current_rec_brl} />}</TableCell>
                 )}
                 <TableCell>
-                  {notes.length > 0 && (
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => toggle(s.vm_size)}>
+                  {nDetails > 0 && (
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => toggle(s.vm_size)} title="Justificativa e observações">
                       {isOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                      <span className="ml-1">{notes.length}</span>
+                      <span className="ml-1">{nDetails}</span>
                     </Button>
                   )}
                 </TableCell>
@@ -270,9 +338,18 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
               {isOpen && (
                 <TableRow key={`${s.vm_size}-notas`} className={rowCls}>
                   <TableCell colSpan={colCount} className="pt-0">
-                    <ul className="list-disc pl-5 space-y-0.5 text-[11px] text-muted-foreground">
-                      {notes.map(n => <li key={n}>{n}</li>)}
-                    </ul>
+                    {s.fit && <FitDetails f={s.fit} />}
+                    {just && (just.pros.length > 0 || just.cons.length > 0) && (
+                      <ul className="space-y-0.5 text-[11px] mb-1">
+                        {just.pros.map(p => <li key={p} className="text-emerald-700 dark:text-emerald-400">✔ {p}</li>)}
+                        {just.cons.map(c => <li key={c} className="text-amber-700 dark:text-amber-400">⚠ {c}</li>)}
+                      </ul>
+                    )}
+                    {notes.length > 0 && (
+                      <ul className="list-disc pl-5 space-y-0.5 text-[11px] text-muted-foreground">
+                        {notes.map(n => <li key={n}>{n}</li>)}
+                      </ul>
+                    )}
                   </TableCell>
                 </TableRow>
               )}
@@ -286,13 +363,12 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
 
 export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string; pool: string; onClose: () => void }) {
   const [section, setSection] = useState<Section>("summary");
-  const [headroom, setHeadroom] = useState("0.8");
   const [filter, setFilter] = useState("");
   const [exporting, setExporting] = useState(false);
 
   const { data, isFetching, error, refetch } = useQuery<PoolDeepAnalysis>({
-    queryKey: ["finops-deep-analysis", cluster, pool, headroom],
-    queryFn: () => apiClient.getFinOpsDeepAnalysis(cluster, pool, Number(headroom)),
+    queryKey: ["finops-deep-analysis", cluster, pool],
+    queryFn: () => apiClient.getFinOpsDeepAnalysis(cluster, pool),
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
@@ -300,7 +376,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
   const exportMarkdown = async () => {
     setExporting(true);
     try {
-      const md = await apiClient.getFinOpsDeepAnalysisMarkdown(cluster, pool, Number(headroom));
+      const md = await apiClient.getFinOpsDeepAnalysisMarkdown(cluster, pool);
       const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
       const a = document.createElement("a");
       const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -349,15 +425,6 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Ocupação-alvo na simulação:</span>
-          <Select value={headroom} onValueChange={setHeadroom}>
-            <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="0.7">70%</SelectItem>
-              <SelectItem value="0.8">80%</SelectItem>
-              <SelectItem value="0.9">90%</SelectItem>
-            </SelectContent>
-          </Select>
           <Button size="sm" variant="outline" className="h-7" onClick={() => refetch()} disabled={isFetching}>
             <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching ? "animate-spin" : ""}`} /> Atualizar
           </Button>
@@ -616,8 +683,8 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
             {section === "simulation" && (
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">
-                  Nodes necessários por SKU com {Math.round(data.headroom * 100)}% de ocupação-alvo, descontando o custo fixo de DaemonSets e com no mínimo 3 nodes.
-                  <strong> Requests atuais</strong> = só trocar a VM; <strong>recomendados</strong> = depois do ajuste de requests.
+                  Nodes necessários por SKU com {Math.round(data.headroom * 100)}% de ocupação dos nodes (o que sobra depois dos DaemonSets), com no mínimo 3 nodes.
+                  <strong> Requests atuais</strong> = só trocar a VM; <strong>recomendados</strong> = depois do ajuste de requests. "<strong>vs atual</strong>" compara cada SKU com a VM atual do pool, no mesmo cenário e na mesma ocupação (a linha "atual" é a base).
                   Alocável "(est.)" vem da fórmula de reserva da AKS. Preços de tabela sob demanda.
                   {data.sku_catalog_status === "loading" && " Catálogo de SKUs da região ainda carregando: disponibilidade não verificada."}
                 </p>
@@ -633,6 +700,10 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                 {ov.coverage && !ov.coverage.computable && ov.coverage.note && (
                   <Alert><AlertDescription className="text-xs"><strong>Reserva/Savings Plan:</strong> {ov.coverage.note}</AlertDescription></Alert>
                 )}
+                <p className="text-xs rounded-md border border-sky-500/30 bg-sky-500/5 px-2.5 py-1.5">
+                  <strong>Todos os valores em R$ são do pool inteiro, por mês</strong> (nodes × preço de um node × 730 h), não de um node. Em cada célula aparece o preço de <em>um</em> node e a multiplicação; "vs atual (pool)" é a diferença do pool inteiro contra o pool na VM atual.
+                </p>
+                {data.simulation_inputs && <SimulationBasis inp={data.simulation_inputs} />}
                 <SimulationTable sims={data.simulation} coverage={ov.coverage} />
               </div>
             )}

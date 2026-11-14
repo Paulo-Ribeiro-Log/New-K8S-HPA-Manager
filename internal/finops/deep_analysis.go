@@ -15,8 +15,9 @@ import (
 // em deep_analysis_collect.go e a orquestração no handler, para a lógica ser testável com fixtures.
 
 const (
-	// DeepDefaultHeadroom é a ocupação-alvo dos nodes na simulação (80% do espaço livre).
-	DeepDefaultHeadroom = 0.80
+	// DeepDefaultHeadroom é a ocupação-alvo dos nodes na simulação: 100% do espaço livre (o que sobra depois dos
+	// DaemonSets), que é o cenário de uma troca de VM. Sem seletor na tela; o parâmetro da API segue aceito.
+	DeepDefaultHeadroom = 1.0
 	// deepMinNodes é o mínimo de nodes sugerido para um pool de produção (perder 1 node = 1/3).
 	deepMinNodes = 3
 	// deepMinCPURecMillis é o piso do request de CPU recomendado.
@@ -152,10 +153,12 @@ type PoolDeepAnalysis struct {
 	DaemonSets  DeepDaemonSetOverhead `json:"daemonsets"`
 	Workloads   []DeepWorkloadRow     `json:"workloads"`
 	Simulation  []DeepSimulation      `json:"simulation"`
-	Headroom    float64               `json:"headroom"`
-	Findings    []DeepFinding         `json:"findings"`
-	History     DeepHistoryMeta       `json:"history"`
-	MetricsLive bool                  `json:"metrics_live"`
+	// SimulationInputs: o que alimenta a simulação (demanda do pool, limite de pods por node, DaemonSets por node).
+	SimulationInputs DeepSimulationInputs `json:"simulation_inputs"`
+	Headroom         float64              `json:"headroom"`
+	Findings         []DeepFinding        `json:"findings"`
+	History          DeepHistoryMeta      `json:"history"`
+	MetricsLive      bool                 `json:"metrics_live"`
 	// ThrottleWindowDays: janela do P95 de throttling (0 = não coletado).
 	ThrottleWindowDays int `json:"throttle_window_days"`
 	// Catálogo de capacidades de SKU usado na simulação.
@@ -334,16 +337,31 @@ type DeepSimulation struct {
 	PriceUSDHour   float64 `json:"price_usd_hour"`
 	PriceSource    string  `json:"price_source,omitempty"`
 	// Cenário 1 — requests atuais (só troca a VM).
-	NodesCurrentReq    int     `json:"nodes_current_req"`
-	CostCurrentReqBRL  float64 `json:"cost_current_req_brl"`
-	LimitingCurrentReq string  `json:"limiting_current_req"`
+	NodesCurrentReq    int          `json:"nodes_current_req"`
+	CalcCurrentReq     DeepNodeCalc `json:"calc_current_req"`
+	CostCurrentReqBRL  float64      `json:"cost_current_req_brl"`
+	LimitingCurrentReq string       `json:"limiting_current_req"`
 	// Cenário 2 — requests recomendados (depois do right-sizing).
-	NodesRecommended      int     `json:"nodes_recommended"`
-	CostRecommendedBRL    float64 `json:"cost_recommended_brl"`
-	LimitingRecommended   string  `json:"limiting_recommended"`
-	SavingsRecommendedBRL float64 `json:"savings_recommended_brl"`
-	NodeLossImpactPct     float64 `json:"node_loss_impact_pct"`
-	Feasible              bool    `json:"feasible"`
+	NodesRecommended int          `json:"nodes_recommended"`
+	CalcRecommended  DeepNodeCalc `json:"calc_recommended"`
+	// Livre por node depois dos DaemonSets (base do cálculo): CPU (m), memória (Mi) e vagas de pods.
+	FreeCPUMillis float64 `json:"free_cpu_millis"`
+	FreeMemMi     float64 `json:"free_mem_mi"`
+	FreePods      float64 `json:"free_pods"`
+	// Fit: o que cabe em UM node desta SKU e quanto dele fica ocupado (nil quando a SKU não comporta).
+	Fit                   *DeepNodeFit `json:"fit,omitempty"`
+	CostRecommendedBRL    float64      `json:"cost_recommended_brl"`
+	LimitingRecommended   string       `json:"limiting_recommended"`
+	SavingsRecommendedBRL float64      `json:"savings_recommended_brl"`
+	// Comparação com a VM ATUAL, no mesmo cenário e na mesma ocupação (a linha IsCurrent é a base). Só há valor
+	// quando esta SKU e a atual têm preço e comportam a demanda. Delta de nodes: negativo = menos nodes que a atual.
+	VsCurrentOK            bool    `json:"vs_current_ok"`
+	NodesDeltaCurrentReq   int     `json:"nodes_delta_current_req"`
+	NodesDeltaRecommended  int     `json:"nodes_delta_recommended"`
+	SavingsVsCurrentReqBRL float64 `json:"savings_vs_current_req_brl"`
+	SavingsVsCurrentRecBRL float64 `json:"savings_vs_current_rec_brl"`
+	NodeLossImpactPct      float64 `json:"node_loss_impact_pct"`
+	Feasible               bool    `json:"feasible"`
 	// Capacidades do catálogo (F3). CatalogKnown=false: catálogo não carregado (Available assume true).
 	CatalogKnown    bool     `json:"catalog_known"`
 	Available       bool     `json:"available"`
@@ -355,6 +373,8 @@ type DeepSimulation struct {
 	// ReservedHint: este SKU (ou a série) já roda sob reserva/Savings Plan na frota.
 	ReservedHint *SKUCoverageHint `json:"reserved_hint,omitempty"`
 	Notes        []string         `json:"notes"`
+	// Justification: por que trocar (ou não) a VM atual por esta SKU. Sempre contra a VM atual.
+	Justification *DeepJustification `json:"justification,omitempty"`
 }
 
 // DeepFinding é um achado do diagnóstico.
@@ -411,6 +431,7 @@ func BuildPoolDeepAnalysis(in DeepAnalysisInput) PoolDeepAnalysis {
 	out.DaemonSets = buildDeepDaemonSets(in, out.Overview.MonthlyCostBRL)
 	out.Workloads, out.History = buildDeepWorkloads(in, out.Allocation.CPU.Requests)
 	out.Simulation = buildDeepSimulation(in, out.Overview, out.DaemonSets, out.Workloads, headroom)
+	out.SimulationInputs = buildSimulationInputs(in, out.Overview, out.DaemonSets, out.Workloads, out.Nodes, headroom)
 	out.Findings = buildDeepFindings(out)
 
 	if !in.MetricsLive {
@@ -939,15 +960,27 @@ func deepDemands(in DeepAnalysisInput, workloads []DeepWorkloadRow) (current, re
 // nodesFor calcula os nodes necessários para uma demanda numa SKU com o alocável informado, já
 // descontado o custo fixo de DaemonSets. Devolve 0 quando a SKU não comporta nem os DaemonSets.
 func nodesFor(d deepDemand, allocCPU, allocMem float64, maxPods int, ds DeepDaemonSetOverhead, headroom float64, minNodes int) (int, string) {
-	freeCPU := allocCPU - ds.PerNodeCPUReqMillis
-	freeMem := allocMem - math.Max(ds.PerNodeMemReqMi, ds.PerNodeMemUsageMi)
-	freePods := float64(maxPods) - ds.PerNodePods
+	n, lim, _ := nodesCalc(d, allocCPU, allocMem, maxPods, ds, headroom, minNodes)
+	return n, lim
+}
+
+// DeepNodeCalc mostra COMO se chegou ao número de nodes: quantos nodes cada recurso exigiria sozinho. O maior
+// deles define o resultado (o "limitante"); o mínimo de nodes/zonas pode elevá-lo.
+type DeepNodeCalc struct {
+	ByCPU  int `json:"by_cpu"`
+	ByMem  int `json:"by_mem"`
+	ByPods int `json:"by_pods"`
+}
+
+func nodesCalc(d deepDemand, allocCPU, allocMem float64, maxPods int, ds DeepDaemonSetOverhead, headroom float64, minNodes int) (int, string, DeepNodeCalc) {
+	freeCPU, freeMem, freePods := nodeFree(allocCPU, allocMem, maxPods, ds)
 	if freeCPU <= 0 || freeMem <= 0 || freePods <= 0 {
-		return 0, ""
+		return 0, "", DeepNodeCalc{}
 	}
 	byCPU := d.cpuMillis / (freeCPU * headroom)
 	byMem := d.memMi / (freeMem * headroom)
 	byPods := float64(d.pods) / freePods
+	calc := DeepNodeCalc{ByCPU: ceilNodes(byCPU), ByMem: ceilNodes(byMem), ByPods: ceilNodes(byPods)}
 
 	need, limiting := byCPU, "cpu"
 	if byMem > need {
@@ -956,11 +989,20 @@ func nodesFor(d deepDemand, allocCPU, allocMem float64, maxPods int, ds DeepDaem
 	if byPods > need {
 		need, limiting = byPods, "pods"
 	}
-	n := int(math.Ceil(need - 1e-9))
+	n := ceilNodes(need)
 	if n < minNodes {
-		return minNodes, "min_nodes"
+		return minNodes, "min_nodes", calc
 	}
-	return n, limiting
+	return n, limiting, calc
+}
+
+func ceilNodes(v float64) int { return int(math.Ceil(v - 1e-9)) }
+
+// nodeFree é o que sobra em UM node depois dos DaemonSets: CPU e memória (requests) e vagas de pods.
+func nodeFree(allocCPU, allocMem float64, maxPods int, ds DeepDaemonSetOverhead) (cpu, mem, pods float64) {
+	return allocCPU - ds.PerNodeCPUReqMillis,
+		allocMem - math.Max(ds.PerNodeMemReqMi, ds.PerNodeMemUsageMi),
+		float64(maxPods) - ds.PerNodePods
 }
 
 func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemonSetOverhead, workloads []DeepWorkloadRow, headroom float64) []DeepSimulation {
@@ -1010,8 +1052,9 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		monthly := func(nodes int) float64 {
 			return round2(float64(nodes) * p.USDHour * HoursPerMonth * in.ExchangeRate)
 		}
-		s.NodesCurrentReq, s.LimitingCurrentReq = nodesFor(current, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
-		s.NodesRecommended, s.LimitingRecommended = nodesFor(recommended, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
+		s.NodesCurrentReq, s.LimitingCurrentReq, s.CalcCurrentReq = nodesCalc(current, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
+		s.NodesRecommended, s.LimitingRecommended, s.CalcRecommended = nodesCalc(recommended, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
+		s.FreeCPUMillis, s.FreeMemMi, s.FreePods = nodeFree(s.AllocCPUMillis, s.AllocMemMi, maxPods, ds)
 		s.Feasible = s.NodesRecommended > 0
 		if !s.Feasible {
 			s.Notes = append(s.Notes, "A SKU não comporta nem o custo fixo de DaemonSets por node.")
@@ -1040,6 +1083,12 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 	for _, c := range in.Candidates {
 		sims = append(sims, mk(c, false))
 	}
+	fillVsCurrent(sims)
+	inv := buildInventory(in, ds, workloads, nil)
+	for i := range sims {
+		sims[i].Fit = buildNodeFit(sims[i], inv, ds, maxPods, recommended)
+	}
+	fillJustifications(sims, ds, workloads, ov.Coverage != nil && ov.Coverage.Computable)
 	sort.SliceStable(sims, func(i, j int) bool {
 		a, b := sims[i], sims[j]
 		if a.Feasible != b.Feasible {
@@ -1059,6 +1108,32 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		return a.CostRecommendedBRL < b.CostRecommendedBRL
 	})
 	return sims
+}
+
+// fillVsCurrent compara cada SKU com a VM atual (IsCurrent), cenário a cenário: assim a economia mostra o ganho
+// da TROCA de VM, sem misturar com o ajuste de requests nem com a ocupação real de hoje.
+func fillVsCurrent(sims []DeepSimulation) {
+	var cur *DeepSimulation
+	for i := range sims {
+		if sims[i].IsCurrent {
+			cur = &sims[i]
+			break
+		}
+	}
+	if cur == nil || !cur.Feasible || cur.PriceUSDHour <= 0 {
+		return
+	}
+	for i := range sims {
+		s := &sims[i]
+		if s.IsCurrent || !s.Feasible || s.PriceUSDHour <= 0 {
+			continue
+		}
+		s.VsCurrentOK = true
+		s.NodesDeltaCurrentReq = s.NodesCurrentReq - cur.NodesCurrentReq
+		s.NodesDeltaRecommended = s.NodesRecommended - cur.NodesRecommended
+		s.SavingsVsCurrentReqBRL = round2(cur.CostCurrentReqBRL - s.CostCurrentReqBRL)
+		s.SavingsVsCurrentRecBRL = round2(cur.CostRecommendedBRL - s.CostRecommendedBRL)
+	}
 }
 
 func buildDeepFindings(a PoolDeepAnalysis) []DeepFinding {
@@ -1317,4 +1392,45 @@ func deepPlural(n int, singular, plural string) string {
 		return singular
 	}
 	return plural
+}
+
+// DeepDemand é a soma dos requests por cenário (workloads do pool, sem DaemonSets).
+type DeepDemand struct {
+	CPUMillis float64 `json:"cpu_millis"`
+	MemMi     float64 `json:"mem_mi"`
+	Pods      int     `json:"pods"`
+}
+
+// DeepSimulationInputs expõe os números que a simulação usa, para o operador conferir a conta.
+type DeepSimulationInputs struct {
+	Current        DeepDemand `json:"current"`
+	Recommended    DeepDemand `json:"recommended"`
+	MaxPodsPerNode int        `json:"max_pods_per_node"`
+	MinNodes       int        `json:"min_nodes"`
+	Headroom       float64    `json:"headroom"`
+	// Inventory: o que roda hoje no pool (workloads por tipo, DaemonSets, maior pod, ocupação dos nodes atuais).
+	Inventory DeepInventory `json:"inventory"`
+	// DaemonSets por node: o que cada node já gasta antes de receber workloads.
+	DSCPUMillis float64 `json:"ds_cpu_millis"`
+	DSMemMi     float64 `json:"ds_mem_mi"`
+	DSPods      float64 `json:"ds_pods"`
+}
+
+func buildSimulationInputs(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemonSetOverhead, workloads []DeepWorkloadRow, nodes []DeepNodeRow, headroom float64) DeepSimulationInputs {
+	maxPods := ov.MaxPods
+	if maxPods <= 0 {
+		maxPods = 110
+	}
+	minNodes := deepMinNodes
+	if z := len(ov.Zones); z > minNodes {
+		minNodes = z
+	}
+	cur, rec := deepDemands(in, workloads)
+	return DeepSimulationInputs{
+		Current:        DeepDemand{CPUMillis: round2(cur.cpuMillis), MemMi: round2(cur.memMi), Pods: cur.pods},
+		Recommended:    DeepDemand{CPUMillis: round2(rec.cpuMillis), MemMi: round2(rec.memMi), Pods: rec.pods},
+		MaxPodsPerNode: maxPods, MinNodes: minNodes, Headroom: headroom,
+		Inventory:   buildInventory(in, ds, workloads, nodes),
+		DSCPUMillis: ds.PerNodeCPUReqMillis, DSMemMi: math.Max(ds.PerNodeMemReqMi, ds.PerNodeMemUsageMi), DSPods: ds.PerNodePods,
+	}
 }

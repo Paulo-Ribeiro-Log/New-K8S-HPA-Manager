@@ -194,6 +194,72 @@ export interface DeepWorkloadRow {
   flags: string[];
 }
 
+/** Nodes que cada recurso exigiria sozinho; o maior define o resultado. */
+export interface DeepNodeCalc { by_cpu: number; by_mem: number; by_pods: number }
+
+export interface DeepDemand { cpu_millis: number; mem_mi: number; pods: number }
+
+/** O que alimenta a simulação, para conferir a conta. */
+export interface DeepKindCount { kind: string; workloads: number; pods: number }
+
+/** O que roda hoje no pool, medido. */
+export interface DeepInventory {
+  kinds: DeepKindCount[];
+  daemonsets: number;
+  ds_pods_per_node: number;
+  total_pods: number;
+  nodes: number;
+  avg_pods_per_node: number;
+  avg_cpu_req_pct: number;
+  avg_mem_req_pct: number;
+  biggest_pod?: string;
+  biggest_pod_cpu_millis?: number;
+  biggest_pod_mem_mi?: number;
+  avg_pod_cpu_millis: number;
+  avg_pod_mem_mi: number;
+}
+
+/** O que cabe em UM node da SKU e quanto dele fica ocupado (requests recomendados). */
+export interface DeepNodeFit {
+  ds_pods: number;
+  ds_cpu_pct: number;
+  ds_mem_pct: number;
+  pods_by_cpu: number;
+  pods_by_mem: number;
+  pods_by_limit: number;
+  pods_fit: number;
+  fit_limiting: string;
+  biggest_fits: number;
+  biggest_pct_cpu: number;
+  biggest_pct_mem: number;
+  occ_cpu_pct: number;
+  occ_mem_pct: number;
+  occ_pods_pct: number;
+  pods_per_node: number;
+}
+
+export interface DeepSimulationInputs {
+  inventory: DeepInventory;
+  current: DeepDemand;
+  recommended: DeepDemand;
+  max_pods_per_node: number;
+  min_nodes: number;
+  headroom: number;
+  ds_cpu_millis: number;
+  ds_mem_mi: number;
+  ds_pods: number;
+}
+
+export type DeepVerdict = "base" | "justified" | "conditional" | "technical" | "not_justified" | "unknown";
+
+/** Por que trocar (ou não) a VM atual por esta SKU: economia (tabela/reserva/Savings Plan) e ganhos para os workloads. */
+export interface DeepJustification {
+  verdict: DeepVerdict;
+  headline: string;
+  pros: string[];
+  cons: string[];
+}
+
 export interface DeepSimulation {
   vm_size: string;
   vcpu: number;
@@ -208,12 +274,25 @@ export interface DeepSimulation {
   price_usd_hour: number;
   price_source?: string;
   nodes_current_req: number;
+  calc_current_req: DeepNodeCalc;
+  calc_recommended: DeepNodeCalc;
+  free_cpu_millis: number;
+  free_mem_mi: number;
+  free_pods: number;
+  fit?: DeepNodeFit;
   cost_current_req_brl: number;
   limiting_current_req: string;
   nodes_recommended: number;
   cost_recommended_brl: number;
   limiting_recommended: string;
   savings_recommended_brl: number;
+  /** Comparação com a VM atual (mesmo cenário e ocupação). Falso na própria atual e quando falta preço/viabilidade. */
+  vs_current_ok: boolean;
+  justification?: DeepJustification;
+  nodes_delta_current_req: number;
+  nodes_delta_recommended: number;
+  savings_vs_current_req_brl: number;
+  savings_vs_current_rec_brl: number;
   node_loss_impact_pct: number;
   feasible: boolean;
   catalog_known: boolean;
@@ -251,6 +330,7 @@ export interface PoolDeepAnalysis {
   daemonsets: DeepDaemonSetOverhead;
   workloads: DeepWorkloadRow[];
   simulation: DeepSimulation[];
+  simulation_inputs: DeepSimulationInputs;
   headroom: number;
   findings: DeepFinding[];
   history: DeepHistoryMeta;
