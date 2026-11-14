@@ -1,7 +1,7 @@
 // Deep Analysis de um node pool (FINOPS-DEEP-ANALYSIS-PLAN.md): diagnóstico de alocação, DaemonSets,
 // workloads, HPAs/throttling e simulação de VMs, com exportação em Markdown. Abas manuais com useState
 // (o <Tabs> do shadcn quebra a cadeia flex dentro de modal — ver CLAUDE.md).
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
@@ -15,11 +15,13 @@ import {
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { fmtBRL, fmtMi, fmtMillis } from "@/lib/finopsFormat";
+import { HelpMarkdown } from "@/components/help/HelpMarkdown";
+import deepAnalysisHelp from "./deepAnalysisHelp.md?raw";
 import type {
-  DeepCoverage, DeepDemand, DeepFinding, DeepNodeCalc, DeepNodeFit, DeepSimulationInputs, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
+  DeepCapacity, DeepCoverage, DeepDemand, DeepPoolToday, DeepFinding, DeepNodeCalc, DeepNodeFit, DeepSimulationInputs, DeepResource, DeepSimulation, DeepWorkloadRow, PoolDeepAnalysis,
 } from "@/types/finopsDeepAnalysis";
 
-type Section = "summary" | "allocation" | "daemonsets" | "workloads" | "hpa" | "simulation";
+type Section = "summary" | "allocation" | "daemonsets" | "workloads" | "hpa" | "simulation" | "help";
 
 const FLAG_LABELS: Record<string, string> = {
   no_requests: "sem requests",
@@ -159,16 +161,75 @@ const VERDICT_UI: Record<string, { label: string; cls: string }> = {
   unknown: { label: "sem dados", cls: "border-muted-foreground text-muted-foreground" },
 };
 
-function FitDetails({ f }: { f: DeepNodeFit }) {
+function FitDetails({ f, s, inp }: { f: DeepNodeFit; s: DeepSimulation; inp?: DeepSimulationInputs }) {
+  const inv = inp?.inventory;
+  const maxPods = inp?.max_pods_per_node ?? 110;
+  const Row = ({ label, today, now }: { label: string; today?: string; now: string }) => (
+    <tr><td className="pr-3 text-muted-foreground">{label}</td><td className="pr-4 text-right">{today ?? "—"}</td><td className="text-right font-medium">{now}</td></tr>
+  );
+  const pct = (v: number) => `${v.toFixed(0)}%`;
   return (
-    <div className="mb-2 rounded border bg-muted/20 p-2 text-[11px] space-y-0.5">
+    <div className="mb-2 rounded border bg-muted/20 p-2 text-[11px] space-y-1.5">
       <div className="font-medium text-xs">O que cabe em 1 node desta VM</div>
-      <div>DaemonSets: <strong>{Math.round(f.ds_pods)} pods</strong> fixos, ocupando {f.ds_cpu_pct.toFixed(1)}% da CPU e {f.ds_mem_pct.toFixed(1)}% da memória do node.</div>
-      <div>Pods de aplicação (pod médio do pool): cabem <strong>{f.pods_fit}</strong> por node — {f.pods_by_cpu} pela CPU · {f.pods_by_mem} pela memória · {f.pods_by_limit} pelo limite de pods (limitado por <strong>{LIMITING[f.fit_limiting] ?? f.fit_limiting}</strong>).</div>
-      {f.biggest_fits > 0 || f.biggest_pct_cpu > 0 ? (
-        <div>O maior pod ocupa {f.biggest_pct_cpu.toFixed(0)}% da CPU e {f.biggest_pct_mem.toFixed(0)}% da memória de um node; cabem <strong>{f.biggest_fits}</strong> iguais a ele.</div>
+      <table className="text-[11px]">
+        <thead>
+          <tr className="text-muted-foreground">
+            <th />
+            <th className="pr-4 text-right font-normal">Hoje (requests atuais)</th>
+            <th className="text-right font-normal">Nesta VM (requests recomendados)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <Row label="Nodes" today={inv ? String(inv.nodes) : undefined} now={String(s.nodes_recommended)} />
+          <Row label="Pods por node" today={inv && inv.avg_pods_per_node > 0 ? inv.avg_pods_per_node.toFixed(0) : undefined} now={(f.ds_pods + f.pods_per_node).toFixed(0)} />
+          <Row label="CPU reservada por node" today={inv && inv.avg_cpu_req_pct > 0 ? pct(inv.avg_cpu_req_pct) : undefined} now={pct(f.occ_cpu_pct)} />
+          <Row label="Memória reservada por node" today={inv && inv.avg_mem_req_pct > 0 ? pct(inv.avg_mem_req_pct) : undefined} now={pct(f.occ_mem_pct)} />
+          <Row label={`Pods / limite de ${maxPods}`} today={inv && inv.avg_pods_per_node > 0 ? pct(inv.avg_pods_per_node / maxPods * 100) : undefined} now={pct(f.occ_pods_pct)} />
+        </tbody>
+      </table>
+      <div>DaemonSets: <strong>{Math.round(f.ds_pods)} pods</strong> fixos em todo node, ocupando {f.ds_cpu_pct.toFixed(1)}% da CPU e {f.ds_mem_pct.toFixed(1)}% da memória.</div>
+      <div>Capacidade do node para o pod médio do pool: <strong>{f.pods_fit} pods</strong> ({f.pods_by_cpu} pela CPU · {f.pods_by_mem} pela memória · {f.pods_by_limit} pelo limite de pods); quem limita é <strong>{LIMITING[f.fit_limiting] ?? f.fit_limiting}</strong>.</div>
+      {inv?.biggest_pod && (
+        <div>
+          Maior pod (<span className="font-mono">{inv.biggest_pod}</span>): {f.biggest_pct_cpu.toFixed(0)}% da CPU e {f.biggest_pct_mem.toFixed(0)}% da memória do node;{" "}
+          {f.biggest_fits <= 1
+            ? <span className="text-amber-600 dark:text-amber-400">cabe só {f.biggest_fits} por node (cada réplica dele exige um node)</span>
+            : <>cabem {f.biggest_fits} por node</>}.
+        </div>
+      )}
+      {f.occ_mem_pct >= 95 || f.occ_cpu_pct >= 95 ? (
+        <div className="text-amber-600 dark:text-amber-400">Node 100% reservado: sem folga para picos, HPA ou perda de um node (a simulação usa 100% de ocupação).</div>
       ) : null}
-      <div>Com os nodes recomendados, cada node recebe ~{f.pods_per_node.toFixed(0)} pods de aplicação e fica com <strong>{f.occ_cpu_pct.toFixed(0)}%</strong> da CPU · <strong>{f.occ_mem_pct.toFixed(0)}%</strong> da memória · <strong>{f.occ_pods_pct.toFixed(0)}%</strong> do limite de pods reservados.</div>
+    </div>
+  );
+}
+
+/** Custo amortizado do pool (reserva/Savings Plan) ao lado do valor de tabela (sob demanda). */
+function AmortizedPanel({ c, nodes }: { c: DeepCoverage; nodes: number }) {
+  const parts = [
+    [c.reserved_monthly_brl, "reserva"], [c.savings_plan_monthly_brl, "Savings Plan"], [c.on_demand_monthly_brl, "sob demanda"],
+  ].filter(([v]) => (v as number) > 0.5);
+  return (
+    <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2.5 text-xs space-y-0.5">
+      <div className="font-medium">Custo amortizado do pool <span className="font-normal text-muted-foreground">(Cost Management, {c.window_days} dias, reserva e Savings Plan diluídos)</span></div>
+      <div>
+        <strong>{fmtBRL(c.effective_monthly_brl)}/mês</strong>
+        {parts.length > 0 && <span className="text-muted-foreground"> = {parts.map(([v, l]) => `${fmtBRL(v as number)} ${l}`).join(" + ")}</span>}
+      </div>
+      {c.table_monthly_brl ? (
+        <div>
+          <span className="text-muted-foreground">Tabela (sob demanda):</span> {fmtBRL(c.table_monthly_brl)}/mês
+          {c.amortized_vs_table_pct !== undefined && <> → a cobertura {c.amortized_vs_table_pct <= 0 ? "baixa" : "eleva"} o custo em <strong>{Math.abs(c.amortized_vs_table_pct).toFixed(0)}%</strong></>}
+        </div>
+      ) : null}
+      {nodes > 0 && (
+        <div>
+          <span className="text-muted-foreground">Por node:</span> amortizado {fmtBRL(c.amortized_node_brl ?? c.effective_monthly_brl / nodes)}
+          {c.table_node_brl ? <> × tabela {fmtBRL(c.table_node_brl)}</> : null}
+          {c.computable && c.reserved_node_monthly_brl > 0 && <> · node reservado {fmtBRL(c.reserved_node_monthly_brl)} (~{c.reserved_nodes.toFixed(1)} nodes cobertos)</>}
+        </div>
+      )}
+      {!c.computable && c.note && <div className="text-amber-600 dark:text-amber-400">{c.note}</div>}
     </div>
   );
 }
@@ -180,8 +241,11 @@ function SimulationBasis({ inp }: { inp: DeepSimulationInputs }) {
   return (
     <div className="rounded-md border bg-muted/30 p-2.5 text-xs space-y-0.5">
       <div className="font-medium">Base do cálculo</div>
-      {row("Requests atuais do pool", inp.current)}
-      {row("Requests recomendados", inp.recommended)}
+      <div>
+        <span className="text-muted-foreground">Capacidade que o pool entrega hoje:</span> <strong>{inp.capacity.nodes} nodes</strong> × ({cores(inp.capacity.per_node_cpu_millis)} · {gib(inp.capacity.per_node_mem_mi)}) = <strong>{cores(inp.capacity.total_cpu_millis)} · {gib(inp.capacity.total_mem_mi)}</strong> alocáveis, com {inp.capacity.pods_running} pods em execução (limite de {inp.max_pods_per_node} por node).
+      </div>
+      <div className="text-[11px] text-muted-foreground">Cada VM é medida contra essa capacidade: quantos nodes dela entregam o mesmo CPU, a mesma memória e comportam os mesmos pods. O que roda dentro dos nodes não entra nessa conta.</div>
+      {row("Requests recomendados (opcional)", inp.recommended)}
       <div><span className="text-muted-foreground">Limite por node:</span> <strong>{inp.max_pods_per_node} pods</strong> ({Math.round(inp.ds_pods)} já ocupados por DaemonSets) · <span className="text-muted-foreground">DaemonSets por node:</span> {cores(inp.ds_cpu_millis)} CPU · {gib(inp.ds_mem_mi)} · <span className="text-muted-foreground">mínimo:</span> {inp.min_nodes} nodes</div>
       <div>
         <span className="text-muted-foreground">Hoje no pool:</span> {inp.inventory.kinds.map(k => `${k.workloads} ${k.kind}${k.workloads > 1 ? "s" : ""} (${k.pods} pods)`).join(" · ")}
@@ -192,12 +256,85 @@ function SimulationBasis({ inp }: { inp: DeepSimulationInputs }) {
       {inp.inventory.biggest_pod && (
         <div><span className="text-muted-foreground">Maior pod:</span> <span className="font-mono">{inp.inventory.biggest_pod}</span> ({cores(inp.inventory.biggest_pod_cpu_millis ?? 0)} CPU · {gib(inp.inventory.biggest_pod_mem_mi ?? 0)}) · pod médio {cores(inp.inventory.avg_pod_cpu_millis)} CPU · {gib(inp.inventory.avg_pod_mem_mi)}</div>
       )}
+      {inp.packing_pct < 100 && inp.ideal_nodes_today > 0 && (
+        <div className="rounded border border-amber-500/40 bg-amber-500/5 px-2 py-1">
+          <span className="font-medium">Empacotamento de hoje: {inp.packing_pct.toFixed(0)}%.</span> Com os requests atuais, o encaixe perfeito na VM atual exigiria <strong>{inp.ideal_nodes_today} nodes</strong>, mas o pool usa <strong>{inp.pool_today.nodes}</strong>.
+          A diferença é o que o encaixe perfeito não enxerga: fragmentação (sobra que não cabe um pod), folga para picos e HPA, afinidades, zonas. Por isso as colunas mostram o <em>ideal</em> (100%, o mínimo teórico) e, em âmbar, a estimativa <em>no empacotamento de hoje</em>.
+        </div>
+      )}
       <div className="text-[11px] text-muted-foreground">Nodes por recurso = demanda ÷ (livre por node × {Math.round(inp.headroom * 100)}%), arredondado para cima; o maior entre CPU, memória e pods define o resultado.</div>
     </div>
   );
 }
 
-function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?: DeepCoverage }) {
+const pctStr = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1).replace(".", ",")}%`;
+
+/** Diferença em R$ e %: negativa = mais barato que hoje (verde), positiva = mais cara (vermelho). */
+function Delta({ brl, pct }: { brl: number; pct: number }) {
+  if (Math.abs(brl) < 0.5) return <span className="text-muted-foreground">igual</span>;
+  const cheaper = brl < 0;
+  return (
+    <span className={`font-semibold ${cheaper ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+      {cheaper ? "−" : "+"}{fmtBRL(Math.abs(brl))} ({pctStr(pct)})
+    </span>
+  );
+}
+
+/** Custo do node pool de hoje × custo com esta VM, com a diferença em R$ e em %. Tudo do pool inteiro, por mês. */
+/** Rótulo pequeno em cima e o valor embaixo: a célula quebra em linhas curtas e cabe numa coluna estreita. */
+function Item({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+  return (
+    <div className="leading-tight" title={title}>
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+/** Custo do node pool de hoje × custo com esta VM, com a diferença em R$ e em %. Tudo do pool inteiro, por mês. */
+function TodayCell({ s, today, cov }: { s: DeepSimulation; today?: DeepPoolToday; cov?: DeepCoverage }) {
+  if (!s.feasible || !s.vs_today_ok || !today || today.monthly_brl <= 0) return <span className="text-muted-foreground">—</span>;
+  const mult = (n: number, total: number) => <div className="text-[11px] text-muted-foreground">{n} × {fmtBRL(total / Math.max(n, 1))}</div>;
+  return (
+    <div className="min-w-[10.5rem] max-w-[14rem] space-y-1.5">
+      <div className="text-[11px] font-medium text-muted-foreground">Tabela (sob demanda)</div>
+      <Item label="Hoje">
+        <strong>{fmtBRL(today.monthly_brl)}</strong>
+        {mult(today.nodes, today.monthly_brl)}
+      </Item>
+      <Item label="Com esta VM (mesma capacidade)" title="Nodes desta VM que entregam a mesma capacidade que os nodes de hoje entregam">
+        <strong>{fmtBRL(s.cost_equiv_brl)}</strong>
+        {mult(s.nodes_equiv, s.cost_equiv_brl)}
+      </Item>
+      <Item label="Diferença">
+        <Delta brl={s.delta_today_equiv_brl} pct={s.delta_today_equiv_pct} />
+      </Item>
+      <Item label="Reduzindo requests (opcional)" title="Além de trocar a VM, reduzir os requests ao uso real (CPU = P95 × 1,2). Só vale se você ajustar os requests dos workloads.">
+        <span className="text-[11px] text-muted-foreground">{s.nodes_recommended} nodes · {fmtBRL(s.cost_recommended_brl)}</span>
+        <div><Delta brl={s.delta_today_rec_brl} pct={s.delta_today_rec_pct} /></div>
+      </Item>
+      {cov && cov.effective_monthly_brl > 0 && (
+        <div className="space-y-1.5 border-t border-border/50 pt-1.5" title="Custo amortizado: o que o Cost Management atribui ao pool, com a reserva/Savings Plan diluídos no período">
+          <div className="text-[11px] font-medium text-violet-600 dark:text-violet-400">Amortizado (reserva / Savings Plan)</div>
+          <Item label="Hoje">
+            <strong>{fmtBRL(cov.effective_monthly_brl)}</strong>
+            {today.nodes > 0 && mult(today.nodes, cov.effective_monthly_brl)}
+          </Item>
+          {s.coverage ? (<>
+            <Item label="Com esta VM">
+              <div>pior {fmtBRL(s.coverage.worst_monthly_brl)}</div>
+              <div>melhor {fmtBRL(s.coverage.best_monthly_brl)}</div>
+            </Item>
+            <Item label="Pior caso"><Delta brl={-s.coverage.worst_savings_brl} pct={s.coverage.worst_delta_pct} /></Item>
+            <Item label="Melhor caso"><Delta brl={-s.coverage.best_savings_brl} pct={s.coverage.best_delta_pct} /></Item>
+          </>) : <div className="text-[11px] text-muted-foreground">sem cenário amortizado para esta VM{cov.note ? " (ver aviso acima)" : ""}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimulationTable({ sims, coverage, inputs }: { sims: DeepSimulation[]; coverage?: DeepCoverage; inputs?: DeepSimulationInputs }) {
   const covOK = !!coverage?.computable;
   const [open, setOpen] = useState<Set<string>>(new Set());
   const toggle = (vm: string) => setOpen(prev => {
@@ -209,30 +346,67 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
     const ok = sims.filter(s => !s.is_current && s.feasible && s.available && s.price_usd_hour > 0 && s.node_loss_impact_pct <= 15
       && (s.justification?.verdict === "justified" || s.justification?.verdict === "conditional"));
     // Com reserva no pool, decide pela economia efetiva no pior caso; senão, pelo custo de tabela.
-    const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_recommended_brl);
+    const key = (s: DeepSimulation) => (covOK && s.coverage ? -s.coverage.worst_savings_brl : s.cost_equiv_brl);
     return ok.sort((a, b) => key(a) - key(b))[0]?.vm_size;
   }, [sims, covOK]);
-  const colCount = covOK ? 8 : 7;
+  const colCount = 7;
 
   // Células em duas linhas (valor principal + detalhe), sem whitespace-nowrap nas longas: a tabela precisa
   // caber na largura do modal. Observações longas (notas de reserva) ficam na linha expandida.
-  const nodesCell = (s: DeepSimulation, n: number, cost: number, lim: string, nodesDelta: number, savings: number, calc: DeepNodeCalc) => {
-    if (!s.feasible || n === 0) return <span className="text-muted-foreground">não comporta</span>;
+  // Mesma capacidade de hoje: nodes desta VM que entregam o que os nodes atuais entregam (CPU, memória e pods), com a conta.
+  const equivCell = (s: DeepSimulation) => {
+    if (!s.feasible || s.nodes_equiv === 0) return <span className="text-muted-foreground">não comporta</span>;
+    const cap = inputs?.capacity;
+    const priced = s.price_usd_hour > 0;
+    const fmt = (v: number) => v.toFixed(1).replace(".", ",");
+    const Line = ({ id, label, nodes, children }: { id: string; label: string; nodes: number; children: ReactNode }) => (
+      <div className={s.limiting_equiv === id ? "font-semibold text-foreground" : ""}>
+        {label}: {nodes} {nodes === 1 ? "node" : "nodes"} <span className="font-normal text-muted-foreground">({children})</span>{s.limiting_equiv === id && <span className="font-normal text-sky-600 dark:text-sky-400"> ← define</span>}
+      </div>
+    );
     return (
       <>
-        <div className="font-medium">{n} nodes</div>
-        <div className="text-[11px] text-muted-foreground">
-          {s.price_usd_hour > 0 ? <>{fmtBRL(cost / n)}/node × {n} = <strong className="text-foreground">{fmtBRL(cost)}/mês</strong></> : "sem preço"} · {LIMITING[lim] ?? lim}
-        </div>
-        <div className="text-[11px] whitespace-nowrap text-muted-foreground" title="Nodes que cada recurso exigiria sozinho; o maior define o resultado (mínimo de 3 nodes ou nº de zonas)">
-          <span className={lim === "cpu" ? "font-semibold text-foreground" : ""}>CPU {calc.by_cpu}</span> ·{" "}
-          <span className={lim === "memory" ? "font-semibold text-foreground" : ""}>mem {calc.by_mem}</span> ·{" "}
-          <span className={lim === "pods" ? "font-semibold text-foreground" : ""}>pods {calc.by_pods}</span>
-        </div>
-        {s.vs_current_ok && (
-          <div className="text-[11px] whitespace-nowrap" title="Diferença contra a VM atual, no mesmo cenário e na mesma ocupação">
-            <span className="text-muted-foreground">vs atual (pool): </span>
-            {nodesDelta > 0 ? "+" : ""}{nodesDelta} nodes · <SignedBRL v={savings} />/mês
+        <div className="font-medium">{s.nodes_equiv} nodes{priced && <> · {fmtBRL(s.cost_equiv_brl)}/mês</>}{s.is_current && <span className="font-normal text-muted-foreground"> (hoje)</span>}</div>
+        {priced && <div className="text-[11px] text-muted-foreground whitespace-nowrap">{fmtBRL(s.cost_equiv_brl / s.nodes_equiv)} por node × {s.nodes_equiv}</div>}
+        {cap && cap.nodes > 0 && (
+          <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground" title="Cada recurso exige um número de nodes: capacidade de hoje ÷ o que um node desta VM entrega. O maior define o resultado.">
+            <Line id="cpu" label="CPU" nodes={s.calc_equiv.by_cpu}>{cores(cap.total_cpu_millis)} ÷ {cores(s.alloc_cpu_millis)} por node = {fmt(cap.total_cpu_millis / Math.max(s.alloc_cpu_millis, 1))}</Line>
+            <Line id="memory" label="Memória" nodes={s.calc_equiv.by_mem}>{gib(cap.total_mem_mi)} ÷ {gib(s.alloc_mem_mi)} = {fmt(cap.total_mem_mi / Math.max(s.alloc_mem_mi, 1))}</Line>
+            <Line id="pods" label="Pods" nodes={s.calc_equiv.by_pods}>{cap.pods_running} em execução ÷ {inputs?.max_pods_per_node ?? 110} por node = {fmt(cap.pods_running / Math.max(inputs?.max_pods_per_node ?? 110, 1))}</Line>
+            {s.limiting_equiv === "min_nodes" && <div className="font-semibold text-foreground">Mínimo de nodes <span className="font-normal text-sky-600 dark:text-sky-400">← define</span></div>}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  // Célula de nodes: o resultado e a conta que leva a ele (demanda do pool ÷ livre por node, por recurso).
+  const nodesCell = (s: DeepSimulation, n: number, cost: number, lim: string, calc: DeepNodeCalc, demand?: DeepDemand, obs?: { nodes: number; cost: number }) => {
+    if (!s.feasible || n === 0) return <span className="text-muted-foreground">não comporta</span>;
+    const priced = s.price_usd_hour > 0;
+    const occ = inputs?.headroom ?? 1;
+    const ratio = (d: number, free: number) => (free > 0 ? (d / (free * occ)).toFixed(1).replace(".", ",") : "—");
+    const Line = ({ id, label, nodes, children }: { id: string; label: string; nodes: number; children: ReactNode }) => (
+      <div className={lim === id ? "font-semibold text-foreground" : ""}>
+        {label}: {nodes} {nodes === 1 ? "node" : "nodes"} <span className="font-normal text-muted-foreground">({children})</span>{lim === id && <span className="font-normal text-sky-600 dark:text-sky-400"> ← define</span>}
+      </div>
+    );
+    return (
+      <>
+        <div className="font-medium">{n} nodes{priced && <> · {fmtBRL(cost)}/mês</>}</div>
+        {priced && <div className="text-[11px] text-muted-foreground whitespace-nowrap">{fmtBRL(cost / n)} por node × {n}</div>}
+        {obs && obs.nodes > n && (
+          <div className="text-[11px] whitespace-nowrap text-amber-600 dark:text-amber-400" title={`O encaixe perfeito (100%) é o mínimo teórico. O pool de hoje usa ${inputs?.pool_today.nodes} nodes onde o encaixe perfeito exigiria ${inputs?.ideal_nodes_today} (${(inputs?.packing_pct ?? 100).toFixed(0)}%); aplicando o mesmo empacotamento a esta VM, o esperado é ~${obs.nodes} nodes.`}>
+            ≈ {obs.nodes} nodes no empacotamento de hoje ({(inputs?.packing_pct ?? 100).toFixed(0)}%){priced && <> · {fmtBRL(obs.cost)}/mês</>}
+          </div>
+        )}
+        {demand && (
+          <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground" title="Cada recurso exige um número de nodes: demanda do pool ÷ o que sobra em um node depois dos DaemonSets. O maior define o resultado.">
+            <div>Os pods pedem <strong className="text-foreground">{cores(demand.cpu_millis)}</strong> · <strong className="text-foreground">{gib(demand.mem_mi)}</strong> · <strong className="text-foreground">{demand.pods} pods</strong></div>
+            <Line id="cpu" label="CPU" nodes={calc.by_cpu}>{cores(demand.cpu_millis)} ÷ {(s.free_cpu_millis / 1000).toFixed(1).replace(".", ",")} cores livres por node = {ratio(demand.cpu_millis, s.free_cpu_millis)}</Line>
+            <Line id="memory" label="Memória" nodes={calc.by_mem}>{gib(demand.mem_mi)} ÷ {(s.free_mem_mi / 1024).toFixed(1).replace(".", ",")} GiB = {ratio(demand.mem_mi, s.free_mem_mi)}</Line>
+            <Line id="pods" label="Pods" nodes={calc.by_pods}>{demand.pods} ÷ {Math.round(s.free_pods)} vagas = {ratio(demand.pods, s.free_pods)}</Line>
+            {lim === "min_nodes" && <div className="font-semibold text-foreground">Mínimo de nodes <span className="font-normal text-sky-600 dark:text-sky-400">← define</span></div>}
           </div>
         )}
       </>
@@ -246,12 +420,9 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
           <TableHead>VM</TableHead>
           <TableHead>Configuração</TableHead>
           <TableHead>Alocável/node</TableHead>
-          <TableHead>Requests atuais<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-          <TableHead>Requests recomendados{covOK && " (tabela)"}<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-          {covOK ? (<>
-            <TableHead>Custo efetivo<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-            <TableHead>Economia efetiva<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
-          </>) : <TableHead title="Economia mensal da troca de VM contra a VM atual (requests recomendados, mesma ocupação)">Economia vs atual<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>}
+          <TableHead title="Quantos nodes desta VM entregam a mesma capacidade (alocável de CPU e memória, e pods) que os nodes de hoje entregam">Mesma capacidade de hoje<div className="text-[10px] font-normal text-muted-foreground">nodes que substituem os de hoje</div></TableHead>
+          <TableHead title="Opcional: além de trocar a VM, reduzir os requests ao uso real (CPU = P95 × 1,2, mínimo 50m; memória = o maior entre P95 e uso atual × 1,2)">Reduzindo requests (opcional)<div className="text-[10px] font-normal text-muted-foreground">ajustados ao uso real · tabela</div></TableHead>
+          <TableHead title="Custo do node pool hoje (nodes atuais × preço de tabela) contra o custo com esta VM: pool inteiro, por mês, com a diferença em R$ e em %">Pool hoje × com esta VM<div className="text-[10px] font-normal text-muted-foreground">pool inteiro, por mês</div></TableHead>
           <TableHead className="w-[1%]" />
         </TableRow>
       </TableHeader>
@@ -308,24 +479,9 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
                   </div>
                   {s.alloc_estimated && <div className="text-[11px] text-muted-foreground">estimado</div>}
                 </TableCell>
-                <TableCell>{nodesCell(s, s.nodes_current_req, s.cost_current_req_brl, s.limiting_current_req, s.nodes_delta_current_req, s.savings_vs_current_req_brl, s.calc_current_req)}</TableCell>
-                <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended, s.nodes_delta_recommended, s.savings_vs_current_rec_brl, s.calc_recommended)}</TableCell>
-                {covOK ? (<>
-                  <TableCell>
-                    {s.coverage ? (<>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span>{fmtBRL(s.coverage.worst_monthly_brl)}</div>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span>{fmtBRL(s.coverage.best_monthly_brl)}</div>
-                    </>) : "—"}
-                  </TableCell>
-                  <TableCell>
-                    {s.coverage ? (<>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">pior </span><SignedBRL v={s.coverage.worst_savings_brl} /></div>
-                      <div className="whitespace-nowrap"><span className="text-muted-foreground">melhor </span><SignedBRL v={s.coverage.best_savings_brl} /></div>
-                    </>) : "—"}
-                  </TableCell>
-                </>) : (
-                  <TableCell>{s.is_current ? <span className="text-muted-foreground">base</span> : !s.vs_current_ok ? "—" : <SignedBRL v={s.savings_vs_current_rec_brl} />}</TableCell>
-                )}
+                <TableCell>{equivCell(s)}</TableCell>
+                <TableCell>{nodesCell(s, s.nodes_recommended, s.cost_recommended_brl, s.limiting_recommended, s.calc_recommended, inputs?.recommended, { nodes: s.nodes_recommended_obs, cost: s.cost_recommended_obs_brl })}</TableCell>
+                <TableCell><TodayCell s={s} today={inputs?.pool_today} cov={coverage} /></TableCell>
                 <TableCell>
                   {nDetails > 0 && (
                     <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => toggle(s.vm_size)} title="Justificativa e observações">
@@ -338,7 +494,7 @@ function SimulationTable({ sims, coverage }: { sims: DeepSimulation[]; coverage?
               {isOpen && (
                 <TableRow key={`${s.vm_size}-notas`} className={rowCls}>
                   <TableCell colSpan={colCount} className="pt-0">
-                    {s.fit && <FitDetails f={s.fit} />}
+                    {s.fit && <FitDetails f={s.fit} s={s} inp={inputs} />}
                     {just && (just.pros.length > 0 || just.cons.length > 0) && (
                       <ul className="space-y-0.5 text-[11px] mb-1">
                         {just.pros.map(p => <li key={p} className="text-emerald-700 dark:text-emerald-400">✔ {p}</li>)}
@@ -407,6 +563,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
     { id: "workloads", label: "Workloads", count: data?.workloads.length },
     { id: "hpa", label: "HPAs e throttling", count: hpaRows.length || undefined },
     { id: "simulation", label: "Simulação de VMs", count: data?.simulation.length },
+    { id: "help", label: "Como ler" },
   ];
 
   const ov = data?.overview;
@@ -415,7 +572,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
 
   return (
     <Dialog open onOpenChange={v => !v && onClose()}>
-      <DialogContent className="max-w-7xl max-h-[92vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[96vw] max-w-[96vw] max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base flex-wrap">
             <Microscope className="h-4 w-4 text-indigo-500" />
@@ -479,6 +636,13 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                 (sticky) fica preso no topo desta área. O wrapper overflow-auto do Table do shadcn
                 viraria o contêiner do sticky, então aqui ele deixa de rolar. */}
             <div className="flex-1 min-h-0 overflow-y-auto space-y-3 [&_div.relative.w-full.overflow-auto]:overflow-visible [&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10 [&_thead_th]:bg-muted [&_thead_th]:text-foreground [&_thead_th]:font-semibold [&_thead_th]:text-xs [&_thead_th]:uppercase [&_thead_th]:tracking-wide [&_thead_th]:border-b-2 [&_thead_th]:border-indigo-500/60 [&_thead_th]:h-10">
+            {section === "help" && (
+              <div className="max-w-4xl">
+                <p className="mb-3 text-xs text-muted-foreground">Como ler as informações desta análise, como são coletadas e como se chega aos valores exibidos.</p>
+                <HelpMarkdown source={deepAnalysisHelp} />
+              </div>
+            )}
+
             {section === "summary" && (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
@@ -683,7 +847,7 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
             {section === "simulation" && (
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">
-                  Nodes necessários por SKU com {Math.round(data.headroom * 100)}% de ocupação dos nodes (o que sobra depois dos DaemonSets), com no mínimo 3 nodes.
+                  <strong>Mesma capacidade de hoje</strong>: quantos nodes de cada VM entregam o que os {data.simulation_inputs?.capacity.nodes ?? ov.nodes} nodes atuais entregam (alocável de CPU e de memória, e os pods em execução contra o limite por node), no mínimo 3 nodes. A coluna "Reduzindo requests" é opcional: o mesmo pool depois de ajustar os requests ao uso real.
                   <strong> Requests atuais</strong> = só trocar a VM; <strong>recomendados</strong> = depois do ajuste de requests. "<strong>vs atual</strong>" compara cada SKU com a VM atual do pool, no mesmo cenário e na mesma ocupação (a linha "atual" é a base).
                   Alocável "(est.)" vem da fórmula de reserva da AKS. Preços de tabela sob demanda.
                   {data.sku_catalog_status === "loading" && " Catálogo de SKUs da região ainda carregando: disponibilidade não verificada."}
@@ -703,8 +867,9 @@ export function DeepAnalysisModal({ cluster, pool, onClose }: { cluster: string;
                 <p className="text-xs rounded-md border border-sky-500/30 bg-sky-500/5 px-2.5 py-1.5">
                   <strong>Todos os valores em R$ são do pool inteiro, por mês</strong> (nodes × preço de um node × 730 h), não de um node. Em cada célula aparece o preço de <em>um</em> node e a multiplicação; "vs atual (pool)" é a diferença do pool inteiro contra o pool na VM atual.
                 </p>
+                {ov.coverage && <AmortizedPanel c={ov.coverage} nodes={ov.nodes} />}
                 {data.simulation_inputs && <SimulationBasis inp={data.simulation_inputs} />}
-                <SimulationTable sims={data.simulation} coverage={ov.coverage} />
+                <SimulationTable sims={data.simulation} coverage={ov.coverage} inputs={data.simulation_inputs} />
               </div>
             )}
             </div>

@@ -37,8 +37,14 @@ type DeepCoverage struct {
 	WindowDays       int       `json:"window_days"`
 	FetchedAt        time.Time `json:"fetched_at"`
 	// Computable: dá para calcular os cenários sem chute. Quando false, Note diz por quê.
-	Computable bool   `json:"computable"`
-	Note       string `json:"note,omitempty"`
+	Computable bool `json:"computable"`
+	// Custo AMORTIZADO (efetivo) do pool contra a tabela, por mês e por node: o que o Cost Management atribui ao pool com
+	// a reserva/Savings Plan diluídos no período. Preenchido mesmo quando não há cenário numérico.
+	TableMonthlyBRL     float64 `json:"table_monthly_brl,omitempty"`
+	AmortizedNodeBRL    float64 `json:"amortized_node_brl,omitempty"`
+	TableNodeBRL        float64 `json:"table_node_brl,omitempty"`
+	AmortizedVsTablePct float64 `json:"amortized_vs_table_pct,omitempty"`
+	Note                string  `json:"note,omitempty"`
 }
 
 // DeepCoverageScenario é o custo efetivo de uma SKU da simulação (cenário de requests recomendados).
@@ -53,6 +59,9 @@ type DeepCoverageScenario struct {
 	// IdleReservedNodes: capacidade reservada que sobra (em nodes do SKU atual).
 	IdleReservedNodes float64 `json:"idle_reserved_nodes"`
 	Note              string  `json:"note"`
+	// Diferença do custo amortizado com esta VM contra o amortizado de hoje, em % (negativo = mais barato).
+	WorstDeltaPct float64 `json:"worst_delta_pct"`
+	BestDeltaPct  float64 `json:"best_delta_pct"`
 }
 
 // buildDeepCoverage converte a cobertura gravada (PoolCoverage) para a simulação. tableNodeMonthBRL é o
@@ -71,6 +80,12 @@ func buildDeepCoverage(cov *PoolCoverage, tableNodeMonthBRL float64, nodes int) 
 		SavingsPlanMonthlyBRL: round2(cov.SavingsPlan * eff),
 		OnDemandMonthlyBRL:    round2(cov.OnDemand * eff),
 		Currency:              cov.Currency, WindowDays: cov.WindowDays, FetchedAt: cov.FetchedAt,
+	}
+	if tableNodeMonthBRL > 0 && nodes > 0 && strings.EqualFold(orBRL(cov.Currency), "BRL") {
+		d.TableNodeBRL = round2(tableNodeMonthBRL)
+		d.TableMonthlyBRL = round2(tableNodeMonthBRL * float64(nodes))
+		d.AmortizedNodeBRL = round2(eff / float64(nodes))
+		d.AmortizedVsTablePct = round2((eff/d.TableMonthlyBRL - 1) * 100) // negativo = a cobertura barateia
 	}
 	switch {
 	case cov.Currency != "" && !strings.EqualFold(cov.Currency, "BRL"):
@@ -152,5 +167,16 @@ func deepCoverageScenario(c *DeepCoverage, cur, alt DeepSKUSpec, nodes int, altT
 	sc.BestMonthlyBRL = round2(sc.BestMonthlyBRL)
 	sc.WorstSavingsBRL = round2(c.EffectiveMonthlyBRL - sc.WorstMonthlyBRL)
 	sc.BestSavingsBRL = round2(c.EffectiveMonthlyBRL - sc.BestMonthlyBRL)
+	if c.EffectiveMonthlyBRL > 0 {
+		sc.WorstDeltaPct = round2((sc.WorstMonthlyBRL/c.EffectiveMonthlyBRL - 1) * 100)
+		sc.BestDeltaPct = round2((sc.BestMonthlyBRL/c.EffectiveMonthlyBRL - 1) * 100)
+	}
 	return sc
+}
+
+func orBRL(c string) string {
+	if c == "" {
+		return "BRL"
+	}
+	return c
 }

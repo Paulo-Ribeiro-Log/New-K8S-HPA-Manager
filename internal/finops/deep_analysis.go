@@ -349,19 +349,53 @@ type DeepSimulation struct {
 	FreeMemMi     float64 `json:"free_mem_mi"`
 	FreePods      float64 `json:"free_pods"`
 	// Fit: o que cabe em UM node desta SKU e quanto dele fica ocupado (nil quando a SKU não comporta).
-	Fit                   *DeepNodeFit `json:"fit,omitempty"`
-	CostRecommendedBRL    float64      `json:"cost_recommended_brl"`
-	LimitingRecommended   string       `json:"limiting_recommended"`
-	SavingsRecommendedBRL float64      `json:"savings_recommended_brl"`
+	Fit *DeepNodeFit `json:"fit,omitempty"`
+	// MESMA CAPACIDADE de hoje: quantos nodes desta VM entregam o que o pool inteiro entrega hoje (soma do alocável de
+	// CPU e de memória dos nodes atuais, e os pods em execução contra o limite de pods por node). Não depende do que
+	// roda dentro dos nodes. É o cenário principal da troca de VM.
+	NodesEquiv               int          `json:"nodes_equiv"`
+	LimitingEquiv            string       `json:"limiting_equiv"`
+	CalcEquiv                DeepNodeCalc `json:"calc_equiv"`
+	CostEquivBRL             float64      `json:"cost_equiv_brl"`
+	VsTodayEquivOK           bool         `json:"vs_today_equiv_ok"`
+	DeltaTodayEquivBRL       float64      `json:"delta_today_equiv_brl"`
+	DeltaTodayEquivPct       float64      `json:"delta_today_equiv_pct"`
+	NodesDeltaEquiv          int          `json:"nodes_delta_equiv"`
+	SavingsVsCurrentEquivBRL float64      `json:"savings_vs_current_equiv_brl"`
+	// No empacotamento OBSERVADO hoje: o pool real usa mais nodes que o encaixe perfeito (fragmentação, folga para picos
+	// e HPA, afinidades, zonas). Os nodes ideais (100%) divididos pelo empacotamento de hoje dão uma estimativa realista.
+	NodesCurrentReqObs    int     `json:"nodes_current_req_obs"`
+	NodesRecommendedObs   int     `json:"nodes_recommended_obs"`
+	CostCurrentReqObsBRL  float64 `json:"cost_current_req_obs_brl"`
+	CostRecommendedObsBRL float64 `json:"cost_recommended_obs_brl"`
+	// Base de comparação (só na linha IsCurrent): a VM atual calculada com o alocável ESTIMADO pela fórmula da AKS,
+	// o mesmo que as candidatas usam. Comparar uma candidata (estimada) com a atual (medida) creditaria como ganho a
+	// diferença entre estimado e medido, que não é ganho de VM nenhuma.
+	BaselineNodesCurrentReq    int     `json:"baseline_nodes_current_req,omitempty"`
+	BaselineNodesRecommended   int     `json:"baseline_nodes_recommended,omitempty"`
+	BaselineCostCurrentReqBRL  float64 `json:"baseline_cost_current_req_brl,omitempty"`
+	BaselineCostRecommendedBRL float64 `json:"baseline_cost_recommended_brl,omitempty"`
+	CostRecommendedBRL         float64 `json:"cost_recommended_brl"`
+	LimitingRecommended        string  `json:"limiting_recommended"`
+	SavingsRecommendedBRL      float64 `json:"savings_recommended_brl"`
 	// Comparação com a VM ATUAL, no mesmo cenário e na mesma ocupação (a linha IsCurrent é a base). Só há valor
 	// quando esta SKU e a atual têm preço e comportam a demanda. Delta de nodes: negativo = menos nodes que a atual.
-	VsCurrentOK            bool    `json:"vs_current_ok"`
-	NodesDeltaCurrentReq   int     `json:"nodes_delta_current_req"`
-	NodesDeltaRecommended  int     `json:"nodes_delta_recommended"`
-	SavingsVsCurrentReqBRL float64 `json:"savings_vs_current_req_brl"`
-	SavingsVsCurrentRecBRL float64 `json:"savings_vs_current_rec_brl"`
-	NodeLossImpactPct      float64 `json:"node_loss_impact_pct"`
-	Feasible               bool    `json:"feasible"`
+	VsCurrentOK bool `json:"vs_current_ok"`
+	// Contra o custo REAL do node pool hoje (nodes atuais × preço de tabela), por mês: diferença = custo com esta VM −
+	// custo de hoje (negativo = mais barato) e em % do custo de hoje. Inclui o efeito de ocupar os nodes a 100%, não só
+	// da troca de VM; SwapPctRec isola a troca de VM (contra a atual, mesma base de alocável).
+	VsTodayOK               bool    `json:"vs_today_ok"`
+	DeltaTodayCurrentReqBRL float64 `json:"delta_today_current_req_brl"`
+	DeltaTodayCurrentReqPct float64 `json:"delta_today_current_req_pct"`
+	DeltaTodayRecBRL        float64 `json:"delta_today_rec_brl"`
+	DeltaTodayRecPct        float64 `json:"delta_today_rec_pct"`
+	SwapPctRec              float64 `json:"swap_pct_rec"`
+	NodesDeltaCurrentReq    int     `json:"nodes_delta_current_req"`
+	NodesDeltaRecommended   int     `json:"nodes_delta_recommended"`
+	SavingsVsCurrentReqBRL  float64 `json:"savings_vs_current_req_brl"`
+	SavingsVsCurrentRecBRL  float64 `json:"savings_vs_current_rec_brl"`
+	NodeLossImpactPct       float64 `json:"node_loss_impact_pct"`
+	Feasible                bool    `json:"feasible"`
 	// Capacidades do catálogo (F3). CatalogKnown=false: catálogo não carregado (Available assume true).
 	CatalogKnown    bool     `json:"catalog_known"`
 	Available       bool     `json:"available"`
@@ -996,6 +1030,34 @@ func nodesCalc(d deepDemand, allocCPU, allocMem float64, maxPods int, ds DeepDae
 	return n, limiting, calc
 }
 
+// equivTolerance: o alocável das VMs candidatas é ESTIMADO pela fórmula da AKS e o da atual é medido; até 1,5% de
+// diferença entre os dois não vale um node a mais (sem isso, uma VM de mesma forma sairia com +1 node só pela estimativa).
+const equivTolerance = 1.015
+
+// equivNodes: nodes de uma VM (alocável perCPU/perMem) que entregam a mesma capacidade de hoje: soma do alocável de CPU e
+// de memória dos nodes atuais, e os pods em execução contra o limite de pods por node. O que roda dentro dos nodes
+// (requests, DaemonSets) não entra: é a conta de trocar a capacidade por outra, node a node. Respeita o mínimo de nodes.
+func equivNodes(totCPU, totMem float64, pods int, perCPU, perMem float64, maxPods, minNodes int) (int, string, DeepNodeCalc) {
+	if perCPU <= 0 || perMem <= 0 {
+		return 0, "", DeepNodeCalc{}
+	}
+	c := DeepNodeCalc{ByCPU: ceilNodes(totCPU / perCPU / equivTolerance), ByMem: ceilNodes(totMem / perMem / equivTolerance)}
+	if maxPods > 0 {
+		c.ByPods = ceilNodes(float64(pods) / float64(maxPods))
+	}
+	n, lim := c.ByCPU, "cpu"
+	if c.ByMem > n {
+		n, lim = c.ByMem, "memory"
+	}
+	if c.ByPods > n {
+		n, lim = c.ByPods, "pods"
+	}
+	if n < minNodes {
+		return minNodes, "min_nodes", c
+	}
+	return n, lim, c
+}
+
 func ceilNodes(v float64) int { return int(math.Ceil(v - 1e-9)) }
 
 // nodeFree é o que sobra em UM node depois dos DaemonSets: CPU e memória (requests) e vagas de pods.
@@ -1003,6 +1065,28 @@ func nodeFree(allocCPU, allocMem float64, maxPods int, ds DeepDaemonSetOverhead)
 	return allocCPU - ds.PerNodeCPUReqMillis,
 		allocMem - math.Max(ds.PerNodeMemReqMi, ds.PerNodeMemUsageMi),
 		float64(maxPods) - ds.PerNodePods
+}
+
+// packingEfficiency compara o encaixe perfeito na VM atual (nodes ideais, com o alocável medido) com os nodes que o pool
+// realmente usa. Devolve a razão (0,5..1) e os nodes ideais. Sem base confiável (mínimo de nodes dominando, pool menor
+// que o ideal), devolve 1.
+func packingEfficiency(in DeepAnalysisInput, ds DeepDaemonSetOverhead, maxPods int, current deepDemand, headroom float64, minNodes int) (float64, int) {
+	actual := len(in.Nodes)
+	if actual == 0 {
+		return 1, 0
+	}
+	var ac, am float64
+	for _, n := range in.Nodes {
+		ac += n.CPUAllocMillis
+		am += n.MemAllocMi
+	}
+	ac /= float64(actual)
+	am /= float64(actual)
+	ideal, lim, _ := nodesCalc(current, ac, am, maxPods, ds, headroom, minNodes)
+	if ideal <= 0 || lim == "min_nodes" || actual <= ideal {
+		return 1, ideal
+	}
+	return math.Max(0.5, float64(ideal)/float64(actual)), ideal
 }
 
 func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemonSetOverhead, workloads []DeepWorkloadRow, headroom float64) []DeepSimulation {
@@ -1025,12 +1109,21 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		allocMem += n.MemAllocMi
 	}
 	nn := float64(len(in.Nodes))
+	totCPU, totMem := allocCPU, allocMem // capacidade total de hoje (soma do alocável medido dos nodes)
+	podsRunning := len(in.Pods)
 	capMem /= nn
 	allocCPU /= nn
 	allocMem /= nn
 	memFactor := deepMemFactor(capMem, in.CurrentSpec.MemGB)
 
 	current, recommended := deepDemands(in, workloads)
+	eff, _ := packingEfficiency(in, ds, maxPods, current, headroom, minNodes)
+	atEff := func(n int, lim string) int {
+		if eff >= 1 || n <= 0 || lim == "min_nodes" {
+			return n
+		}
+		return ceilNodes(float64(n) / eff)
+	}
 
 	mk := func(spec DeepSKUSpec, isCurrent bool) DeepSimulation {
 		s := DeepSimulation{
@@ -1055,20 +1148,30 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		s.NodesCurrentReq, s.LimitingCurrentReq, s.CalcCurrentReq = nodesCalc(current, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
 		s.NodesRecommended, s.LimitingRecommended, s.CalcRecommended = nodesCalc(recommended, s.AllocCPUMillis, s.AllocMemMi, maxPods, ds, headroom, minNodes)
 		s.FreeCPUMillis, s.FreeMemMi, s.FreePods = nodeFree(s.AllocCPUMillis, s.AllocMemMi, maxPods, ds)
+		if isCurrent && hasPrice && p.USDHour > 0 {
+			ec, em := EstimateAllocatable(spec, maxPods, memFactor)
+			s.BaselineNodesCurrentReq, _, _ = nodesCalc(current, ec, em, maxPods, ds, headroom, minNodes)
+			s.BaselineNodesRecommended, _, _ = nodesCalc(recommended, ec, em, maxPods, ds, headroom, minNodes)
+			s.BaselineCostCurrentReqBRL, s.BaselineCostRecommendedBRL = monthly(s.BaselineNodesCurrentReq), monthly(s.BaselineNodesRecommended)
+		}
 		s.Feasible = s.NodesRecommended > 0
 		if !s.Feasible {
 			s.Notes = append(s.Notes, "A SKU não comporta nem o custo fixo de DaemonSets por node.")
 			return s
 		}
 		s.CostCurrentReqBRL = monthly(s.NodesCurrentReq)
+		s.NodesEquiv, s.LimitingEquiv, s.CalcEquiv = equivNodes(totCPU, totMem, podsRunning, s.AllocCPUMillis, s.AllocMemMi, maxPods, minNodes)
+		s.CostEquivBRL = monthly(s.NodesEquiv)
+		s.NodesCurrentReqObs, s.NodesRecommendedObs = atEff(s.NodesCurrentReq, s.LimitingCurrentReq), atEff(s.NodesRecommended, s.LimitingRecommended)
+		s.CostCurrentReqObsBRL, s.CostRecommendedObsBRL = monthly(s.NodesCurrentReqObs), monthly(s.NodesRecommendedObs)
 		s.CostRecommendedBRL = monthly(s.NodesRecommended)
 		if hasPrice && p.USDHour > 0 {
 			s.SavingsRecommendedBRL = round2(ov.MonthlyCostBRL - s.CostRecommendedBRL)
 		}
-		s.NodeLossImpactPct = round2(100 / float64(s.NodesRecommended))
+		s.NodeLossImpactPct = round2(100 / float64(math.Max(float64(s.NodesEquiv), 1)))
 		s.ReservedHint = in.SKUHints[strings.ToLower(spec.VMSize)]
 		if hasPrice && p.USDHour > 0 {
-			s.Coverage = deepCoverageScenario(ov.Coverage, in.CurrentSpec, spec, s.NodesRecommended, p.USDHour*HoursPerMonth*in.ExchangeRate)
+			s.Coverage = deepCoverageScenario(ov.Coverage, in.CurrentSpec, spec, s.NodesEquiv, p.USDHour*HoursPerMonth*in.ExchangeRate)
 		}
 		if s.NodeLossImpactPct > deepNodeLossWarnPct {
 			s.Notes = append(s.Notes, fmt.Sprintf("Perder 1 node derruba %.0f%% do pool.", s.NodeLossImpactPct))
@@ -1084,6 +1187,7 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		sims = append(sims, mk(c, false))
 	}
 	fillVsCurrent(sims)
+	fillVsToday(sims, ov.MonthlyCostBRL)
 	inv := buildInventory(in, ds, workloads, nil)
 	for i := range sims {
 		sims[i].Fit = buildNodeFit(sims[i], inv, ds, maxPods, recommended)
@@ -1105,9 +1209,46 @@ func buildDeepSimulation(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDaemo
 		if a.Coverage != nil && b.Coverage != nil {
 			return a.Coverage.WorstMonthlyBRL < b.Coverage.WorstMonthlyBRL
 		}
-		return a.CostRecommendedBRL < b.CostRecommendedBRL
+		return a.CostEquivBRL < b.CostEquivBRL
 	})
 	return sims
+}
+
+// baselineCurrentReq/baselineRecommended: nodes e custo da VM atual na base de comparação (alocável estimado, como as
+// candidatas); sem a base, caem no valor medido.
+func baselineCurrentReq(cur *DeepSimulation) (int, float64) {
+	if cur.BaselineNodesCurrentReq > 0 {
+		return cur.BaselineNodesCurrentReq, cur.BaselineCostCurrentReqBRL
+	}
+	return cur.NodesCurrentReq, cur.CostCurrentReqBRL
+}
+
+func baselineRecommended(cur *DeepSimulation) (int, float64) {
+	if cur.BaselineNodesRecommended > 0 {
+		return cur.BaselineNodesRecommended, cur.BaselineCostRecommendedBRL
+	}
+	return cur.NodesRecommended, cur.CostRecommendedBRL
+}
+
+// fillVsToday compara o custo de cada SKU com o custo real do node pool hoje (nodes atuais × preço de tabela).
+func fillVsToday(sims []DeepSimulation, todayBRL float64) {
+	if todayBRL <= 0 {
+		return
+	}
+	for i := range sims {
+		s := &sims[i]
+		if !s.Feasible || s.PriceUSDHour <= 0 {
+			continue
+		}
+		s.VsTodayOK = true
+		s.DeltaTodayCurrentReqBRL = round2(s.CostCurrentReqBRL - todayBRL)
+		s.DeltaTodayCurrentReqPct = round2(s.DeltaTodayCurrentReqBRL / todayBRL * 100)
+		s.DeltaTodayRecBRL = round2(s.CostRecommendedBRL - todayBRL)
+		s.DeltaTodayRecPct = round2(s.DeltaTodayRecBRL / todayBRL * 100)
+		s.VsTodayEquivOK = true
+		s.DeltaTodayEquivBRL = round2(s.CostEquivBRL - todayBRL)
+		s.DeltaTodayEquivPct = round2(s.DeltaTodayEquivBRL / todayBRL * 100)
+	}
 }
 
 // fillVsCurrent compara cada SKU com a VM atual (IsCurrent), cenário a cenário: assim a economia mostra o ganho
@@ -1129,10 +1270,17 @@ func fillVsCurrent(sims []DeepSimulation) {
 			continue
 		}
 		s.VsCurrentOK = true
-		s.NodesDeltaCurrentReq = s.NodesCurrentReq - cur.NodesCurrentReq
-		s.NodesDeltaRecommended = s.NodesRecommended - cur.NodesRecommended
-		s.SavingsVsCurrentReqBRL = round2(cur.CostCurrentReqBRL - s.CostCurrentReqBRL)
-		s.SavingsVsCurrentRecBRL = round2(cur.CostRecommendedBRL - s.CostRecommendedBRL)
+		bn, bc := baselineCurrentReq(cur)
+		s.NodesDeltaCurrentReq = s.NodesCurrentReq - bn
+		s.SavingsVsCurrentReqBRL = round2(bc - s.CostCurrentReqBRL)
+		rn, rc := baselineRecommended(cur)
+		s.NodesDeltaRecommended = s.NodesRecommended - rn
+		s.SavingsVsCurrentRecBRL = round2(rc - s.CostRecommendedBRL)
+		if rc > 0 {
+			s.SwapPctRec = round2(s.SavingsVsCurrentRecBRL / rc * 100)
+		}
+		s.NodesDeltaEquiv = s.NodesEquiv - cur.NodesEquiv
+		s.SavingsVsCurrentEquivBRL = round2(cur.CostEquivBRL - s.CostEquivBRL)
 	}
 }
 
@@ -1410,6 +1558,14 @@ type DeepSimulationInputs struct {
 	Headroom       float64    `json:"headroom"`
 	// Inventory: o que roda hoje no pool (workloads por tipo, DaemonSets, maior pod, ocupação dos nodes atuais).
 	Inventory DeepInventory `json:"inventory"`
+	// PoolToday: o node pool de hoje (nodes atuais × preço de tabela de UM node), base da coluna "hoje × esta VM".
+	PoolToday DeepPoolToday `json:"pool_today"`
+	// Capacity: o que o pool entrega hoje (soma do alocável dos nodes atuais) e os pods em execução: base da simulação.
+	Capacity DeepCapacity `json:"capacity"`
+	// Empacotamento observado hoje: nodes que o encaixe perfeito exigiria na VM atual (IdealNodes) ÷ nodes reais do pool.
+	// 100 = o pool já está encaixado no limite; 85 = o pool usa 15% mais nodes que o ideal.
+	PackingPct float64 `json:"packing_pct"`
+	IdealNodes int     `json:"ideal_nodes_today"`
 	// DaemonSets por node: o que cada node já gasta antes de receber workloads.
 	DSCPUMillis float64 `json:"ds_cpu_millis"`
 	DSMemMi     float64 `json:"ds_mem_mi"`
@@ -1426,11 +1582,56 @@ func buildSimulationInputs(in DeepAnalysisInput, ov DeepPoolOverview, ds DeepDae
 		minNodes = z
 	}
 	cur, rec := deepDemands(in, workloads)
+	eff, idealNodes := packingEfficiency(in, ds, maxPods, cur, headroom, minNodes)
+	packingPct := round2(eff * 100)
 	return DeepSimulationInputs{
 		Current:        DeepDemand{CPUMillis: round2(cur.cpuMillis), MemMi: round2(cur.memMi), Pods: cur.pods},
 		Recommended:    DeepDemand{CPUMillis: round2(rec.cpuMillis), MemMi: round2(rec.memMi), Pods: rec.pods},
 		MaxPodsPerNode: maxPods, MinNodes: minNodes, Headroom: headroom,
 		Inventory:   buildInventory(in, ds, workloads, nodes),
+		Capacity:    capacityToday(in),
+		PackingPct:  packingPct,
+		IdealNodes:  idealNodes,
+		PoolToday:   DeepPoolToday{VMSize: ov.VMSize, Nodes: ov.Nodes, MonthlyBRL: ov.MonthlyCostBRL, UnitBRL: unitBRL(ov.MonthlyCostBRL, ov.Nodes)},
 		DSCPUMillis: ds.PerNodeCPUReqMillis, DSMemMi: math.Max(ds.PerNodeMemReqMi, ds.PerNodeMemUsageMi), DSPods: ds.PerNodePods,
 	}
+}
+
+// DeepPoolToday é o node pool como está hoje: SKU, nodes e custo mensal de tabela.
+type DeepPoolToday struct {
+	VMSize     string  `json:"vm_size"`
+	Nodes      int     `json:"nodes"`
+	MonthlyBRL float64 `json:"monthly_brl"`
+	UnitBRL    float64 `json:"unit_brl"` // custo mensal de UM node
+}
+
+func unitBRL(total float64, nodes int) float64 {
+	if nodes <= 0 {
+		return 0
+	}
+	return round2(total / float64(nodes))
+}
+
+// DeepCapacity é a capacidade que o pool entrega hoje: nodes, alocável por node (média medida) e o total.
+type DeepCapacity struct {
+	Nodes        int     `json:"nodes"`
+	PerNodeCPU   float64 `json:"per_node_cpu_millis"`
+	PerNodeMemMi float64 `json:"per_node_mem_mi"`
+	TotalCPU     float64 `json:"total_cpu_millis"`
+	TotalMemMi   float64 `json:"total_mem_mi"`
+	PodsRunning  int     `json:"pods_running"`
+}
+
+func capacityToday(in DeepAnalysisInput) DeepCapacity {
+	c := DeepCapacity{Nodes: len(in.Nodes), PodsRunning: len(in.Pods)}
+	for _, n := range in.Nodes {
+		c.TotalCPU += n.CPUAllocMillis
+		c.TotalMemMi += n.MemAllocMi
+	}
+	if c.Nodes > 0 {
+		c.PerNodeCPU = round2(c.TotalCPU / float64(c.Nodes))
+		c.PerNodeMemMi = round2(c.TotalMemMi / float64(c.Nodes))
+	}
+	c.TotalCPU, c.TotalMemMi = round2(c.TotalCPU), round2(c.TotalMemMi)
+	return c
 }

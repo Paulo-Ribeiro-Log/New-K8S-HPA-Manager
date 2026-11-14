@@ -37,6 +37,8 @@ type SKUCoverageHint struct {
 	Kind  string `json:"kind"`  // reservation | savings_plan
 	Scope string `json:"scope"` // sku | series
 	Note  string `json:"note"`
+	// AmortizedMonthlyBRL: custo amortizado mensal que esta cobertura tem hoje na frota (Cost Management).
+	AmortizedMonthlyBRL float64 `json:"amortized_monthly_brl,omitempty"`
 }
 
 // SKUCoverageIndex agrega, por SKU e por série, o custo amortizado MENSAL sob cada modelo de preço.
@@ -94,17 +96,17 @@ func (ix SKUCoverageIndex) Hint(sku string) *SKUCoverageHint {
 	}
 	if m := ix.bySKU[strings.ToLower(strings.TrimSpace(sku))]; m != nil {
 		if v := m[azure.ModelReservation]; v > 0 {
-			return &SKUCoverageHint{Kind: HintKindReservation, Scope: HintScopeSKU,
+			return &SKUCoverageHint{Kind: HintKindReservation, Scope: HintScopeSKU, AmortizedMonthlyBRL: round2(v),
 				Note: fmt.Sprintf("%s já roda sob reserva na frota (~%s/mês amortizado em uso). Não dá para saber se há capacidade ociosa — só que a reserva existe.", sku, brlInt(v))}
 		}
 		if v := m[azure.ModelSavingsPlan]; v > 0 {
-			return &SKUCoverageHint{Kind: HintKindSavingsPlan, Scope: HintScopeSKU,
+			return &SKUCoverageHint{Kind: HintKindSavingsPlan, Scope: HintScopeSKU, AmortizedMonthlyBRL: round2(v),
 				Note: fmt.Sprintf("%s já roda sob Savings Plan na frota (~%s/mês amortizado em uso). O plano cobre várias famílias; não dá para saber se sobra compromisso.", sku, brlInt(v))}
 		}
 	}
 	if series := SeriesKey(sku); series != "" {
 		if v := ix.bySeries[series][azure.ModelReservation]; v > 0 {
-			return &SKUCoverageHint{Kind: HintKindReservation, Scope: HintScopeSeries,
+			return &SKUCoverageHint{Kind: HintKindReservation, Scope: HintScopeSeries, AmortizedMonthlyBRL: round2(v),
 				Note: fmt.Sprintf("Há reserva ativa de outro tamanho da mesma série de %s (~%s/mês amortizado em uso): com flexibilidade de tamanho ela pode cobrir. Não dá para saber se há capacidade ociosa.", sku, brlInt(v))}
 		}
 	}
