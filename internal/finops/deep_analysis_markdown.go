@@ -161,20 +161,26 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 	if len(a.Simulation) > 0 {
 		w("## 8. Simulação de VMs\n\n")
 		w("**Todos os valores em R$ são do pool inteiro, por mês** (nodes × preço de um node × 730 h), não de um node; cada célula traz o preço de um node e a multiplicação.\n\n")
-		w("Nodes necessários por SKU, com %.0f%% de ocupação dos nodes (o que sobra depois dos DaemonSets), descontando o custo fixo de DaemonSets, mínimo de %d nodes (ou nº de zonas). "+
-			"**Requests atuais** = só troca a VM; **recomendados** = depois do ajuste de requests. \"vs atual\" compara com a VM atual do pool, no mesmo cenário e na mesma ocupação.", a.Headroom*100, deepMinNodes)
+		w("**Mesma capacidade de hoje:** quantos nodes de cada VM entregam o que os %d nodes atuais entregam (alocável de CPU e de memória, e os pods em execução contra o limite por node), mínimo de %d nodes (ou nº de zonas). "+
+			"O que roda dentro dos nodes não entra nessa conta. A coluna \"Reduzindo requests\" é opcional: o mesmo pool depois de ajustar os requests ao uso real.", a.SimulationInputs.Capacity.Nodes, deepMinNodes)
 		if a.SKUCatalogStatus != "" {
 			w(" Catálogo de SKUs da região: %s.", mdCatalogLabel(a.SKUCatalogStatus))
 		}
 		w("\n\n")
 		si := a.SimulationInputs
-		w("**Base do cálculo:** requests do pool atuais %s CPU / %s e %d pods; recomendados %s CPU / %s e %d pods. Limite de **%d pods por node** (%.0f já ocupados por DaemonSets), DaemonSets gastam %s CPU e %s por node, mínimo de %d nodes. "+
-			"Nodes por recurso = demanda ÷ (livre por node × %.0f%%); o maior dos três (CPU, memória, pods) define o resultado.\n\n",
-			mdCores(si.Current.CPUMillis), mdGib(si.Current.MemMi), si.Current.Pods, mdCores(si.Recommended.CPUMillis), mdGib(si.Recommended.MemMi), si.Recommended.Pods,
-			si.MaxPodsPerNode, si.DSPods, mdCores(si.DSCPUMillis), mdGib(si.DSMemMi), si.MinNodes, si.Headroom*100)
+		cp := si.Capacity
+		w("**Base do cálculo:** o pool entrega hoje **%d nodes × (%s · %s) = %s · %s** alocáveis, com %d pods em execução (limite de **%d pods por node**). "+
+			"Nodes de uma VM = capacidade de hoje ÷ alocável de um node dela, por CPU, memória e pods; o maior dos três define o resultado. "+
+			"Cenário opcional \"reduzindo requests\": requests recomendados %s CPU / %s e %d pods, com DaemonSets de %s CPU e %s por node e %.0f%% de ocupação do que sobra no node.\n\n",
+			cp.Nodes, mdCores(cp.PerNodeCPU), mdGib(cp.PerNodeMemMi), mdCores(cp.TotalCPU), mdGib(cp.TotalMemMi), cp.PodsRunning, si.MaxPodsPerNode,
+			mdCores(si.Recommended.CPUMillis), mdGib(si.Recommended.MemMi), si.Recommended.Pods, mdCores(si.DSCPUMillis), mdGib(si.DSMemMi), si.Headroom*100)
 		writeInventoryAndFit(w, a)
+		if si.PackingPct < 100 && si.IdealNodes > 0 {
+			w("**Empacotamento de hoje: %.0f%%.** Com os requests atuais, o encaixe perfeito na VM atual exigiria %d nodes, mas o pool usa %d: a diferença é fragmentação, folga para picos e HPA, afinidades e zonas. As colunas mostram o ideal (100%%, o mínimo teórico) e, entre colchetes, a estimativa no empacotamento de hoje.\n\n", si.PackingPct, si.IdealNodes, si.PoolToday.Nodes)
+		}
 		cov := a.Overview.Coverage
 		covOK := cov != nil && cov.Computable
+		writeAmortized(w, cov, ov.Nodes)
 		if covOK {
 			w("**Com a reserva do pool:** custo efetivo hoje de R$ %s/mês; a reserva cobre ~%s de %d nodes (desconto de ~%s%% sobre a tabela). "+
 				"Para cada SKU, o custo efetivo depois do ajuste vai do **pior caso** (a reserva atual segue paga e ociosa) ao **melhor caso** (a reserva é reaproveitada por outro pool/cluster no escopo dela ou trocada). A ordem da tabela segue o pior caso.\n\n",
@@ -183,9 +189,9 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			w("**Reserva/Savings Plan:** %s\n\n", cov.Note)
 		}
 		if covOK {
-			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais (pool/mês) | Requests recomendados (tabela, pool/mês) | Custo efetivo do pool/mês (pior / melhor) | Economia efetiva do pool/mês (pior / melhor) | Observações |\n|---|---|---|---|---|---|---|---|---|\n")
+			w("| VM | vCPU / GB | CPU | Alocável/node | Mesma capacidade de hoje (pool/mês) | Reduzindo requests, opcional (tabela, pool/mês) | Pool hoje × com esta VM (pool/mês) | Custo amortizado do pool/mês (pior / melhor) | Economia amortizada do pool/mês (pior / melhor) | Observações |\n|---|---|---|---|---|---|---|---|---|---|\n")
 		} else {
-			w("| VM | vCPU / GB | CPU | Alocável/node | Requests atuais (pool/mês) | Requests recomendados (pool/mês) | Economia do pool vs atual/mês | Observações |\n|---|---|---|---|---|---|---|---|\n")
+			w("| VM | vCPU / GB | CPU | Alocável/node | Mesma capacidade de hoje (pool/mês) | Reduzindo requests, opcional (pool/mês) | Pool hoje × com esta VM (pool/mês) | Observações |\n|---|---|---|---|---|---|---|---|\n")
 		}
 		for _, s := range a.Simulation {
 			name := "`" + s.VMSize + "`"
@@ -205,17 +211,17 @@ func RenderDeepAnalysisMarkdown(a PoolDeepAnalysis) string {
 			}
 			base := fmt.Sprintf("| %s | %d / %d | %s | %s / %s%s | %s | %s", name, s.VCPU, s.MemGB, cpu,
 				mdCores(s.AllocCPUMillis), mdGib(s.AllocMemMi), mdIfStr(s.AllocEstimated, " (est.)"),
-				mdSimCell(s.Feasible, s.NodesCurrentReq, s.CostCurrentReqBRL, s.LimitingCurrentReq, s.PriceUSDHour, s.CalcCurrentReq)+mdVsCurrent(s, s.NodesDeltaCurrentReq, s.SavingsVsCurrentReqBRL),
-				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour, s.CalcRecommended)+mdVsCurrent(s, s.NodesDeltaRecommended, s.SavingsVsCurrentRecBRL))
+				mdSimCell(s.Feasible, s.NodesEquiv, s.CostEquivBRL, s.LimitingEquiv, s.PriceUSDHour, s.CalcEquiv),
+				mdSimCell(s.Feasible, s.NodesRecommended, s.CostRecommendedBRL, s.LimitingRecommended, s.PriceUSDHour, s.CalcRecommended)+mdObs(s.Feasible, s.NodesRecommended, s.NodesRecommendedObs, s.CostRecommendedObsBRL))
 			if covOK {
 				eff, sav := "—", "—"
 				if c := s.Coverage; c != nil {
 					eff = fmt.Sprintf("R$ %s / R$ %s", mdBrl(c.WorstMonthlyBRL), mdBrl(c.BestMonthlyBRL))
 					sav = fmt.Sprintf("%s / %s", mdSignedBRL(c.WorstSavingsBRL), mdSignedBRL(c.BestSavingsBRL))
 				}
-				w("%s | %s | %s | %s |\n", base, eff, sav, mdDash(strings.Join(notes, " ")))
+				w("%s | %s | %s | %s | %s |\n", base, mdToday(s, a.SimulationInputs.PoolToday, cov), eff, sav, mdDash(strings.Join(notes, " ")))
 			} else {
-				w("%s | %s | %s |\n", base, mdSavingsCell(s), mdDash(strings.Join(notes, " ")))
+				w("%s | %s | %s |\n", base, mdToday(s, a.SimulationInputs.PoolToday, cov), mdDash(strings.Join(notes, " ")))
 			}
 		}
 		w("\n")
@@ -541,28 +547,6 @@ func writeJustifications(w func(string, ...interface{}), sims []DeepSimulation) 
 	}
 }
 
-// mdVsCurrent é o complemento da célula de nodes: diferença de nodes e de custo em relação à VM atual.
-func mdVsCurrent(s DeepSimulation, nodesDelta int, savings float64) string {
-	if !s.VsCurrentOK {
-		return ""
-	}
-	return fmt.Sprintf(" — vs atual (pool): %+d nodes, %s/mês", nodesDelta, mdSignedBRL(savings))
-}
-
-// mdSavingsCell: economia mensal da troca de VM contra a VM atual (mesma ocupação, requests recomendados).
-func mdSavingsCell(s DeepSimulation) string {
-	if s.IsCurrent {
-		return "base da comparação"
-	}
-	if !s.VsCurrentOK {
-		return "—"
-	}
-	if s.SavingsVsCurrentRecBRL >= 0 {
-		return "R$ " + mdBrl(s.SavingsVsCurrentRecBRL)
-	}
-	return "+R$ " + mdBrl(-s.SavingsVsCurrentRecBRL) + " (custo maior)"
-}
-
 func mdCatalogLabel(st string) string {
 	switch st {
 	case SKUCatalogFresh:
@@ -595,4 +579,76 @@ func mdSignedBRL(v float64) string {
 		return "R$ " + mdBrl(v)
 	}
 	return "**+R$ " + mdBrl(-v) + "**"
+}
+
+func mdDeltaCell(brl, pct float64) string {
+	if math.Abs(brl) < 0.5 {
+		return "igual"
+	}
+	sign := "−"
+	if brl > 0 {
+		sign = "+"
+	}
+	return fmt.Sprintf("%sR$ %s (%+.1f%%)", sign, mdBrl(math.Abs(brl)), pct)
+}
+
+// mdToday é a coluna "pool hoje × com esta VM": custo real do pool hoje contra o custo com a SKU, com a diferença
+// em R$ e em %. Tudo do pool inteiro, por mês, a preço de tabela.
+func mdToday(s DeepSimulation, t DeepPoolToday, cov *DeepCoverage) string {
+	if !s.Feasible || !s.VsTodayOK || t.MonthlyBRL <= 0 {
+		return "—"
+	}
+	out := fmt.Sprintf("hoje R$ %s (%d × R$ %s) → com esta VM R$ %s (%d × R$ %s): **%s**", mdBrl(t.MonthlyBRL), t.Nodes, mdBrl(t.UnitBRL),
+		mdBrl(s.CostEquivBRL), s.NodesEquiv, mdBrl(s.CostEquivBRL/math.Max(float64(s.NodesEquiv), 1)), mdDeltaCell(s.DeltaTodayEquivBRL, s.DeltaTodayEquivPct))
+	out += "; reduzindo requests (opcional): " + mdDeltaCell(s.DeltaTodayRecBRL, s.DeltaTodayRecPct)
+	if cov != nil && cov.EffectiveMonthlyBRL > 0 {
+		out = "**tabela (sob demanda):** " + out + "<br>**amortizado:** hoje R$ " + mdBrl(cov.EffectiveMonthlyBRL)
+		if s.Coverage != nil {
+			out += fmt.Sprintf(" → com esta VM pior R$ %s (%s) · melhor R$ %s (%s)", mdBrl(s.Coverage.WorstMonthlyBRL), mdDeltaCell(-s.Coverage.WorstSavingsBRL, s.Coverage.WorstDeltaPct),
+				mdBrl(s.Coverage.BestMonthlyBRL), mdDeltaCell(-s.Coverage.BestSavingsBRL, s.Coverage.BestDeltaPct))
+		} else {
+			out += " (sem cenário amortizado para esta VM)"
+		}
+	}
+	return out
+}
+
+// writeAmortized mostra o custo amortizado do pool (reserva/Savings Plan diluídos) ao lado do valor de tabela.
+func writeAmortized(w func(string, ...interface{}), c *DeepCoverage, nodes int) {
+	if c == nil || c.EffectiveMonthlyBRL <= 0 {
+		return
+	}
+	w("**Custo amortizado do pool** (Cost Management, %d dias, reserva e Savings Plan diluídos): **R$ %s/mês**", c.WindowDays, mdBrl(c.EffectiveMonthlyBRL))
+	var parts []string
+	if c.ReservedMonthlyBRL > 0.5 {
+		parts = append(parts, "R$ "+mdBrl(c.ReservedMonthlyBRL)+" reserva")
+	}
+	if c.SavingsPlanMonthlyBRL > 0.5 {
+		parts = append(parts, "R$ "+mdBrl(c.SavingsPlanMonthlyBRL)+" Savings Plan")
+	}
+	if c.OnDemandMonthlyBRL > 0.5 {
+		parts = append(parts, "R$ "+mdBrl(c.OnDemandMonthlyBRL)+" sob demanda")
+	}
+	if len(parts) > 0 {
+		w(" = %s", strings.Join(parts, " + "))
+	}
+	if c.TableMonthlyBRL > 0 {
+		verb := "baixa"
+		if c.AmortizedVsTablePct > 0 {
+			verb = "eleva"
+		}
+		w(". Tabela (sob demanda): R$ %s/mês, então a cobertura %s o custo em %.0f%%", mdBrl(c.TableMonthlyBRL), verb, math.Abs(c.AmortizedVsTablePct))
+	}
+	if nodes > 0 && c.AmortizedNodeBRL > 0 {
+		w(". Por node: amortizado R$ %s × tabela R$ %s", mdBrl(c.AmortizedNodeBRL), mdBrl(c.TableNodeBRL))
+	}
+	w(".\n\n")
+}
+
+// mdObs: estimativa no empacotamento observado hoje, quando ela difere do encaixe perfeito.
+func mdObs(feasible bool, ideal, obs int, cost float64) string {
+	if !feasible || obs <= ideal {
+		return ""
+	}
+	return fmt.Sprintf(" [≈ %d nodes no empacotamento de hoje, R$ %s/mês]", obs, mdBrl(cost))
 }

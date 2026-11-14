@@ -75,3 +75,32 @@ func TestMarkdownMostraInventarioEEncaixe(t *testing.T) {
 		}
 	}
 }
+
+// O pool real (48 nodes) usa mais nodes que o encaixe perfeito (41): o empacotamento observado calibra a estimativa.
+func TestEmpacotamentoObservadoHoje(t *testing.T) {
+	nodes := make([]DeepNode, 48)
+	for i := range nodes {
+		nodes[i] = DeepNode{CPUAllocMillis: 3860, MemAllocMi: 14000}
+	}
+	in := DeepAnalysisInput{Nodes: nodes}
+	ds := DeepDaemonSetOverhead{PerNodeCPUReqMillis: 560, PerNodeMemReqMi: 500, PerNodePods: 10}
+	d := deepDemand{cpuMillis: 41*3300 - 1, memMi: 20000, pods: 300}
+	eff, ideal := packingEfficiency(in, ds, 110, d, 1.0, 3)
+	if ideal != 41 || eff < 0.853 || eff > 0.855 {
+		t.Fatalf("eff=%v ideal=%d", eff, ideal)
+	}
+	// 14 nodes no encaixe perfeito viram ~17 no empacotamento de hoje
+	if got := ceilNodes(14 / eff); got != 17 {
+		t.Errorf("14 ideais ao empacotamento de hoje: %d", got)
+	}
+	// pool já encaixado (nodes reais <= ideais) ou dominado pelo mínimo: sem correção
+	if e, _ := packingEfficiency(DeepAnalysisInput{Nodes: nodes[:41]}, ds, 110, d, 1.0, 3); e != 1 {
+		t.Errorf("pool encaixado deveria dar 1: %v", e)
+	}
+	if e, _ := packingEfficiency(in, ds, 110, deepDemand{cpuMillis: 100, memMi: 100, pods: 1}, 1.0, 3); e != 1 {
+		t.Errorf("mínimo de nodes dominando não calibra: %v", e)
+	}
+	if e, _ := packingEfficiency(DeepAnalysisInput{}, ds, 110, d, 1.0, 3); e != 1 {
+		t.Errorf("sem nodes: %v", e)
+	}
+}

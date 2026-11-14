@@ -19,7 +19,7 @@ const (
 const deepTechnicalMaxCostIncreasePct = 10.0
 
 // DeepJustification explica POR QUE trocar (ou não) a VM atual por esta SKU: economia (tabela, reserva ou
-// Savings Plan) e ganhos para os workloads, sempre contra a VM atual, no cenário de requests recomendados.
+// Savings Plan) e ganhos para os workloads, sempre contra a VM atual, no cenário de MESMA CAPACIDADE de hoje (nodes que entregam o mesmo alocável).
 type DeepJustification struct {
 	Verdict  string   `json:"verdict"`
 	Headline string   `json:"headline"`
@@ -54,9 +54,10 @@ func buildJustification(s, cur DeepSimulation, ds DeepDaemonSetOverhead, workloa
 	// ── Custo ──────────────────────────────────────────────────────────────────────────────────
 	costSafe, costConditional, costWorse := false, false, false
 	var costIncreasePct float64
-	table := s.SavingsVsCurrentRecBRL
-	if cur.CostRecommendedBRL > 0 && table < 0 {
-		costIncreasePct = -table / cur.CostRecommendedBRL * 100
+	table := s.SavingsVsCurrentEquivBRL
+	baseNodes, baseCost := cur.NodesEquiv, cur.CostEquivBRL
+	if baseCost > 0 && table < 0 {
+		costIncreasePct = -table / baseCost * 100
 	}
 	if covOK && s.Coverage != nil {
 		w, b := s.Coverage.WorstSavingsBRL, s.Coverage.BestSavingsBRL
@@ -82,15 +83,15 @@ func buildJustification(s, cur DeepSimulation, ds DeepDaemonSetOverhead, workloa
 		case table > 0:
 			costSafe = true
 			pct := 0.0
-			if cur.CostRecommendedBRL > 0 {
-				pct = table / cur.CostRecommendedBRL * 100
+			if baseCost > 0 {
+				pct = table / baseCost * 100
 			}
 			j.Pros = append(j.Pros, fmt.Sprintf("Economiza %s/mês (%.0f%%) contra a VM atual, preço de tabela sob demanda.", justBRL(table), pct))
 		case table < 0:
 			costWorse = true
 			j.Cons = append(j.Cons, fmt.Sprintf("Custa %s/mês a mais (%.0f%%) que a VM atual.", justBRL(table), costIncreasePct))
 		default:
-			j.Cons = append(j.Cons, "Mesmo custo da VM atual.")
+			j.Cons = append(j.Cons, "Mesmo custo da VM atual: não há economia na troca.")
 		}
 	}
 	if h := s.ReservedHint; h != nil {
@@ -98,18 +99,18 @@ func buildJustification(s, cur DeepSimulation, ds DeepDaemonSetOverhead, workloa
 		if h.Kind == "savings_plan" {
 			kind = "Savings Plan"
 		}
-		j.Pros = append(j.Pros, fmt.Sprintf("Esta SKU já roda sob %s na frota (escopo %s): a troca aproveita um desconto que já é pago.", kind, map[bool]string{true: "série", false: "SKU"}[h.Scope == "series"]))
+		j.Pros = append(j.Pros, fmt.Sprintf("Já existe %s para esta %s na frota. Só ajuda se houver capacidade ociosa nela, o que o Cost Management não informa: confirme antes de contar com esse desconto.", kind, map[bool]string{true: "série", false: "SKU"}[h.Scope == "series"]))
 	}
 
 	// ── Ganhos para os workloads ───────────────────────────────────────────────────────────────
 	tech := 0
-	if d := s.NodesDeltaRecommended; d < 0 {
+	if d := s.NodesDeltaEquiv; d < 0 {
 		tech++
-		j.Pros = append(j.Pros, fmt.Sprintf("%d nodes a menos (%d → %d): deixa de duplicar DaemonSets em %d nodes (≈ %.1f vCPU e %.1f GB de requests fixos).",
-			-d, cur.NodesRecommended, s.NodesRecommended, -d, float64(-d)*ds.PerNodeCPUReqMillis/1000, float64(-d)*ds.PerNodeMemReqMi/1024))
+		j.Pros = append(j.Pros, fmt.Sprintf("%s a menos (%d → %d): deixa de duplicar DaemonSets em %s (≈ %.1f vCPU e %.1f GB de requests fixos).",
+			nodesWord(-d), baseNodes, s.NodesEquiv, nodesWord(-d), float64(-d)*ds.PerNodeCPUReqMillis/1000, float64(-d)*ds.PerNodeMemReqMi/1024))
 	} else if d > 0 {
-		j.Cons = append(j.Cons, fmt.Sprintf("%d nodes a mais (%d → %d): mais DaemonSets duplicados (≈ %.1f vCPU e %.1f GB de requests fixos).",
-			d, cur.NodesRecommended, s.NodesRecommended, float64(d)*ds.PerNodeCPUReqMillis/1000, float64(d)*ds.PerNodeMemReqMi/1024))
+		j.Cons = append(j.Cons, fmt.Sprintf("%s a mais (%d → %d): mais DaemonSets duplicados (≈ %.1f vCPU e %.1f GB de requests fixos).",
+			nodesWord(d), baseNodes, s.NodesEquiv, float64(d)*ds.PerNodeCPUReqMillis/1000, float64(d)*ds.PerNodeMemReqMi/1024))
 	}
 	if cur.NodeLossImpactPct-s.NodeLossImpactPct >= 5 {
 		tech++
@@ -161,6 +162,13 @@ func buildJustification(s, cur DeepSimulation, ds DeepDaemonSetOverhead, workloa
 		j.Verdict, j.Headline = VerdictNotJustified, "Nada que pague a troca"
 	}
 	return j
+}
+
+func nodesWord(n int) string {
+	if n == 1 {
+		return "1 node"
+	}
+	return fmt.Sprintf("%d nodes", n)
 }
 
 func throttledWorkloads(ws []DeepWorkloadRow) int {

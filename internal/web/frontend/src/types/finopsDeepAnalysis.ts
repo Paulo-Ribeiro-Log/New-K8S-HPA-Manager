@@ -18,6 +18,12 @@ export interface DeepCoverage {
   fetched_at: string;
   computable: boolean;
   note?: string;
+  /** Custo amortizado (efetivo) do pool contra a tabela (sob demanda), por mês e por node. */
+  table_monthly_brl?: number;
+  table_node_brl?: number;
+  amortized_node_brl?: number;
+  /** Negativo = a cobertura (reserva/Savings Plan) barateia em relação à tabela. */
+  amortized_vs_table_pct?: number;
 }
 
 export interface DeepCoverageScenario {
@@ -28,12 +34,17 @@ export interface DeepCoverageScenario {
   best_savings_brl: number;
   idle_reserved_nodes: number;
   note: string;
+  /** Diferença do custo amortizado com esta VM contra o amortizado de hoje, em % (negativo = mais barato). */
+  worst_delta_pct: number;
+  best_delta_pct: number;
 }
 
 export interface SKUCoverageHint {
   kind: "reservation" | "savings_plan";
   scope: "sku" | "series";
   note: string;
+  /** Custo amortizado mensal que esta cobertura tem hoje na frota. */
+  amortized_monthly_brl?: number;
 }
 
 export interface DeepPoolOverview {
@@ -238,7 +249,24 @@ export interface DeepNodeFit {
   pods_per_node: number;
 }
 
+export interface DeepPoolToday { vm_size: string; nodes: number; monthly_brl: number; unit_brl: number }
+
+/** O que o pool entrega hoje: nodes, alocável por node e total, pods em execução. */
+export interface DeepCapacity {
+  nodes: number;
+  per_node_cpu_millis: number;
+  per_node_mem_mi: number;
+  total_cpu_millis: number;
+  total_mem_mi: number;
+  pods_running: number;
+}
+
 export interface DeepSimulationInputs {
+  capacity: DeepCapacity;
+  /** Nodes ideais da VM atual ÷ nodes reais do pool, em % (100 = já encaixado no limite). */
+  packing_pct: number;
+  ideal_nodes_today: number;
+  pool_today: DeepPoolToday;
   inventory: DeepInventory;
   current: DeepDemand;
   recommended: DeepDemand;
@@ -280,6 +308,21 @@ export interface DeepSimulation {
   free_mem_mi: number;
   free_pods: number;
   fit?: DeepNodeFit;
+  /** Nodes desta VM que entregam a MESMA capacidade de hoje (alocável de CPU e memória + pods em execução). */
+  nodes_equiv: number;
+  limiting_equiv: string;
+  calc_equiv: DeepNodeCalc;
+  cost_equiv_brl: number;
+  vs_today_equiv_ok: boolean;
+  delta_today_equiv_brl: number;
+  delta_today_equiv_pct: number;
+  nodes_delta_equiv: number;
+  savings_vs_current_equiv_brl: number;
+  /** No empacotamento observado hoje (nodes ideais ÷ empacotamento): estimativa realista. */
+  nodes_current_req_obs: number;
+  nodes_recommended_obs: number;
+  cost_current_req_obs_brl: number;
+  cost_recommended_obs_brl: number;
   cost_current_req_brl: number;
   limiting_current_req: string;
   nodes_recommended: number;
@@ -288,6 +331,13 @@ export interface DeepSimulation {
   savings_recommended_brl: number;
   /** Comparação com a VM atual (mesmo cenário e ocupação). Falso na própria atual e quando falta preço/viabilidade. */
   vs_current_ok: boolean;
+  /** Contra o custo real do pool hoje (tabela): custo com esta VM − custo de hoje; negativo = mais barato. */
+  vs_today_ok: boolean;
+  delta_today_current_req_brl: number;
+  delta_today_current_req_pct: number;
+  delta_today_rec_brl: number;
+  delta_today_rec_pct: number;
+  swap_pct_rec: number;
   justification?: DeepJustification;
   nodes_delta_current_req: number;
   nodes_delta_recommended: number;
