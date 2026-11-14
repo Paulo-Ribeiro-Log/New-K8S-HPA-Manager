@@ -29,7 +29,7 @@ const deepThrottleTimeout = 45 * time.Second
 const deepSKUCatalogWait = 20 * time.Second
 
 // GetDeepAnalysis godoc
-// GET /api/v1/finops/deep-analysis?cluster=X&pool=Y[&headroom=0.8][&format=markdown]
+// GET /api/v1/finops/deep-analysis?cluster=X&pool=Y[&headroom=1.0][&format=markdown]
 //
 // Deep Analysis de um node pool (ver FINOPS-DEEP-ANALYSIS-PLAN.md): coleta AO VIVO só os nodes e pods
 // do pool, combina com o histórico do último relatório FinOps em cache (sem re-scan) e devolve o
