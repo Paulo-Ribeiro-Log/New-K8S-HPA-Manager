@@ -136,7 +136,8 @@ export function MetricsLivePanel({
   const [startLocal, setStartLocal] = useState(() => isoToZonedLocal(Date.now() - 3600e3));
   const [endLocal, setEndLocal] = useState(() => isoToZonedLocal(Date.now()));
   // rodando = consulta e atualiza sozinho; parado = nada é consultado (os cartões ficam como estão)
-  const [running, setRunning] = useState(true);
+  // começa parado: o operador escolhe o que acompanhar e clica em Iniciar (nada consulta o Dynatrace sozinho)
+  const [running, setRunning] = useState(false);
   // réplicas, restarts, CPU e memória (Prometheus): custam consultas a mais, então dá para desligar
   const [resources, setResources] = useState<boolean>(() => loadPref(LIVE_RESOURCES_KEY, parseLiveResources));
   useEffect(() => savePref(LIVE_RESOURCES_KEY, resources), [resources]);
